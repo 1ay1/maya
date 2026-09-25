@@ -43,6 +43,7 @@
 #include "interop.hpp"            // maya's value types, as jaal sees them
 #include "effects.hpp"            // what only the terminal can do
 #include "sources.hpp"            // what the terminal reports
+#include "device.hpp"             // the device surface this host drives
 
 namespace maya {
 
@@ -96,19 +97,30 @@ struct HasNeedsWarmup<P, std::void_t<decltype(
 // "the model changed" into Screen::present(). Everything a draw needs from
 // the scheduler comes back in Presented (an animation deadline, a redraw
 // the frame asked for, a backed-up tty): the host reads no globals.
-template <Program P>
+//
+// It is templated on the DEVICE, not bound to Screen, because the host is
+// where maya's only untestable logic lived: frame debt, the animation
+// deadline, the ack window, the input held back across a navigation key.
+// Against a concrete Screen those could only be exercised through a real
+// pty. `Dev` is any type modelling Device (host/device.hpp), so a test can
+// hand it a scripted fake and assert on the calls it makes — see
+// tests/test_host.cpp. Production still instantiates it with Screen, so
+// there is no indirection and no vtable: the default argument keeps
+// `terminal_host<P>` spelled exactly as before.
+template <Program P, Device Dev = Screen>
 class terminal_host {
 public:
     // Everything the terminal produces. signal_event is added by jaal's
     // run() (kernel_event_t), which is how SIGWINCH arrives.
     using event_type = std::variant<KeyEvent, MouseEvent, PasteEvent, FocusEvent, ResizeEvent>;
     using clock      = Presented::clock;
+    using device_type = Dev;
 
     /// `fps` > 0 redraws continuously at that rate (Options::fps), for a
     /// program whose view() reads the wall clock itself: a clock, a
     /// throughput graph, an FPS counter. 0 (the default) is event-driven:
     /// draw only when the model changes or a widget asks.
-    explicit terminal_host(Screen& term, int fps = 0) noexcept
+    explicit terminal_host(Dev& term, int fps = 0) noexcept
         : term_(term),
           frame_period_(fps > 0 ? std::chrono::nanoseconds(1'000'000'000LL / fps)
                                 : std::chrono::nanoseconds::zero()) {}
@@ -415,7 +427,7 @@ private:
         last_warmup_ = want;
     }
 
-    Screen&                                                 term_;
+    Dev&                                                    term_;
     jaal::host_context<terminal_host>*                          cx_ = nullptr;
     std::optional<jaal::platform::native_reactor::registration> input_reg_;
     std::optional<jaal::platform::native_reactor::registration> output_reg_;   // only while output is pending

@@ -50,10 +50,10 @@ else
 fi
 
 # 3. The seam is where we say it is.
-for f in interop effects sources terminal run; do
+for f in interop effects sources device terminal run; do
     [ -f "include/maya/host/$f.hpp" ] || fail "missing include/maya/host/$f.hpp"
 done
-[ $status -eq 0 ] && echo "  ok    the seam is five files"
+[ $status -eq 0 ] && echo "  ok    the seam is six files"
 
 # 4. maya has no runtime of its own. `Runtime` was the terminal DEVICE, a
 #    name that contradicted the whole design; it is `Device` now.

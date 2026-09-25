@@ -44,8 +44,18 @@ maya + jaal, and is what a program links.
 | `interop.hpp` | maya's value types, as jaal sees them (`Sendable`/`Frozen`) |
 | `effects.hpp` | what only the TERMINAL can do: `set_title`, `commit_scrollback`, `suspend`, ... |
 | `sources.hpp` | what the terminal REPORTS: `on_key`, `on_mouse`, ...; `Program`; `keys<Sub>()` |
+| `device.hpp` | `Device`: the screen surface the host drives, as a concept |
 | `terminal.hpp` | `terminal_host`: maya as a jaal host |
 | `run.hpp` | `run<P>()`: open the Screen, hand it to jaal — and the app's one include |
+
+`terminal_host<P, Dev = Screen>` is templated on its device. Production
+instantiates it with `Screen`, so `terminal_host<P>` is spelled the same as
+before and there is no indirection — but the host's scheduling logic (frame
+debt, the animation deadline, the ack window, input held across a navigation
+key) is the one part of maya that used to be reachable only through a real
+pty. `tests/test_host.cpp` drives it against a fake device in microseconds;
+`Device` is the contract both share, so the fake can't drift from `Screen`
+without failing the `static_assert` in `device.hpp`.
 
 The rule is mechanical, and `tests/seam.sh` runs it in CI:
 

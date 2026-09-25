@@ -753,6 +753,24 @@ set_tests_properties(
         if(NOT APPLE)
             target_link_libraries(test_terminal_restore PRIVATE util)
         endif()
+
+        # test_host drives terminal_host against a fake device, so it needs
+        # jaal (maya_app), unlike every other test here. It opens no terminal
+        # and runs in microseconds — the scheduling logic that used to be
+        # reachable only through a real pty.
+        if(TARGET maya_app)
+            add_executable(test_host tests/test_host.cpp)
+            target_link_libraries(test_host PRIVATE ${MAYA_TEST_LIB} maya_app)
+            target_compile_definitions(test_host PRIVATE
+                MAYA_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+            target_compile_options(test_host PRIVATE
+                $<$<CXX_COMPILER_ID:GNU,Clang>:${MAYA_TEST_OPT}>)
+            if(MAYA_APP_STD_FLAG)
+                target_compile_options(test_host PRIVATE ${MAYA_APP_STD_FLAG})
+            endif()
+            add_test(NAME test_host COMMAND test_host)
+            set_tests_properties(test_host PROPERTIES TIMEOUT 120)
+        endif()
     endif()
 endif()
 

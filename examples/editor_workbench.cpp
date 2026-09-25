@@ -6,7 +6,7 @@
 // Keys: Tab switches the focused split pane, p toggles the bottom panel,
 //       b toggles the sidebar, ↑/↓ move the file-tree selection, q quits.
 
-#include <maya/app.hpp>
+#include <maya/host/run.hpp>
 #include <maya/maya.hpp>
 #include <maya/widget/workbench.hpp>
 #include <maya/widget/activity_rail.hpp>

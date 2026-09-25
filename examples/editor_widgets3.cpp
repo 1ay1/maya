@@ -5,7 +5,7 @@
 //
 //   ← / → (h/l)  switch      ↑ / ↓ (k/j)  interact      q  quit
 
-#include <maya/app.hpp>
+#include <maya/host/run.hpp>
 #include <maya/maya.hpp>
 #include <maya/widget/code_lens.hpp>
 #include <maya/widget/snippet_preview.hpp>

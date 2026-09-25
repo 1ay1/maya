@@ -1,5 +1,5 @@
-// src/app/device_lifetime.cpp — finalize, cleanup, destructor, moves.
-#include "device_internal.hpp"
+// src/device/lifetime.cpp — finalize, cleanup, destructor, moves.
+#include "internal.hpp"
 
 namespace maya::detail {
 

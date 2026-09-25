@@ -352,7 +352,7 @@ and `inline.cpp:62` uses `clear()` directly.
 compose entry.
 
 **Code:** `src/render/serialize.cpp:294-303` (compose entry) and
-`src/app/app.cpp:393, 415` (sole call sites — they pass
+`src/device/app.cpp:393, 415` (sole call sites — they pass
 `content_height(canvas_)` which returns `canvas.max_content_row() + 1`).
 
 **The latent risk.** If any future call site computes `content_rows`

@@ -20,7 +20,7 @@ This guide walks through the patterns first, then lists all 54.
 The README's quickstart, verbatim:
 
 ```cpp
-#include <maya/app.hpp>
+#include <maya/host/run.hpp>
 
 #include <string>
 #include <variant>

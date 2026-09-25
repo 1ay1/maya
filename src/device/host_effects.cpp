@@ -1,5 +1,5 @@
-// src/app/host_effects.cpp — title, clipboard, raw sequences, suspend.
-#include "device_internal.hpp"
+// src/device/host_effects.cpp — title, clipboard, raw sequences, suspend.
+#include "internal.hpp"
 
 namespace maya::detail {
 

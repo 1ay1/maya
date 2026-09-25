@@ -6,7 +6,7 @@
 //
 // Keys: WASD/arrows=move  ,/.=turn  space=shoot  m=minimap  r=restart  q/Esc=quit
 
-#include <maya/app.hpp>
+#include <maya/host/run.hpp>
 #include <maya/element/pixels.hpp>
 #include <maya/maya.hpp>
 

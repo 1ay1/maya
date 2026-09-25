@@ -14,7 +14,7 @@
 //
 // Keys: 1-4 mode   space next track   q quit
 
-#include <maya/app.hpp>
+#include <maya/host/run.hpp>
 #include <maya/element/pixels.hpp>
 #include <maya/maya.hpp>
 

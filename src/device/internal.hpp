@@ -1,8 +1,8 @@
 #pragma once
-// src/app/device_internal.hpp — shared by the Device's .cpp files only:
+// src/device/internal.hpp — shared by the Device's .cpp files only:
 // the opt-in diagnostics (MAYA_IO_LOG, MAYA_INPUT_LOG, MAYA_FRAME_PROF).
-#include "maya/app/app.hpp"
-#include "maya/app/wire_coalesce.hpp"
+#include "maya/device.hpp"
+#include "maya/device/wire_coalesce.hpp"
 
 #include <algorithm>
 #include <chrono>

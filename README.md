@@ -24,7 +24,7 @@
 - **Pretty by default.** `gradient("MAYA", a, b)` sweeps color across text, `rainbow()` does the full spectrum, `gradient_rule()` draws a divider that re-tiles to its pane — one `TextElement` under the hood, so it wraps and measures like plain text. See [Gradients](docs/03-styling.md#gradients).
 - **Two render modes.** Fullscreen (alternate screen) or **inline** (lives in your scrollback, doesn't take over the terminal).
 - **maya is to jaal what Ink is to React.** [jaal](third_party/jaal) is the runtime: a program's model, one `update` per message, effects (`Cmd`) and subscriptions (`Sub`), timers, threads, streams, shutdown, all checked at compile time. maya draws it. One way to write an app, and `view()` is a pure function of the model.
-- **Header-mostly.** `<maya/app.hpp>` for an app, `<maya/maya.hpp>` for the view layer alone (static output, tests). Widgets opt-in individually.
+- **Header-mostly.** `<maya/host/run.hpp>` for an app, `<maya/maya.hpp>` for the view layer alone (static output, tests). Widgets opt-in individually.
 
 ## Quickstart
 
@@ -49,7 +49,7 @@ int main() {
 An app — the model, one `update` per message, a pure `view`, and the events it listens to:
 
 ```cpp
-#include <maya/app.hpp>
+#include <maya/host/run.hpp>
 using namespace maya;
 using namespace maya::dsl;
 
@@ -138,7 +138,7 @@ Plus FPS raycaster, raymarcher, fluid sim, mandelbrot zoom, matrix rain, particl
 ## Headers
 
 ```cpp
-#include <maya/app.hpp>            // run<P>(), event sources, terminal effects + all of maya.hpp
+#include <maya/host/run.hpp>            // run<P>(), event sources, terminal effects + all of maya.hpp
 #include <maya/maya.hpp>           // the view layer: DSL, elements, styles, print()
 #include <maya/widget/input.hpp>   // widgets included individually
 #include <maya/internal.hpp>       // canvas, diff engine, SIMD, terminal I/O (unstable)
@@ -241,7 +241,7 @@ target_link_libraries(my_app PRIVATE maya::app)    # or maya::maya for the view 
 ```
 
 ```cpp
-#include <maya/app.hpp>
+#include <maya/host/run.hpp>
 #include <maya/widget/markdown.hpp>
 ```
 

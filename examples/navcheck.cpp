@@ -3,7 +3,7 @@
 // Shows "row N" for the selected row. tests/nav_frames_test.py sends a
 // whole burst of Down arrows in ONE write (what a fast terminal does with
 // key repeat) and requires every row to have been drawn, not just the last.
-#include <maya/app.hpp>
+#include <maya/host/run.hpp>
 #include <maya/maya.hpp>
 #include <string>
 #include <variant>

@@ -6,7 +6,7 @@
 // the frame encoder and what it knows is on screen and in scrollback) and
 // NOTHING that waits. Every method is one non-blocking step; there is no
 // loop, no timer, no thread, no quit flag. A runtime (jaal, through
-// <maya/app.hpp>, or a hand-written loop in a test) drives it:
+// <maya/host/run.hpp>, or a hand-written loop in a test) drives it:
 //
 //     auto term = maya::Screen::open({.mode = Mode::Inline});
 //     watch(term->input_handle());                 // the runtime's reactor
@@ -33,7 +33,7 @@
 #include <utility>
 #include <vector>
 
-#include "app/app.hpp"
+#include "device.hpp"
 #include "render/scrollback_ledger.hpp"
 
 namespace maya {

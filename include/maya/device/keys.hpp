@@ -1,5 +1,5 @@
 #pragma once
-// maya/app/keys.hpp — which keys are navigation (each gets its own frame), and
+// maya/device/keys.hpp — which keys are navigation (each gets its own frame), and
 // the key predicates key_is / ctrl_is / alt_is.
 
 #include <variant>

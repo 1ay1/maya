@@ -1,5 +1,5 @@
 #pragma once
-// maya/app/options.hpp — how to take the terminal: Mode, RenderBackend, Options.
+// maya/device/options.hpp — how to take the terminal: Mode, RenderBackend, Options.
 
 #include <string_view>
 

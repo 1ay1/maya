@@ -8,7 +8,7 @@
 //
 // Keys: ↑/↓ or j/k move the completion selection, q quits.
 
-#include <maya/app.hpp>
+#include <maya/host/run.hpp>
 #include <maya/maya.hpp>
 #include <maya/widget/code_view.hpp>
 #include <maya/widget/git_blame_gutter.hpp>

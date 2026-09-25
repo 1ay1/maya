@@ -1,7 +1,7 @@
 // examples/motion_showcase.cpp — the maya animation framework in one screen.
 //
 // Nothing here reads a clock or calls request_animation_frame(); widgets do,
-// during view(), and the host (<maya/app.hpp>: next_frame_at_, owes_frame,
+// during view(), and the host (<maya/host/run.hpp>: next_frame_at_, owes_frame,
 // wait_hint) schedules the next frame, so a spring settles and a pulse
 // breathes with no input at all. It also runs in Mode::Inline.
 //
@@ -28,7 +28,7 @@
 //   cmake --build build-test --target maya_motion_showcase
 //   ./build-test/maya_motion_showcase
 
-#include <maya/app.hpp>
+#include <maya/host/run.hpp>
 #include <maya/maya.hpp>
 #include <maya/anim/text_reveal.hpp>
 

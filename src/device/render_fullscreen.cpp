@@ -1,5 +1,5 @@
-// src/app/render_fullscreen.cpp — the alt-screen path: cell diff.
-#include "device_internal.hpp"
+// src/device/render_fullscreen.cpp — the alt-screen path: cell diff.
+#include "internal.hpp"
 
 namespace maya::detail {
 

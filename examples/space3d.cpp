@@ -13,7 +13,7 @@
 //
 // Keys: wasd/arrows steer   space ascend   c descend   b boost   r reset   q quit
 
-#include <maya/app.hpp>
+#include <maya/host/run.hpp>
 #include <maya/element/pixels.hpp>
 #include <maya/maya.hpp>
 

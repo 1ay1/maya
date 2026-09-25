@@ -129,7 +129,7 @@ nothing.
 
 ```cpp
 #include <maya/element/pixels.hpp>
-#include <maya/app.hpp>
+#include <maya/host/run.hpp>
 
 #include <algorithm>
 #include <chrono>

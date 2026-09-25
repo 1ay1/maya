@@ -10,8 +10,8 @@ is one line.
 
 ## Context
 
-Inline mode (`src/app/inline.cpp`, the `InlineSynced` branch of
-`Runtime::render` in `src/app/app.cpp`) renders into a canvas that
+Inline mode (`src/device/inline.cpp`, the `InlineSynced` branch of
+`Runtime::render` in `src/device/app.cpp`) renders into a canvas that
 lives in terminal scrollback, not the alternate screen. The composer
 (`compose_inline_frame` in `src/render/serialize.cpp`) diffs the new
 canvas against the cached previous frame's cell buffer

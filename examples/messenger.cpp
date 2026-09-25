@@ -43,7 +43,7 @@
 //     /who                        list members as a system message
 //     /quit                       exit
 
-#include <maya/app.hpp>
+#include <maya/host/run.hpp>
 #include <maya/maya.hpp>
 #include <maya/widget/overlay.hpp>
 #include <maya/widget/scrollbar.hpp>

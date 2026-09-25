@@ -14,7 +14,7 @@
 // Keys: arrows / wasd / hjkl move   space pause   W wrap   r restart   q quit
 
 #include <maya/element/pixels.hpp>
-#include <maya/app.hpp>
+#include <maya/host/run.hpp>
 #include <maya/maya.hpp>
 
 #include <algorithm>

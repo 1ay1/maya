@@ -28,7 +28,7 @@ Complete reference for all public types, functions, and constants in maya.
 
 ## App Framework
 
-`#include <maya/app.hpp>` (it includes `<maya/maya.hpp>`), link `maya::app`.
+`#include <maya/host/run.hpp>` (it includes `<maya/maya.hpp>`), link `maya::app`.
 An app is a [jaal](../third_party/jaal/README.md) program whose `view()`
 returns an `Element`; maya is to jaal what Ink is to React. The rules are in
 [internals/design.md](internals/design.md).

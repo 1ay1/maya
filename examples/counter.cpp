@@ -6,7 +6,7 @@
 //
 //   +/-   change the count      q   quit
 
-#include <maya/app.hpp>
+#include <maya/host/run.hpp>
 
 #include <string>
 #include <variant>

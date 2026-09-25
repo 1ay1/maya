@@ -27,7 +27,7 @@
 
 #include <doctest/doctest.h>
 
-#include <maya/app/wire_coalesce.hpp>
+#include <maya/device/wire_coalesce.hpp>
 
 #include <cstdio>
 

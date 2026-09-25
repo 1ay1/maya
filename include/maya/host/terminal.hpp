@@ -1,9 +1,9 @@
 #pragma once
-// maya/jaal/host.hpp — terminal_host: the one class that makes maya a jaal
+// maya/host/terminal.hpp — terminal_host: the one class that makes maya a jaal
 // host. maya is to jaal what Ink is to React: jaal is the runtime (model,
 // update, Cmd, Sub, threads, timers, shutdown), maya draws it (elements,
 // layout, widgets, the terminal device). This is the class where they meet.
-// docs/internals/design.md has the rules; a program includes <maya/app.hpp>.
+// docs/internals/design.md has the rules; a program includes <maya/host/run.hpp>.
 //
 // The host protocol (jaal/kernel/run.hpp), each step one Screen call:
 //
@@ -37,7 +37,7 @@
 #include "../maya.hpp"            // an app needs the whole view layer: one include
 #include "../element/element.hpp"
 #include "../terminal/input.hpp"
-#include "../app/app.hpp"
+#include "../device.hpp"
 #include "../screen.hpp"
 
 #include "interop.hpp"            // maya's value types, as jaal sees them

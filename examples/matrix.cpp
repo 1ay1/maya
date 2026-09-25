@@ -15,7 +15,7 @@
 // Keys: 1-4 colour mode   m message   space pause   q quit
 
 #include <maya/element/pixels.hpp>
-#include <maya/app.hpp>
+#include <maya/host/run.hpp>
 #include <maya/maya.hpp>
 
 #include <algorithm>

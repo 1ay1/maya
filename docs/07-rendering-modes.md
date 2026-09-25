@@ -25,7 +25,7 @@ through `print()` / `render_to_string()`.
 A program is a jaal program whose `view()` returns an `Element`:
 
 ```cpp
-#include <maya/app.hpp>
+#include <maya/host/run.hpp>
 using namespace maya;
 using namespace maya::dsl;
 
@@ -126,7 +126,7 @@ There is no separate canvas loop: the model holds the state, `update(Tick)`
 advances it, and `view()` draws it — for example with an `Image`:
 
 ```cpp
-#include <maya/app.hpp>
+#include <maya/host/run.hpp>
 #include <maya/element/pixels.hpp>
 using namespace maya;
 using namespace maya::dsl;

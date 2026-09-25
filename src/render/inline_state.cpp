@@ -325,7 +325,7 @@ int content_height(const Canvas& canvas) noexcept {
     // ever written this frame ⇒ zero rows of content.
     //
     // Returning 0 (not 1) is load-bearing for the inline path: the
-    // run-loop's empty-frame guard (`if (ch <= 0) ...` in src/app/render_inline.cpp
+    // run-loop's empty-frame guard (`if (ch <= 0) ...` in src/device/render_inline.cpp
     // and inline.cpp) signals "no compose this tick, leave prev_rows
     // alone." An off-by-one return of 1 here used to slip past that
     // guard and cause compose_inline_frame to walk a single all-blank

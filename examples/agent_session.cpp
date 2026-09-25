@@ -56,7 +56,7 @@
 //
 // Usage:  ./maya_agent_session
 
-#include <maya/app.hpp>
+#include <maya/host/run.hpp>
 #include <maya/maya.hpp>
 
 #include <maya/widget/agent_timeline.hpp>

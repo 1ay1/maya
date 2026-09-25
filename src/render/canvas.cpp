@@ -7,7 +7,7 @@
 #include <new>
 #include <string_view>
 
-#include "maya/app/environment.hpp"
+#include "maya/device/environment.hpp"
 #include "maya/style/theme.hpp"
 
 namespace maya {

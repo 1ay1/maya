@@ -65,7 +65,7 @@ above that line was navigation overhead.
 
 ### How to ship it (follow-up)
 
-The inline render loop (`src/app/inline.cpp::render_live`) **already** defers a
+The inline render loop (`src/device/inline.cpp::render_live`) **already** defers a
 frame when the writer's non-blocking residue won't drain — deferred frames are
 naturally coalesced because the model keeps advancing state, so the next
 successful compose renders the latest content. That is reactive coalescing at

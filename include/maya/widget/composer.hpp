@@ -28,7 +28,7 @@
 #include <utility>
 #include <vector>
 
-#include "../app/app.hpp"        // request_animation_frame
+#include "../device.hpp"        // request_animation_frame
 #include "../dsl.hpp"
 #include "../element/element.hpp"
 #include "../style/border.hpp"

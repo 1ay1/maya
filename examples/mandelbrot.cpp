@@ -12,7 +12,7 @@
 // Keys: 1-6 palette   +/- zoom   arrows pan   space auto   r reset   q quit
 
 #include <maya/element/pixels.hpp>
-#include <maya/app.hpp>
+#include <maya/host/run.hpp>
 #include <maya/maya.hpp>
 
 #include <algorithm>

@@ -591,7 +591,7 @@ compose_inline_frame_impl(const Canvas& canvas,
         // reset is reserved for the Divergent path (resize / write-fail
         // recovery), where the layout assumptions actually changed and
         // a full repaint from home is the correct response — see
-        // the Device's resize handler (src/app/device_input.cpp).
+        // the Device's resize handler (src/device/input.cpp).
         if (state.prev_width_ > 0) {
             // Force_redraw case (B): in-place soft redraw.
             //

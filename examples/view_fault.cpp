@@ -12,7 +12,7 @@
 // Run it with MAYA_VIEW_FAULT_SKIP=1 to see the skip policy: the screen
 // freezes on the last good frame, the program keeps taking keys.
 
-#include <maya/app.hpp>
+#include <maya/host/run.hpp>
 
 #include <cstdlib>
 #include <stdexcept>

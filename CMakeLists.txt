@@ -200,15 +200,15 @@ elseif(APPLE AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND MAYA_HEAVY_OPT)
 endif()
 
 set(MAYA_LIB_SOURCES
-    src/app/device_create.cpp
-    src/app/device_input.cpp
-    src/app/device_lifetime.cpp
-    src/app/render.cpp
-    src/app/render_inline.cpp
-    src/app/render_fullscreen.cpp
-    src/app/render_grid.cpp
-    src/app/host_effects.cpp
-    src/app/events.cpp
+    src/device/create.cpp
+    src/device/input.cpp
+    src/device/lifetime.cpp
+    src/device/render.cpp
+    src/device/render_inline.cpp
+    src/device/render_fullscreen.cpp
+    src/device/render_grid.cpp
+    src/device/host_effects.cpp
+    src/device/events.cpp
     src/render/print.cpp
     src/element/builder.cpp
     src/element/text.cpp
@@ -432,7 +432,7 @@ endif()
 # ── maya::app: maya on jaal ─────────────────────────────────────────────
 # jaal (third_party/jaal) is the runtime; maya is the view layer and the
 # terminal device. The `maya` library knows nothing of jaal; `maya::app`
-# (maya + jaal + <maya/app.hpp>) is what a program links. jaal needs C++26.
+# (maya + jaal + <maya/host/run.hpp>) is what a program links. jaal needs C++26.
 # docs/internals/design.md.
 option(MAYA_BUILD_APP "Build maya::app (needs C++26 and third_party/jaal)" ON)
 if(MAYA_BUILD_APP)

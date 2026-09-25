@@ -1,7 +1,7 @@
 #pragma once
 // maya — a terminal view layer: elements, layout, style, widgets, and
 // static output. The view half of an app; the runtime half is jaal, and
-// <maya/app.hpp> joins them (maya::run). docs/internals/design.md.
+// <maya/host/run.hpp> joins them (maya::run). docs/internals/design.md.
 //
 //   - DSL          (v, h, text, dyn, when, map, pipes, styles)
 //   - Events       (KeyEvent, key_is, ctrl_is, mouse helpers)
@@ -37,9 +37,9 @@
 #include <maya/element/builder.hpp>
 
 // ── The terminal device's vocabulary: events, environment, theme ────────
-#include <maya/app/app.hpp>
-#include <maya/app/events.hpp>
-#include <maya/app/environment.hpp>
+#include <maya/device.hpp>
+#include <maya/device/events.hpp>
+#include <maya/device/environment.hpp>
 #include <maya/print.hpp>
 
 // ── DSL: compile-time UI tree builder ───────────────────────────────────

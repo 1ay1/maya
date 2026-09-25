@@ -1,5 +1,5 @@
 #pragma once
-// maya/jaal/sources.hpp — what the terminal reports, as jaal subscriptions.
+// maya/host/sources.hpp — what the terminal reports, as jaal subscriptions.
 //
 // One router per event kind, so a program subscribes to exactly what it uses
 // and a host that doesn't produce, say, mouse events would reject a program

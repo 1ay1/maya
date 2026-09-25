@@ -413,7 +413,7 @@ assistant.
 
 ## Runtime migration — done
 
-`Runtime::render` (src/app/app.cpp) dispatches inline frames through
+`Runtime::render` (src/device/app.cpp) dispatches inline frames through
 `std::visit` over `InlineCoherence` — the variant of
 `InlineFrame<Empty | Fresh | Synced | Stale | HardReset>` — so the
 production renderer consumes the chain end-to-end: the only path into

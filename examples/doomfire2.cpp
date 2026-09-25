@@ -16,7 +16,7 @@
 //
 // Keys: q/Esc quit   space toggle source   ←/→ wind   +/- heat   1-3 palette
 
-#include <maya/app.hpp>
+#include <maya/host/run.hpp>
 #include <maya/element/pixels.hpp>
 #include <maya/maya.hpp>
 

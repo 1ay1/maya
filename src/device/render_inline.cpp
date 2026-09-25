@@ -1,5 +1,5 @@
-// src/app/render_inline.cpp — the inline path: row-diff under the scrollback.
-#include "device_internal.hpp"
+// src/device/render_inline.cpp — the inline path: row-diff under the scrollback.
+#include "internal.hpp"
 
 namespace maya::detail {
 

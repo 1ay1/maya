@@ -6,9 +6,9 @@
 // it, flipping above when near the bottom and clamping at the screen edges.
 // Space cycles the side (Below/Above/Right/Left). q quits.
 
-#include <maya/app.hpp>
+#include <maya/host/run.hpp>
 #include <maya/maya.hpp>
-#include <maya/app/floating.hpp>
+#include <maya/device/floating.hpp>
 
 #include <string>
 

@@ -19,7 +19,7 @@
 //
 // Zero width arithmetic, zero tier switches, zero breakpoints. q quits.
 
-#include <maya/app.hpp>
+#include <maya/host/run.hpp>
 #include <maya/maya.hpp>
 
 #include <string>

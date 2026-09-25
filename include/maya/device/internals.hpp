@@ -1,8 +1,8 @@
 #pragma once
-// maya/app/device.hpp — detail::Device, the terminal device's internals
+// maya/device/internals.hpp — detail::Device, the terminal device's internals
 // (terminal, input parser, writer, canvases, render state). Not a loop:
 // maya::Screen (<maya/screen.hpp>) is its public face; the host in
-// <maya/app.hpp> drives it one step at a time. Implemented in src/app/,
+// <maya/host/run.hpp> drives it one step at a time. Implemented in src/device/,
 // one .cpp per concern.
 
 #include <algorithm>
@@ -63,7 +63,7 @@ inline void app_set_theme(const Theme& t);   // defined below Device
 // ============================================================================
 // Owns the terminal, event source, writer, canvases, and render state.
 // Exposes granular methods; maya::Screen is its public face and the jaal
-// host (<maya/app.hpp>) drives it one non-blocking step at a time.
+// host (<maya/host/run.hpp>) drives it one non-blocking step at a time.
 
 namespace detail {
 
@@ -305,7 +305,7 @@ public:
     // Flush parser timeout events (e.g., bare Escape after delay).
     auto flush_timeouts() -> std::vector<Event>;
 
-    // Render an element tree to the terminal (src/app/render.cpp), then one
+    // Render an element tree to the terminal (src/device/render.cpp), then one
     // of the two paths:
     //   render_inline      compose_inline_frame: row-diff, scrollback-preserving
     //   render_fullscreen  RenderPipeline: clear → paint → diff/serialize
@@ -936,7 +936,7 @@ private:
     bool          kitty_kbd_enabled_  = false;
 
 public:
-    /// The terminal's input handle. The host (<maya/app.hpp>) watches it with
+    /// The terminal's input handle. The host (<maya/host/run.hpp>) watches it with
     /// jaal's reactor and calls read_events() when it's readable. Borrowed:
     /// the Device keeps ownership; the handle is valid while it lives.
     [[nodiscard]] platform::NativeHandle input_handle() const noexcept { return input_handle_; }

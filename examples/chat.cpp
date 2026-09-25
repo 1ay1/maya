@@ -19,7 +19,7 @@
 //   AgentTool, FetchTool, AssistantMessage + StreamingMarkdown,
 //   ActivityBar, ToastManager, Badge, Callout
 
-#include <maya/app.hpp>
+#include <maya/host/run.hpp>
 #include <maya/maya.hpp>
 #include <maya/widget/activity_bar.hpp>
 #include <maya/widget/agent_tool.hpp>

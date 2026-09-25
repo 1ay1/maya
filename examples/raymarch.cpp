@@ -11,7 +11,7 @@
 //
 // Keys: 1-4 scene   left/right orbit speed   up/down pitch   space pause   q quit
 
-#include <maya/app.hpp>
+#include <maya/host/run.hpp>
 #include <maya/element/pixels.hpp>
 #include <maya/maya.hpp>
 

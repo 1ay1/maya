@@ -1,5 +1,5 @@
-// src/app/render_grid.cpp — the Grid backend and the off-wire warmup.
-#include "device_internal.hpp"
+// src/device/render_grid.cpp — the Grid backend and the off-wire warmup.
+#include "internal.hpp"
 
 namespace maya::detail {
 

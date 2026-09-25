@@ -10,7 +10,7 @@
 // program exits the final card stays on screen, and print() adds the
 // summary below it.
 //
-#include <maya/app.hpp>
+#include <maya/host/run.hpp>
 #include <maya/maya.hpp>
 
 #include <algorithm>

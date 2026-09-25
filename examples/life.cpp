@@ -13,7 +13,7 @@
 // Keys: q/Esc quit   space pause   Enter single step   +/- speed   c clear
 //       r random   g glider gun   p pulsar   s spaceship fleet
 
-#include <maya/app.hpp>
+#include <maya/host/run.hpp>
 #include <maya/element/pixels.hpp>
 #include <maya/maya.hpp>
 

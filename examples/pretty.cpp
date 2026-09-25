@@ -9,7 +9,7 @@
 //
 // Not one hand-computed breakpoint or byte count in the file.
 
-#include <maya/app.hpp>
+#include <maya/host/run.hpp>
 #include <maya/maya.hpp>
 
 using namespace maya;

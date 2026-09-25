@@ -28,7 +28,7 @@ A program lists the event sources it needs in its `Sub` type. Asking for a
 subscription you didn't list is a compile error, not a silently dead handler:
 
 ```cpp
-#include <maya/app.hpp>
+#include <maya/host/run.hpp>
 using namespace maya;
 using namespace maya::dsl;
 

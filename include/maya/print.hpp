@@ -2,7 +2,7 @@
 // maya/print.hpp — render an element once, with no runtime and no terminal
 // mode changes: Ink's renderToString. For styled CLI output (a report, a
 // table, a status card) and for tests. An interactive or animated program
-// is a jaal program run with maya::run (<maya/app.hpp>); an inline one is
+// is a jaal program run with maya::run (<maya/host/run.hpp>); an inline one is
 // the same program with `.mode = Mode::Inline`.
 
 #include <string>

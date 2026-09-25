@@ -18,7 +18,7 @@ the original.
 
 | Old | New |
 |---|---|
-| `#include <maya/maya.hpp>`, link `maya::maya` | `#include <maya/app.hpp>`, link `maya::app` |
+| `#include <maya/maya.hpp>`, link `maya::maya` | `#include <maya/host/run.hpp>`, link `maya::app` |
 | `run<P>(RunConfig{...})` | `run<P>(Options{...})` (same fields) |
 | `static Model init()` / `init() -> pair<Model, Cmd>` | `Model{}` (default-constructed) + optional `static Cmd init(Model&)` |
 | `update(Model, Msg) -> pair<Model, Cmd<Msg>>` + `std::visit(overload{...})` | one `static Cmd update(Model&, Case)` per alternative |
@@ -32,7 +32,7 @@ the original.
 | globals / function-local statics | fields of `Model` (the RNG too) |
 | RNG or mutation inside `view()` | done in `update`, stored in the model |
 | arrow keys auto-scrolling a `ScrollState` | route them: `Scroll{key}` → `state.handle(key, h)` in `update` (the wheel is still automatic) |
-| `MAYA_WITH_JAAL`, `<maya/jaal/host.hpp>`, `run_jaal`, `JaalView`, `jaal_key_map` | gone: `<maya/app.hpp>`, `run`, `Program`, `keys` |
+| `MAYA_WITH_JAAL`, `<maya/host/terminal.hpp>`, `run_jaal`, `JaalView`, `jaal_key_map` | gone: `<maya/host/run.hpp>`, `run`, `Program`, `keys` |
 
 The sections below are the parts that need more than a rename.
 

@@ -33,48 +33,47 @@ from it.
 |---|---|---|
 | `<maya/maya.hpp>` | elements, DSL, layout, style, widgets, `Image`/`pixels`, `print` | no |
 | `<maya/screen.hpp>` | `Screen`: the terminal device (raw mode, input, frame diff, flow control) | no |
-| `<maya/app.hpp>` | the seam's table of contents: five includes, no declarations | yes |
-| `include/maya/jaal/` | the seam itself, and the ONLY place in maya that may name jaal | yes |
+| `<maya/host/run.hpp>` | `run<P>`, and the whole of maya with it: the include an app uses | yes |
+| `include/maya/host/` | where maya meets a runtime, and the ONLY place in maya that may name jaal | yes |
 
 `maya` (the library) stays free of jaal. `maya::app` (CMake target) is
 maya + jaal, and is what a program links.
 
-| The seam (`include/maya/jaal/`) | |
+| The seam (`include/maya/host/`) | |
 |---|---|
 | `interop.hpp` | maya's value types, as jaal sees them (`Sendable`/`Frozen`) |
 | `effects.hpp` | what only the TERMINAL can do: `set_title`, `commit_scrollback`, `suspend`, ... |
 | `sources.hpp` | what the terminal REPORTS: `on_key`, `on_mouse`, ...; `Program`; `keys<Sub>()` |
-| `host.hpp` | `terminal_host`: the class that makes maya a jaal host |
-| `run.hpp` | `run<P>()`: open the Screen, hand it to jaal |
+| `terminal.hpp` | `terminal_host`: maya as a jaal host |
+| `run.hpp` | `run<P>()`: open the Screen, hand it to jaal — and the app's one include |
 
 The rule is mechanical, and `tests/seam.sh` runs it in CI:
 
-    grep -rl jaal include/maya --include=*.hpp | grep -v maya/jaal/
+    grep -rl jaal include/maya --include=*.hpp | grep -v maya/host/
 
-prints `app.hpp` and nothing else. Everything else may NAME jaal in a
-comment — that is how a reader finds the seam — but may not include it or
-use its types.
+prints nothing. Everything else may NAME jaal in a comment — that is how a
+reader finds the seam — but may not include it or use its types.
 
 ## One file, one job
 
 The device and the renderer are split by concern, not by size: a file is
 the unit you read to understand one thing.
 
-| The device (`include/maya/app/`, `src/app/`) | |
+| The device (`include/maya/device/`, `src/device/`) | |
 |---|---|
 | `options.hpp` | how to take the terminal: `Mode`, `RenderBackend`, `Options` |
 | `frame_request.hpp` | a widget asks for the next frame; the host schedules it |
 | `keys.hpp` | key predicates, and which keys are navigation |
-| `device.hpp` | `detail::Device`: the device's state |
+| `internals.hpp` | `detail::Device`: the device's state |
 | `theme_canvas.hpp` | a theme's background becomes pixels |
-| `device_create.cpp` | raw mode, alt screen or inline region, capability probes |
-| `device_input.cpp` | resize; bytes → events |
+| `create.cpp` | raw mode, alt screen or inline region, capability probes |
+| `input.cpp` | resize; bytes → events |
 | `render.cpp` | one frame: width check, theme edge, pick a path |
 | `render_inline.cpp` | the inline path (wire gate, canvas prepare, compose) |
 | `render_fullscreen.cpp` | the alt-screen path |
 | `render_grid.cpp` | the Grid backend, and the off-wire warmup |
 | `host_effects.cpp` | title, clipboard, raw sequences, suspend |
-| `device_lifetime.cpp` | finalize, cleanup, destructor, moves |
+| `lifetime.cpp` | finalize, cleanup, destructor, moves |
 
 | The renderer (`src/render/`) | |
 |---|---|
@@ -86,14 +85,14 @@ the unit you read to understand one thing.
 | `compose_inline.cpp` | the inline row-diff producer, and caret placement |
 | `inline_state.cpp` | the inline frame's state and its scrollback proofs |
 
-`render_internal.hpp` / `serialize_internal.hpp` / `device_internal.hpp`
+`render_internal.hpp` / `serialize_internal.hpp` / `src/device/internal.hpp`
 are private to those directories: they hold what the split files share
 (the component cache, the cell-run emitter, the opt-in diagnostics).
 
 ## The app API
 
 ```cpp
-#include <maya/app.hpp>
+#include <maya/host/run.hpp>
 
 struct Counter {
     struct Model { int n = 0; };
@@ -134,7 +133,7 @@ in an Ink app. maya does not re-export or wrap them.
   `live()`: the four loops.
 - `maya::Cmd`, `maya::Sub`, `detail::BackgroundQueue`, `key_map<Msg>`,
   the `Program` concept, `Ctx`, `CmdContext`: the old runtime's vocabulary.
-- `maya/jaal/canvas.hpp`: the adapter that ran canvas callbacks on jaal.
+- `maya/host/canvas.hpp`: the adapter that ran canvas callbacks on jaal.
 - the `jaal_` prefix on examples: there is only one kind now.
 - the Screen forwarding KEYS to scroll views: keys are the program's
   (a message and `ScrollState::handle` in update); the device still
@@ -142,7 +141,7 @@ in an Ink app. maya does not re-export or wrap them.
 
 ## What stays, and why
 
-- The `Event`-variant predicates in `app/events.hpp` (`key(ev, 'q')`,
+- The `Event`-variant predicates in `device/events.hpp` (`key(ev, 'q')`,
   `mouse_clicked(ev)`, ...) remain: widgets (`Input`, `List`, `Menu`, ...)
   take an `Event` in their `handle()` so one widget API serves every
   source. A program forwards `Key{k}` to a widget as `widget.handle(k)`.

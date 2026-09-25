@@ -15,7 +15,7 @@
 //   Mouse wheel: vertical · Shift+wheel: horizontal
 //   q quit
 
-#include <maya/app.hpp>
+#include <maya/host/run.hpp>
 #include <maya/maya.hpp>
 #include <maya/widget/scrollbar.hpp>
 

@@ -1,5 +1,5 @@
 #pragma once
-// maya/jaal/effects.hpp — things only the TERMINAL can do.
+// maya/host/effects.hpp — things only the TERMINAL can do.
 //
 // These are this host's effects rather than jaal core ones, so a program
 // lists the ones it uses in its Cmd:

@@ -7,7 +7,7 @@
 //   - Rich DSL composition with dynamic content
 //   - keys() for declarative key bindings
 
-#include <maya/app.hpp>
+#include <maya/host/run.hpp>
 #include <maya/maya.hpp>
 #include <chrono>
 

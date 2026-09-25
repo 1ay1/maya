@@ -24,7 +24,7 @@
 #include <string>
 #include <vector>
 
-#include <maya/app.hpp>
+#include <maya/host/run.hpp>
 #include <maya/maya.hpp>
 #include <maya/element/grid.hpp>
 #include <maya/widget/bar_chart.hpp>

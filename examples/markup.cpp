@@ -27,7 +27,7 @@
 //
 // Keys: ↑/↓ (j/k) scroll · PgUp/PgDn (space) page · Home/End jump · q/Esc quit.
 
-#include <maya/app.hpp>
+#include <maya/host/run.hpp>
 #include <maya/maya.hpp>
 #include <maya/widget/html.hpp>
 #include <maya/widget/markdown.hpp>

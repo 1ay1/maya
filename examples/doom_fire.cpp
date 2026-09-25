@@ -13,7 +13,7 @@
 // Keys: space source   left/right wind   +/- heat   1-3 palette   q quit
 
 #include <maya/element/pixels.hpp>
-#include <maya/app.hpp>
+#include <maya/host/run.hpp>
 #include <maya/maya.hpp>
 
 #include <algorithm>

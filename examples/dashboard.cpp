@@ -22,7 +22,7 @@
 //              colours from the theme; a glitch is a pure function of the
 //              frame number, so view() stays pure.
 
-#include <maya/app.hpp>
+#include <maya/host/run.hpp>
 #include <maya/element/pixels.hpp>
 #include <maya/maya.hpp>
 

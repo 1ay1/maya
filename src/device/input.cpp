@@ -1,5 +1,5 @@
-// src/app/device_input.cpp — resize and input: size, bytes -> events.
-#include "device_internal.hpp"
+// src/device/input.cpp — resize and input: size, bytes -> events.
+#include "internal.hpp"
 
 namespace maya::detail {
 

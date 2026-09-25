@@ -454,7 +454,7 @@ application of this rule.
 - `maya/include/maya/app/app.hpp` — `Runtime::force_redraw()` that
   zeroes `prev_rows` on the existing `InlineSynced` state instead
   of collapsing to Divergent.
-- `maya/src/app/app.cpp` — `Runtime::create()` pre-seeds
+- `maya/src/device/app.cpp` — `Runtime::create()` pre-seeds
   `in_coherence_` to `InlineSynced{}` for inline mode; the
   Divergent path's `\x1b[2J\x1b[3J\x1b[H` pre-clear is kept for
   resize / write-fail.

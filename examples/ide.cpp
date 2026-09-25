@@ -18,7 +18,7 @@
 //
 // Usage:  ./maya_ide
 
-#include <maya/app.hpp>
+#include <maya/host/run.hpp>
 #include <maya/maya.hpp>
 #include <maya/widget/badge.hpp>
 #include <maya/widget/breadcrumb.hpp>

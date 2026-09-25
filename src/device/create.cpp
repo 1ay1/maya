@@ -1,5 +1,5 @@
-// src/app/device_create.cpp — take the terminal: raw mode, screen, probes.
-#include "device_internal.hpp"
+// src/device/create.cpp — take the terminal: raw mode, screen, probes.
+#include "internal.hpp"
 
 namespace maya::detail {
 

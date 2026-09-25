@@ -10,7 +10,7 @@
 //   q   quit                    and fold how it exited back in (jaal D39)
 //
 
-#include <maya/app.hpp>
+#include <maya/host/run.hpp>
 #include <maya/maya.hpp>
 #include <maya/style/schemes.hpp>
 

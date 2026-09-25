@@ -39,7 +39,7 @@
 #include <utility>
 #include <vector>
 
-#include "../app/app.hpp"        // Element plumbing (dsl)
+#include "../device.hpp"        // Element plumbing (dsl)
 #include "../core/motion.hpp"     // anim::default_clock / keep_animating_after
 #include "../dsl.hpp"
 #include "../element/element.hpp"

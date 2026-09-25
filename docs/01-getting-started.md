@@ -88,7 +88,7 @@ target_link_libraries(myapp PRIVATE maya::app)
 Copy `examples/counter.cpp` into your project as `main.cpp`. Here it is:
 
 ```cpp
-#include <maya/app.hpp>                  // (1) maya + the jaal host
+#include <maya/host/run.hpp>                  // (1) maya + the jaal host
 
 #include <string>
 #include <variant>
@@ -124,7 +124,7 @@ struct Counter {
 int main() { return run<Counter>({.title = "counter"}); }  // (9)
 ```
 
-1. **`<maya/app.hpp>`** is the one header for apps. It includes
+1. **`<maya/host/run.hpp>`** is the one header for apps. It includes
    `<maya/maya.hpp>` (elements, DSL, styles, `print`) and the jaal host.
 2. **Two namespaces.** `maya::dsl` is the vocabulary for *describing* UI —
    `t<>`, `text()`, `v()`/`h()`, style tags, and the `|` modifiers. `maya` is

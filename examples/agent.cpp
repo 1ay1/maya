@@ -10,7 +10,7 @@
 //   r          restart simulation
 //   q/Esc      quit
 
-#include <maya/app.hpp>
+#include <maya/host/run.hpp>
 #include <maya/maya.hpp>
 
 // Agent UX widgets

@@ -1,4 +1,4 @@
-#include "maya/app/events.hpp"
+#include "maya/device/events.hpp"
 
 namespace maya {
 

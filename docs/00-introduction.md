@@ -23,7 +23,7 @@ one `update` overload per message, a pure `view`, and a `subscribe` that says
 which events and timers it listens to. `run<P>()` does the rest:
 
 ```cpp
-#include <maya/app.hpp>
+#include <maya/host/run.hpp>
 using namespace maya;
 using namespace maya::dsl;
 

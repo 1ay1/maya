@@ -1,8 +1,8 @@
 #pragma once
-// maya/app/theme_canvas.hpp — a theme fills the frame with its background;
+// maya/device/theme_canvas.hpp — a theme fills the frame with its background;
 // switching the running app's theme.
 
-#include "device.hpp"
+#include "internals.hpp"
 
 namespace maya {
 namespace detail {

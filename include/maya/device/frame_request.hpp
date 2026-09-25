@@ -1,6 +1,6 @@
 #pragma once
-// maya/app/frame_request.hpp — a widget asks for the next frame while it animates;
-// the host (<maya/app.hpp>) schedules it. A per-frame request, not a loop.
+// maya/device/frame_request.hpp — a widget asks for the next frame while it animates;
+// the host (<maya/host/run.hpp>) schedules it. A per-frame request, not a loop.
 
 #include <chrono>
 #include <cstdint>

@@ -14,7 +14,7 @@
 #undef NDEBUG
 #include "agtest.hpp"
 
-#include <maya/app/wire_coalesce.hpp>
+#include <maya/device/wire_coalesce.hpp>
 
 #include <cstdio>
 

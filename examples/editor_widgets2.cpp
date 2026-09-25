@@ -5,7 +5,7 @@
 //
 //   ← / → (h/l)  switch widget      ↑ / ↓ (k/j)  interact      q  quit
 
-#include <maya/app.hpp>
+#include <maya/host/run.hpp>
 #include <maya/maya.hpp>
 #include <maya/widget/key_caps.hpp>
 #include <maya/widget/color_swatch.hpp>

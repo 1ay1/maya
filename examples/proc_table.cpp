@@ -29,7 +29,7 @@
 // Resize the terminal — width resheds columns, height rewindows rows.
 // q quits.
 
-#include <maya/app.hpp>
+#include <maya/host/run.hpp>
 #include <maya/maya.hpp>
 #include <maya/widget/table.hpp>
 

@@ -1,5 +1,5 @@
 #pragma once
-// maya/jaal/interop.hpp — maya's value types, as jaal sees them.
+// maya/host/interop.hpp — maya's value types, as jaal sees them.
 //
 // jaal's Sendable walks a type's fields to prove a Msg is safe to hand to
 // another thread. Two of maya's types can't be walked, so they opt in here —

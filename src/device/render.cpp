@@ -1,5 +1,5 @@
-// src/app/render.cpp — one frame: width check, theme edge, then a path.
-#include "device_internal.hpp"
+// src/device/render.cpp — one frame: width check, theme edge, then a path.
+#include "internal.hpp"
 
 namespace maya::detail {
 

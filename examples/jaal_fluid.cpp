@@ -1,432 +1,303 @@
-// examples/jaal_fluid.cpp — GENERATED from fluid.cpp by tools/port_canvas.py.
-// Do not edit: change fluid.cpp and re-run the tool.
+// examples/jaal_fluid.cpp — Stam's stable-fluids solver, as a jaal program.
 //
-// The same demo on jaal: its canvas_run() call becomes run_canvas()
-// (maya/jaal/canvas.hpp), which draws it as a `paint` element through
-// maya::Screen, so it gets the Screen's flow control (never more than one
-// frame ahead of the terminal: `q` is instant over a slow ssh link).
+//   Model      the fluid (density and velocity fields on a grid twice as
+//              tall as the terminal, for half blocks), the pointer, the
+//              palette, viscosity and the pause switch.
+//   update()   Tick injects dye and momentum where the pointer is dragging
+//              and steps the solver; mouse and keys change what's injected.
+//   view()     density through the palette into an Image, plus a status bar.
 //
-// Built only with -DMAYA_WITH_JAAL=ON.
-#include <maya/jaal/canvas.hpp>
-// maya — 2D Fluid / Smoke Simulation
+// The Tick is subscribed ONLY while something is moving (dye still visible,
+// or the button down): a still fluid costs no CPU at all, and subscribe()
+// is where that is said, not an early return inside the step.
 //
-// Real-time Navier-Stokes (Jos Stam "Stable Fluids") rendered with
-// half-block characters for double vertical resolution.
-//
-// Keys: q/Esc=quit  1-5=palette  space=pause  +/-=viscosity  r=reset
-// Mouse: drag to inject density + velocity
+// Mouse: drag to push dye.  Keys: 1-5 palette  +/- viscosity  space pause
+//                                 r reset  q quit
 
-#include <maya/internal.hpp>
+#include <maya/element/pixels.hpp>
+#include <maya/jaal/host.hpp>
+#include <maya/maya.hpp>
 
 #include <algorithm>
+#include <array>
+#include <chrono>
 #include <cmath>
-#include <cstdint>
-#include <cstring>
+#include <string>
+#include <utility>
+#include <variant>
 #include <vector>
 
 using namespace maya;
+using namespace maya::dsl;
+using namespace std::chrono_literals;
 
-// ── Constants ────────────────────────────────────────────────────────────────
+namespace {
 
-static constexpr float DT   = 0.1f;
-static constexpr int   ITER = 10;
+constexpr float kDt = 0.1f;
+constexpr int   kIter = 10;
+constexpr float kMaxDens = 5.f;
+constexpr float kVisible = kMaxDens / 63;        // below this every palette is black
 
-// ── Palette ──────────────────────────────────────────────────────────────────
+// ── palettes ─────────────────────────────────────────────────────────────────
 
-struct RGB { uint8_t r, g, b; };
+struct Palette { const char* name; std::array<Rgb, 5> stops; };
+constexpr std::array<Palette, 5> kPalettes = {{
+    {"FIRE",    {{{0, 0, 0}, {140, 20, 0}, {220, 100, 0}, {255, 220, 50}, {255, 255, 255}}}},
+    {"OCEAN",   {{{0, 0, 0}, {0, 20, 100}, {0, 80, 140}, {0, 200, 220}, {255, 255, 255}}}},
+    {"NEON",    {{{0, 0, 0}, {80, 0, 120}, {180, 0, 180}, {255, 80, 200}, {255, 255, 255}}}},
+    {"SMOKE",   {{{0, 0, 0}, {40, 40, 40}, {100, 100, 100}, {180, 180, 180}, {255, 255, 255}}}},
+    {"RAINBOW", {{{0, 0, 0}, {255, 0, 80}, {0, 200, 100}, {80, 120, 255}, {255, 255, 255}}}},
+}};
 
-struct Palette {
-    const char* name;
-    RGB stops[5];   // density 0..4 mapped to these colors
-};
-
-static constexpr Palette g_palettes[] = {
-    {"FIRE",    {{0,0,0}, {140,20,0}, {220,100,0}, {255,220,50}, {255,255,255}}},
-    {"OCEAN",   {{0,0,0}, {0,20,100}, {0,80,140},  {0,200,220},  {255,255,255}}},
-    {"NEON",    {{0,0,0}, {80,0,120}, {180,0,180},  {255,80,200}, {255,255,255}}},
-    {"SMOKE",   {{0,0,0}, {40,40,40}, {100,100,100},{180,180,180},{255,255,255}}},
-    {"RAINBOW", {{0,0,0}, {255,0,80}, {0,200,100},  {80,120,255}, {255,255,255}}},
-};
-
-// ── State ────────────────────────────────────────────────────────────────────
-
-static int g_N = 0;                 // grid width
-static int g_M = 0;                 // grid height (terminal rows * 2)
-static int g_palette = 0;
-static bool g_paused = false;
-static float g_visc = 0.0001f;
-static float g_diff = 0.0001f;
-
-static std::vector<float> g_dens, g_dens0;
-static std::vector<float> g_vx, g_vy, g_vx0, g_vy0;
-
-// Mouse state
-static bool g_mouse_down = false;
-static int  g_mouse_x = -1, g_mouse_y = -1;
-static int  g_prev_mx = -1, g_prev_my = -1;
-
-// Style cache: [fg_idx][bg_idx] for half-block rendering
-static constexpr int CSTEPS = 64;
-static uint16_t g_styles[CSTEPS][CSTEPS];
-static uint16_t g_bar_style;
-
-// ── Helpers ──────────────────────────────────────────────────────────────────
-
-static inline int IX(int x, int y) { return y * g_N + x; }
-
-static inline RGB lerp_rgb(RGB a, RGB b, float t) {
-    t = std::clamp(t, 0.f, 1.f);
-    return {
-        static_cast<uint8_t>(a.r + (b.r - a.r) * t),
-        static_cast<uint8_t>(a.g + (b.g - a.g) * t),
-        static_cast<uint8_t>(a.b + (b.b - a.b) * t),
-    };
-}
-
-static RGB density_to_color(float d) {
-    auto& pal = g_palettes[g_palette];
-    d = std::clamp(d, 0.f, 5.f);
-    float t = d / 5.f * 4.f;           // map [0,5] -> [0,4]
-    int seg = std::min(static_cast<int>(t), 3);
-    float frac = t - seg;
-    return lerp_rgb(pal.stops[seg], pal.stops[seg + 1], frac);
-}
-
-// ── Fluid solver (Jos Stam) ─────────────────────────────────────────────────
-
-static void set_bnd(int b, std::vector<float>& x) {
-    int N = g_N, M = g_M;
-    for (int i = 1; i < N - 1; ++i) {
-        x[IX(i, 0)]     = b == 2 ? -x[IX(i, 1)]     : x[IX(i, 1)];
-        x[IX(i, M - 1)] = b == 2 ? -x[IX(i, M - 2)] : x[IX(i, M - 2)];
-    }
-    for (int j = 1; j < M - 1; ++j) {
-        x[IX(0, j)]     = b == 1 ? -x[IX(1, j)]     : x[IX(1, j)];
-        x[IX(N - 1, j)] = b == 1 ? -x[IX(N - 2, j)] : x[IX(N - 2, j)];
-    }
-    x[IX(0, 0)]         = 0.5f * (x[IX(1, 0)]     + x[IX(0, 1)]);
-    x[IX(0, M - 1)]     = 0.5f * (x[IX(1, M - 1)] + x[IX(0, M - 2)]);
-    x[IX(N - 1, 0)]     = 0.5f * (x[IX(N - 2, 0)] + x[IX(N - 1, 1)]);
-    x[IX(N - 1, M - 1)] = 0.5f * (x[IX(N - 2, M - 1)] + x[IX(N - 1, M - 2)]);
-}
-
-// The two Gauss-Seidel sweeps below are the whole cost of this demo (the
-// profile: diffuse + project, nothing else). They read the grid size from
-// globals and write through std::vector&, so the compiler had to assume
-// every store might change g_N or alias another array and reload
-// everything each cell. Hoisting N/M into locals and taking __restrict
-// row pointers lets it keep the stencil in registers.
-static void diffuse(int b, std::vector<float>& x, std::vector<float>& x0, float diff) {
-    const int N = g_N, M = g_M;
-    const float a = DT * diff * (N - 2) * (M - 2);
-    const float inv_c = 1.f / (1.f + 4.f * a);
-    float* __restrict xp = x.data();
-    const float* __restrict x0p = x0.data();
-    for (int k = 0; k < ITER; ++k) {
-        for (int j = 1; j < M - 1; ++j) {
-            float* __restrict row = xp + j * N;
-            const float* __restrict up = row - N;
-            const float* __restrict dn = row + N;
-            const float* __restrict src = x0p + j * N;
-            for (int i = 1; i < N - 1; ++i)
-                row[i] = (src[i] + a * (row[i - 1] + row[i + 1] + up[i] + dn[i])) * inv_c;
+// 64 steps per palette: plenty for a smooth ramp, few enough colours that the
+// renderer's style cache stays hot.
+constexpr int kSteps = 64;
+using Lut = std::array<std::array<Rgb, kSteps>, kPalettes.size()>;
+const Lut kLut = [] {
+    Lut l{};
+    for (std::size_t p = 0; p < kPalettes.size(); ++p)
+        for (int i = 0; i < kSteps; ++i) {
+            const float t = static_cast<float>(i) / (kSteps - 1) * 4.f;
+            const int seg = std::min(static_cast<int>(t), 3);
+            const float f = t - static_cast<float>(seg);
+            const Rgb a = kPalettes[p].stops[static_cast<std::size_t>(seg)], b = kPalettes[p].stops[static_cast<std::size_t>(seg + 1)];
+            auto mix = [f](std::uint8_t x, std::uint8_t y) { return static_cast<std::uint8_t>(x + (y - x) * f); };
+            l[p][static_cast<std::size_t>(i)] = {mix(a.r, b.r), mix(a.g, b.g), mix(a.b, b.b)};
         }
-        set_bnd(b, x);
-    }
-}
+    return l;
+}();
 
-static void advect(int b, std::vector<float>& d, std::vector<float>& d0,
-                   std::vector<float>& vx, std::vector<float>& vy) {
-    float dt0x = DT * (g_N - 2);
-    float dt0y = DT * (g_M - 2);
-    for (int j = 1; j < g_M - 1; ++j) {
-        for (int i = 1; i < g_N - 1; ++i) {
-            float x = i - dt0x * vx[IX(i, j)];
-            float y = j - dt0y * vy[IX(i, j)];
-            x = std::clamp(x, 0.5f, g_N - 1.5f);
-            y = std::clamp(y, 0.5f, g_M - 1.5f);
-            int i0 = static_cast<int>(x), j0 = static_cast<int>(y);
-            int i1 = i0 + 1, j1 = j0 + 1;
-            float s1 = x - i0, s0 = 1.f - s1;
-            float t1 = y - j0, t0 = 1.f - t1;
-            d[IX(i, j)] = s0 * (t0 * d0[IX(i0, j0)] + t1 * d0[IX(i0, j1)])
-                        + s1 * (t0 * d0[IX(i1, j0)] + t1 * d0[IX(i1, j1)]);
+// ── the solver (Jos Stam, "Real-Time Fluid Dynamics for Games") ─────────────
+
+struct Fluid {
+    int n = 0, m = 0;                                      // width, height
+    std::vector<float> dens, dens0, vx, vy, vx0, vy0;
+
+    void resize(int w, int h) {
+        n = std::max(4, w); m = std::max(4, h);
+        const auto sz = static_cast<std::size_t>(n * m);
+        for (auto* f : {&dens, &dens0, &vx, &vy, &vx0, &vy0}) f->assign(sz, 0.f);
+    }
+    void clear() { resize(n, m); }
+
+    [[nodiscard]] int ix(int x, int y) const { return y * n + x; }
+    [[nodiscard]] bool interior(int x, int y) const { return x >= 1 && x < n - 1 && y >= 1 && y < m - 1; }
+    [[nodiscard]] bool visible() const {
+        return std::ranges::any_of(dens, [](float d) { return d >= kVisible; });
+    }
+
+    void set_bnd(int b, std::vector<float>& x) const {
+        for (int i = 1; i < n - 1; ++i) {
+            x[ix(i, 0)]     = b == 2 ? -x[ix(i, 1)]     : x[ix(i, 1)];
+            x[ix(i, m - 1)] = b == 2 ? -x[ix(i, m - 2)] : x[ix(i, m - 2)];
+        }
+        for (int j = 1; j < m - 1; ++j) {
+            x[ix(0, j)]     = b == 1 ? -x[ix(1, j)]     : x[ix(1, j)];
+            x[ix(n - 1, j)] = b == 1 ? -x[ix(n - 2, j)] : x[ix(n - 2, j)];
+        }
+        x[ix(0, 0)]         = 0.5f * (x[ix(1, 0)] + x[ix(0, 1)]);
+        x[ix(0, m - 1)]     = 0.5f * (x[ix(1, m - 1)] + x[ix(0, m - 2)]);
+        x[ix(n - 1, 0)]     = 0.5f * (x[ix(n - 2, 0)] + x[ix(n - 1, 1)]);
+        x[ix(n - 1, m - 1)] = 0.5f * (x[ix(n - 2, m - 1)] + x[ix(n - 1, m - 2)]);
+    }
+
+    // Gauss-Seidel relaxation of (x - a*laplacian(x)) = x0.
+    void relax(int b, std::vector<float>& x, const std::vector<float>& x0, float a, float inv_c) const {
+        for (int k = 0; k < kIter; ++k) {
+            for (int j = 1; j < m - 1; ++j) {
+                float* __restrict row = x.data() + j * n;
+                const float* __restrict up = row - n;
+                const float* __restrict dn = row + n;
+                const float* __restrict src = x0.data() + j * n;
+                for (int i = 1; i < n - 1; ++i)
+                    row[i] = (src[i] + a * (row[i - 1] + row[i + 1] + up[i] + dn[i])) * inv_c;
+            }
+            set_bnd(b, x);
         }
     }
-    set_bnd(b, d);
-}
 
-static void project(std::vector<float>& vx, std::vector<float>& vy,
-                    std::vector<float>& p, std::vector<float>& div) {
-    float hx = 1.f / (g_N - 2);
-    float hy = 1.f / (g_M - 2);
-    for (int j = 1; j < g_M - 1; ++j)
-        for (int i = 1; i < g_N - 1; ++i) {
-            div[IX(i, j)] = -0.5f * (
-                hx * (vx[IX(i + 1, j)] - vx[IX(i - 1, j)]) +
-                hy * (vy[IX(i, j + 1)] - vy[IX(i, j - 1)]));
-            p[IX(i, j)] = 0.f;
-        }
-    set_bnd(0, div);
-    set_bnd(0, p);
+    void diffuse(int b, std::vector<float>& x, const std::vector<float>& x0, float diff) const {
+        const float a = kDt * diff * static_cast<float>((n - 2) * (m - 2));
+        relax(b, x, x0, a, 1.f / (1.f + 4.f * a));
+    }
 
-    for (int k = 0; k < ITER; ++k) {
-        const int N = g_N, M = g_M;
-        float* __restrict pp = p.data();
-        const float* __restrict dv = div.data();
-        for (int j = 1; j < M - 1; ++j) {
-            float* __restrict row = pp + j * N;
-            const float* __restrict up = row - N;
-            const float* __restrict dn = row + N;
-            const float* __restrict d = dv + j * N;
-            for (int i = 1; i < N - 1; ++i)
-                row[i] = (d[i] + row[i - 1] + row[i + 1] + up[i] + dn[i]) * 0.25f;
-        }
+    void advect(int b, std::vector<float>& d, const std::vector<float>& d0,
+                const std::vector<float>& u, const std::vector<float>& v) const {
+        const float dtx = kDt * static_cast<float>(n - 2), dty = kDt * static_cast<float>(m - 2);
+        for (int j = 1; j < m - 1; ++j)
+            for (int i = 1; i < n - 1; ++i) {
+                const float x = std::clamp(static_cast<float>(i) - dtx * u[ix(i, j)], 0.5f, static_cast<float>(n) - 1.5f);
+                const float y = std::clamp(static_cast<float>(j) - dty * v[ix(i, j)], 0.5f, static_cast<float>(m) - 1.5f);
+                const int i0 = static_cast<int>(x), j0 = static_cast<int>(y);
+                const float s1 = x - static_cast<float>(i0), s0 = 1.f - s1;
+                const float t1 = y - static_cast<float>(j0), t0 = 1.f - t1;
+                d[ix(i, j)] = s0 * (t0 * d0[ix(i0, j0)] + t1 * d0[ix(i0, j0 + 1)])
+                            + s1 * (t0 * d0[ix(i0 + 1, j0)] + t1 * d0[ix(i0 + 1, j0 + 1)]);
+            }
+        set_bnd(b, d);
+    }
+
+    // Make the velocity field divergence-free (mass-conserving).
+    void project(std::vector<float>& u, std::vector<float>& v, std::vector<float>& p, std::vector<float>& div) const {
+        const float hx = 1.f / static_cast<float>(n - 2), hy = 1.f / static_cast<float>(m - 2);
+        for (int j = 1; j < m - 1; ++j)
+            for (int i = 1; i < n - 1; ++i) {
+                div[ix(i, j)] = -0.5f * (hx * (u[ix(i + 1, j)] - u[ix(i - 1, j)]) + hy * (v[ix(i, j + 1)] - v[ix(i, j - 1)]));
+                p[ix(i, j)] = 0.f;
+            }
+        set_bnd(0, div);
         set_bnd(0, p);
+        relax(0, p, div, 1.f, 0.25f);
+        for (int j = 1; j < m - 1; ++j)
+            for (int i = 1; i < n - 1; ++i) {
+                u[ix(i, j)] -= 0.5f * (p[ix(i + 1, j)] - p[ix(i - 1, j)]) * static_cast<float>(n - 2);
+                v[ix(i, j)] -= 0.5f * (p[ix(i, j + 1)] - p[ix(i, j - 1)]) * static_cast<float>(m - 2);
+            }
+        set_bnd(1, u);
+        set_bnd(2, v);
     }
 
-    for (int j = 1; j < g_M - 1; ++j)
-        for (int i = 1; i < g_N - 1; ++i) {
-            vx[IX(i, j)] -= 0.5f * (p[IX(i + 1, j)] - p[IX(i - 1, j)]) * (g_N - 2);
-            vy[IX(i, j)] -= 0.5f * (p[IX(i, j + 1)] - p[IX(i, j - 1)]) * (g_M - 2);
-        }
-    set_bnd(1, vx);
-    set_bnd(2, vy);
-}
-
-static void step() {
-    // Skip the solver when the field can't show anything: every cell's dye
-    // is below the first display step, so the paint loop (which TRUNCATES
-    // d/5 * (CSTEPS-1)) draws colour 0 everywhere. Velocity doesn't need
-    // its own test: advection only moves dye and diffusion only spreads
-    // it, and neither can raise a cell above the field's current maximum,
-    // so invisible dye stays invisible whatever the velocity is.
-    //
-    // Measured after a drag: dye decays to ~0.05 within a few seconds and
-    // then crawls (0.054 -> 0.040 over 8 s), while velocity takes ~10 s to
-    // die. The previous test (half a display step, AND velocity < 1e-3) kept
-    // the full solver running at 28% of a core for 10+ s on a screen that
-    // was already uniformly colour 0.
-    const float dens_visible = 5.f / (CSTEPS - 1);   // first non-zero colour
-    const auto below = [](const std::vector<float>& v, float eps) {
-        for (float f : v) if (f >= eps) return false;
-        return true;
-    };
-    if (below(g_dens, dens_visible)) {
-        // Settled: drop the remnants so a new drag starts from rest instead
-        // of stirring up motion the user can't see the cause of.
-        std::fill(g_dens.begin(), g_dens.end(), 0.f);
-        std::fill(g_vx.begin(), g_vx.end(), 0.f);
-        std::fill(g_vy.begin(), g_vy.end(), 0.f);
-        return;
+    void step(float visc, float diff) {
+        std::swap(vx, vx0); diffuse(1, vx, vx0, visc);
+        std::swap(vy, vy0); diffuse(2, vy, vy0, visc);
+        project(vx, vy, vx0, vy0);
+        std::swap(vx, vx0); std::swap(vy, vy0);
+        advect(1, vx, vx0, vx0, vy0);
+        advect(2, vy, vy0, vx0, vy0);
+        project(vx, vy, vx0, vy0);
+        std::swap(dens, dens0); diffuse(0, dens, dens0, diff);
+        std::swap(dens, dens0); advect(0, dens, dens0, vx, vy);
+        for (auto& d : dens) d = std::clamp(d, 0.f, kMaxDens);
     }
 
-    // Velocity step
-    std::swap(g_vx, g_vx0);
-    diffuse(1, g_vx, g_vx0, g_visc);
-    std::swap(g_vy, g_vy0);
-    diffuse(2, g_vy, g_vy0, g_visc);
-    project(g_vx, g_vy, g_vx0, g_vy0);
-
-    std::swap(g_vx, g_vx0);
-    std::swap(g_vy, g_vy0);
-    advect(1, g_vx, g_vx0, g_vx0, g_vy0);
-    advect(2, g_vy, g_vy0, g_vx0, g_vy0);
-    project(g_vx, g_vy, g_vx0, g_vy0);
-
-    // Density step
-    std::swap(g_dens, g_dens0);
-    diffuse(0, g_dens, g_dens0, g_diff);
-    std::swap(g_dens, g_dens0);
-    advect(0, g_dens, g_dens0, g_vx, g_vy);
-
-    // Clamp density
-    for (auto& d : g_dens) d = std::clamp(d, 0.f, 5.f);
-}
-
-// ── Add sources from mouse ──────────────────────────────────────────────────
-
-static void add_source() {
-    if (!g_mouse_down || g_mouse_x < 0) return;
-    int cx = g_mouse_x;
-    int cy = g_mouse_y;
-    if (cx < 1 || cx >= g_N - 1 || cy < 1 || cy >= g_M - 1) return;
-
-    // Density burst
-    int radius = 3;
-    for (int dy = -radius; dy <= radius; ++dy)
-        for (int dx = -radius; dx <= radius; ++dx) {
-            int nx = cx + dx, ny = cy + dy;
-            if (nx < 1 || nx >= g_N - 1 || ny < 1 || ny >= g_M - 1) continue;
-            float dist = std::sqrt(static_cast<float>(dx * dx + dy * dy));
-            if (dist > radius) continue;
-            float strength = (1.f - dist / radius) * 2.f;
-            g_dens[IX(nx, ny)] += strength;
-        }
-
-    // Velocity from drag direction
-    if (g_prev_mx >= 0) {
-        float dvx = static_cast<float>(cx - g_prev_mx) * 5.f;
-        float dvy = static_cast<float>(cy - g_prev_my) * 5.f;
-        for (int dy = -radius; dy <= radius; ++dy)
-            for (int dx = -radius; dx <= radius; ++dx) {
-                int nx = cx + dx, ny = cy + dy;
-                if (nx < 1 || nx >= g_N - 1 || ny < 1 || ny >= g_M - 1) continue;
-                g_vx[IX(nx, ny)] += dvx;
-                g_vy[IX(nx, ny)] += dvy;
+    // A disc of dye at (cx, cy), and the drag (dx, dy) as momentum.
+    void inject(int cx, int cy, float dx, float dy) {
+        constexpr int r = 3;
+        for (int oy = -r; oy <= r; ++oy)
+            for (int ox = -r; ox <= r; ++ox) {
+                const int x = cx + ox, y = cy + oy;
+                if (!interior(x, y)) continue;
+                const float dist = std::sqrt(static_cast<float>(ox * ox + oy * oy));
+                if (dist <= r) dens[ix(x, y)] += (1.f - dist / r) * 2.f;
+                vx[ix(x, y)] += dx * 5.f;
+                vy[ix(x, y)] += dy * 5.f;
             }
     }
-    g_prev_mx = cx;
-    g_prev_my = cy;
-}
+};
 
-// ── Resize / reset ──────────────────────────────────────────────────────────
+// ── model ────────────────────────────────────────────────────────────────────
 
-static void resize_grid(int W, int H) {
-    g_N = std::max(4, W);
-    g_M = std::max(4, H * 2);       // double vertical res for half-blocks
-    int sz = g_N * g_M;
-    g_dens.assign(sz, 0.f);  g_dens0.assign(sz, 0.f);
-    g_vx.assign(sz, 0.f);    g_vy.assign(sz, 0.f);
-    g_vx0.assign(sz, 0.f);   g_vy0.assign(sz, 0.f);
-}
+struct Model {
+    Fluid fluid;
+    bool down = false;              // the button is held
+    int px = -1, py = -1;           // the pointer, in grid pixels
+    int lx = -1, ly = -1;           // where it was at the last Tick (for the drag)
+    bool moving = false;            // dye still visible: keep ticking
+    bool paused = false;
+    int palette = 0;
+    float visc = 0.0001f;
+};
 
-// ── Style interning ─────────────────────────────────────────────────────────
+// ── messages ─────────────────────────────────────────────────────────────────
 
-static void rebuild_styles(StylePool& pool) {
-    // Build NxN palette for half-block rendering (fg=top, bg=bottom)
-    for (int fi = 0; fi < CSTEPS; ++fi) {
-        float fd = static_cast<float>(fi) / (CSTEPS - 1) * 5.f;
-        RGB fc = density_to_color(fd);
-        for (int bi = 0; bi < CSTEPS; ++bi) {
-            float bd = static_cast<float>(bi) / (CSTEPS - 1) * 5.f;
-            RGB bc = density_to_color(bd);
-            g_styles[fi][bi] = pool.intern(
-                Style{}.with_fg(Color::rgb(fc.r, fc.g, fc.b))
-                       .with_bg(Color::rgb(bc.r, bc.g, bc.b)));
+struct Tick {};
+struct Resize     { int cols, rows; };
+struct Press      { int x, y; };
+struct Drag       { int x, y; };
+struct Release    {};
+struct SetPalette { int p; };
+struct Viscosity  { float by; };
+struct Pause      {};
+struct Reset      {};
+struct Quit       {};
+using Msg = std::variant<Tick, Resize, Press, Drag, Release, SetPalette, Viscosity, Pause, Reset, Quit>;
+
+// ── program ──────────────────────────────────────────────────────────────────
+
+struct FluidSim {
+    using Model = ::Model;
+    using Msg   = ::Msg;
+    using Cmd   = jaal::Cmd<Msg>;
+    using Sub   = jaal::Sub<Msg, on_key, on_mouse, on_resize>;
+
+    static Cmd update(Model& m, Resize r)     { m.fluid.resize(r.cols, (r.rows - 1) * 2); m.moving = false; return {}; }
+    static Cmd update(Model& m, Press p)      { m.down = true; m.px = m.lx = p.x; m.py = m.ly = p.y; return {}; }
+    static Cmd update(Model& m, Drag d)       { if (m.down) { m.px = d.x; m.py = d.y; } return {}; }
+    static Cmd update(Model& m, Release)      { m.down = false; return {}; }
+    static Cmd update(Model& m, SetPalette s) { m.palette = s.p; return {}; }
+    static Cmd update(Model& m, Viscosity v)  { m.visc = std::clamp(m.visc * v.by, 0.00001f, 0.01f); return {}; }
+    static Cmd update(Model& m, Pause)        { m.paused = !m.paused; return {}; }
+    static Cmd update(Model& m, Reset)        { m.fluid.clear(); m.moving = false; return {}; }
+    static Cmd update(Model&, Quit)           { return Cmd::quit(0); }
+
+    static Cmd update(Model& m, Tick) {
+        if (m.down) {
+            m.fluid.inject(m.px, m.py, static_cast<float>(m.px - m.lx), static_cast<float>(m.py - m.ly));
+            m.lx = m.px; m.ly = m.py;
         }
+        m.fluid.step(m.visc, 0.0001f);
+        m.moving = m.fluid.visible();
+        if (!m.moving) m.fluid.clear();      // settle to exact zero: no invisible drift
+        return {};
     }
-    g_bar_style = pool.intern(
-        Style{}.with_fg(Color::rgb(180, 180, 180))
-               .with_bg(Color::rgb(30, 30, 30)));
-}
 
-// ── Main ─────────────────────────────────────────────────────────────────────
+    // ── view ────────────────────────────────────────────────────────────────
 
-int main() {
-    int prev_pal = -1;
-
-    auto on_resize = [&](StylePool& pool, int W, int H) {
-        resize_grid(W, H - 1);          // reserve 1 row for status bar
-        prev_pal = g_palette;
-        rebuild_styles(pool);
-    };
-
-    auto on_event = [&](const Event& ev) -> bool {
-        if (key(ev, 'q') || key(ev, SpecialKey::Escape)) return false;
-        on(ev, ' ', [] { g_paused = !g_paused; });
-        on(ev, 'r', [&] { resize_grid(g_N, (g_M / 2)); });
-        on(ev, '+', [] { g_visc = std::min(g_visc * 2.f, 0.01f); });
-        on(ev, '=', [] { g_visc = std::min(g_visc * 2.f, 0.01f); });
-        on(ev, '-', [] { g_visc = std::max(g_visc * 0.5f, 0.00001f); });
-        on(ev, '1', [] { g_palette = 0; });
-        on(ev, '2', [] { g_palette = 1; });
-        on(ev, '3', [] { g_palette = 2; });
-        on(ev, '4', [] { g_palette = 3; });
-        on(ev, '5', [] { g_palette = 4; });
-
-        // Mouse handling
-        if (mouse_clicked(ev)) {
-            g_mouse_down = true;
-            if (auto p = mouse_pos(ev)) {
-                g_mouse_x = p->col;
-                g_mouse_y = p->row * 2;     // map to fluid grid (2x vertical)
-                g_prev_mx = g_mouse_x;
-                g_prev_my = g_mouse_y;
+    static Image render(const Model& m) {
+        const Fluid& f = m.fluid;
+        const auto& lut = kLut[static_cast<std::size_t>(m.palette)];
+        Image img(f.n, f.m);
+        for (int y = 0; y < f.m; ++y)
+            for (int x = 0; x < f.n; ++x) {
+                const float t = std::clamp(f.dens[static_cast<std::size_t>(f.ix(x, y))] / kMaxDens, 0.f, 1.f);
+                img(x, y) = lut[static_cast<std::size_t>(t * (kSteps - 1))];
             }
-        }
-        if (mouse_released(ev)) {
-            g_mouse_down = false;
-            g_prev_mx = g_prev_my = -1;
-        }
-        if (mouse_moved(ev) && g_mouse_down) {
-            if (auto p = mouse_pos(ev)) {
-                g_mouse_x = p->col;
-                g_mouse_y = p->row * 2;
+        return img;
+    }
+
+    static Element status_bar(const Model& m) {
+        const auto fg = Color::rgb(180, 180, 180);
+        return h(text(" FLUID │ drag=add │ [1-5] palette │ [r] reset │ [+/-] visc │ [spc] pause │ [q] quit") | fgc(fg),
+                 text(m.paused ? "  [paused]" : "") | fgc(Color::rgb(255, 200, 80)), spacer(),
+                 text(std::string(kPalettes[static_cast<std::size_t>(m.palette)].name) + " ") | fgc(fg) | Bold)
+               | bgc(Color::rgb(30, 30, 30));
+    }
+
+    static Element view(const Model& m) {
+        if (m.fluid.dens.empty()) return text("");
+        return v(pixels(render(m)), status_bar(m));
+    }
+
+    static Sub subscribe(const Model& m) {
+        auto mouse = Sub::on(on_mouse{}, [](const MouseEvent& e) -> std::optional<Msg> {
+            if (e.button != MouseButton::Left && e.kind != MouseEventKind::Move) return std::nullopt;
+            const int x = e.x.value - 1, y = (e.y.value - 1) * 2;     // 1-based cells -> grid pixels
+            switch (e.kind) {
+                case MouseEventKind::Press:   return Press{x, y};
+                case MouseEventKind::Move:    return Drag{x, y};
+                case MouseEventKind::Release: return Release{};
             }
-        }
-        return true;
-    };
+            return std::nullopt;
+        });
+        auto rest = Sub::batch(
+            std::move(mouse),
+            Sub::on(on_resize{}, [](const ResizeEvent& r) -> std::optional<Msg> {
+                return Resize{r.width.value, r.height.value};
+            }),
+            jaal_key_map<Sub>({
+                {'1', SetPalette{0}}, {'2', SetPalette{1}}, {'3', SetPalette{2}},
+                {'4', SetPalette{3}}, {'5', SetPalette{4}},
+                {'+', Viscosity{2.f}}, {'=', Viscosity{2.f}}, {'-', Viscosity{0.5f}},
+                {' ', Pause{}}, {'r', Reset{}}, {'q', Quit{}}, {SpecialKey::Escape, Quit{}},
+            }));
+        if (m.paused || !(m.down || m.moving)) return rest;      // nothing moving: no clock
+        return Sub::batch(Sub::every(33ms, Tick{}), std::move(rest));
+    }
+    static bool subs_key(const Model& m) { return !m.paused && (m.down || m.moving); }
+};
 
-    auto on_paint = [&](Canvas& canvas, int W, int H) {
-        // Palette changed — need to re-intern styles
-        if (g_palette != prev_pal) {
-            // We can't re-intern here; styles will update on next resize.
-            // Instead, just recompute colors live (the style cache is from
-            // the current palette at init time). Force a pseudo-resize by
-            // marking prev_pal; the on_resize callback handles it.
-        }
+static_assert(JaalView<FluidSim>);
 
-        if (!g_paused) {
-            add_source();
-            step();
-        }
+}  // namespace
 
-        int bar_y = H - 1;
-        int fluid_h = H - 1;          // terminal rows for the fluid display
-
-        // Paint fluid with half-blocks: each terminal row = 2 fluid rows
-        for (int ty = 0; ty < fluid_h; ++ty) {
-            int fy_top = ty * 2;
-            int fy_bot = ty * 2 + 1;
-            for (int x = 0; x < W && x < g_N; ++x) {
-                float d_top = (fy_top < g_M) ? g_dens[IX(x, fy_top)] : 0.f;
-                float d_bot = (fy_bot < g_M) ? g_dens[IX(x, fy_bot)] : 0.f;
-                int fi = static_cast<int>(std::clamp(d_top / 5.f, 0.f, 1.f) * (CSTEPS - 1));
-                int bi = static_cast<int>(std::clamp(d_bot / 5.f, 0.f, 1.f) * (CSTEPS - 1));
-                canvas.set(x, ty, U'\u2580', g_styles[fi][bi]);  // ▀
-            }
-        }
-
-        // Status bar
-        for (int x = 0; x < W; ++x)
-            canvas.set(x, bar_y, U' ', g_bar_style);
-
-        const char* status = " FLUID \xe2\x94\x82 drag=add \xe2\x94\x82 [1-5] palette \xe2\x94\x82 [r] reset \xe2\x94\x82 [+/-] visc \xe2\x94\x82 [spc] pause \xe2\x94\x82 [q] quit";
-        canvas.write_text(0, bar_y, status, g_bar_style);
-
-        // Show palette name on the right
-        auto& pal = g_palettes[g_palette];
-        int name_len = static_cast<int>(std::strlen(pal.name));
-        if (W > name_len + 2)
-            canvas.write_text(W - name_len - 1, bar_y, pal.name, g_bar_style);
-    };
-
-    // We need to re-intern styles when palette changes. We'll use a wrapper
-    // that tracks palette changes via the resize callback mechanism.
-    int last_W = 0, last_H = 0;
-    StylePool* g_pool_ptr = nullptr;
-
-    auto resize_wrapper = [&](StylePool& pool, int W, int H) {
-        last_W = W;
-        last_H = H;
-        g_pool_ptr = &pool;
-        on_resize(pool, W, H);
-    };
-
-    auto paint_wrapper = [&](Canvas& canvas, int W, int H) {
-        // Re-intern styles if palette changed
-        if (g_palette != prev_pal && g_pool_ptr) {
-            prev_pal = g_palette;
-            rebuild_styles(*g_pool_ptr);
-        }
-        on_paint(canvas, W, H);
-    };
-
-    return run_canvas(
-        CanvasConfig{.fps = 30, .mouse = true, .mode = Mode::Fullscreen, .title = "fluid"},
-        resize_wrapper,
-        on_event,
-        paint_wrapper
-    );
-}
+int main() { return run_jaal<FluidSim>({.title = "fluid", .mouse = true}); }

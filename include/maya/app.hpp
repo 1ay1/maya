@@ -79,6 +79,44 @@ template <> inline constexpr bool jaal::frozen_opt_in<maya::ScrollbackDebt>   = 
 
 namespace maya {
 
+// Optional hooks a program may define, detected here.
+namespace detail {
+// Optional Program::visual_hash detector. When a Program type defines
+// `static std::uint64_t visual_hash(const Model&)`, the host
+// hashes the model just before calling view() and skips the view()
+// + render() pair when the hash is unchanged since the last render.
+// Cuts the wasted work for Tick-driven wakeups whose deltas don't
+// affect anything visible (smoothing pacer drained 0 bytes, spinner
+// frame unchanged because the bucket didn't roll over, status
+// toast already cleared).
+template <typename P, typename = void>
+struct HasVisualHash : std::false_type {};
+template <typename P>
+struct HasVisualHash<P, std::void_t<decltype(
+    P::visual_hash(std::declval<const typename P::Model&>()))>>
+    : std::true_type {};
+
+// Optional Program::needs_warmup detector. When a Program type defines
+// `static bool needs_warmup(const Model&)` AND it returns true for the
+// current model, the host performs an off-wire warmup_render of
+// the same view BEFORE the user-visible render. The warmup populates
+// maya's hash-keyed component cache; the user-visible render then
+// takes the cell-blit fast path. Burns one extra render() worth of
+// CPU off-frame to convert a tens-to-hundreds-of-ms cold paint into a
+// sub-millisecond warm paint — the right trade after a model swap
+// that loads a large frozen scrollback (agentty thread resume).
+//
+// The Program is responsible for clearing the flag on the next reducer
+// step so warmup fires exactly once per swap; leaving it stuck on
+// would double every frame's render cost.
+template <typename P, typename = void>
+struct HasNeedsWarmup : std::false_type {};
+template <typename P>
+struct HasNeedsWarmup<P, std::void_t<decltype(
+    P::needs_warmup(std::declval<const typename P::Model&>()))>>
+    : std::true_type {};
+} // namespace detail
+
 // ── what the host reports, as subscription kinds ───────────────────────────
 // One router per event kind, so a program subscribes to exactly what it
 // uses and a host that doesn't produce, say, mouse events would reject a

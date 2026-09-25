@@ -202,6 +202,12 @@ set(MAYA_LIB_SOURCES
     src/layout/yoga.cpp
     src/render/canvas.cpp
     src/render/renderer.cpp
+    src/render/layout_build.cpp
+    src/render/paint_border.cpp
+    src/render/paint_box.cpp
+    src/render/paint_text.cpp
+    src/render/paint_list.cpp
+    src/render/paint_component.cpp
     src/render/diff.cpp
     src/render/serialize.cpp
     src/render/grid_emit.cpp

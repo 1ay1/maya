@@ -91,14 +91,14 @@ They are header-first, allocation-light, and fully tested
 
 ## What maya has today
 
-- **Elm architecture**: Program concept with Model/Msg/init/update/view/subscribe
-- **Effects as data**: `Cmd<Msg>` (quit, batch, after, task, set_title, suspend, commit_scrollback) and `Sub<Msg>` (on_key, on_mouse, on_resize, on_paste, every, on_animation_frame)
-- **`run<P>(RunConfig)`**: Single entry point for all interactive apps (fullscreen and inline)
+- **Elm architecture, via jaal**: a program is a jaal program (Model/Msg/init/update/view/subscribe) whose `view()` returns an `Element`
+- **Effects as data**: `jaal::Cmd<Msg, ...>` (quit, batch, after, plus the terminal effects a program lists) and `jaal::Sub<Msg, ...>` (on_key, on_mouse, on_resize, on_paste, on_focus, every, stream)
+- **`run<P>(Options)`**: the single entry point for all interactive apps (fullscreen and inline)
 - 90+ widgets across a dozen categories (Input, Data Display, Navigation, Display, Overlay, Visualization, Agent UI, Session/Diagnostics, Status Bar, Tool Widgets)
 - Compile-time DSL with both compile-time and runtime pipes
 - Runtime pipe system for dynamic values
 - Flexbox layout engine
-- Canvas API with double-buffered SIMD diff at 60fps
+- `pixels()` / `glyphs()` elements over a double-buffered SIMD frame diff at 60fps
 - Signal/slot reactivity system (SolidJS-inspired)
 - Interactive widgets with FocusNode and keyboard handling
 - Full markdown renderer with streaming support

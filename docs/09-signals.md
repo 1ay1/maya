@@ -166,12 +166,12 @@ fx.active();   // false
 - Logging state changes
 - Triggering side-effects (network calls, file writes)
 - Synchronizing external state with signal values
-- Calling `maya::quit()` when a condition is met
+- Flagging a condition for code outside the signal graph
 
 ```cpp
-auto quit_effect = effect([&] {
+auto alarm_effect = effect([&] {
     if (error_count.get() > 10) {
-        maya::quit();
+        std::println(stderr, "too many errors: {}", error_count.get());
     }
 });
 ```
@@ -229,41 +229,28 @@ Batches nest correctly — only the outermost batch triggers notifications:
 
 ## Signals in maya Applications
 
-Signals are most commonly used in `run()`, `live()`, and `canvas_run()` for
-local reactive state. In Program apps (`run<P>()`), the Model is the primary
-state — signals can still be useful for derived/cached computations.
+In a maya program (`run<P>()`) the Model is the state: `update()` changes it
+and `view()` reads it. Signals are useful for derived/cached computations,
+and for reactive state outside a program (tests, one-shot `print()` output,
+library code).
 
-### Pattern: Signal-Driven State (run/live/canvas_run)
+### Pattern: Signal-Driven View Fragment
 
-Simple `run()` pairs naturally with signals — closures capture signal refs
-directly and `dyn()` ensures only the reactive parts re-render:
-
-```cpp
-Signal<int> count{0};
-run({.fps = 30},
-    [&](const Event& ev) {
-        on(ev, '+', [&] { count.update([](int& n) { ++n; }); });
-        return !key(ev, 'q');
-    },
-    [&] {
-        return (v(
-            dyn([&] { return text(count.get()) | Bold; }),
-            t<"[+] count  [q] quit"> | Dim
-        ) | pad<1>).build();
-    }
-);
-```
+`dyn()` reads signals when the element is rendered, so a view fragment can
+follow signal values directly:
 
 ```cpp
 Signal<int>         count{0};
 Signal<std::string> message{"Ready"};
 
-live({.fps = 30}, [&] {
+Element status() {
     return (v(
         dyn([&] { return text(message.get()); }),
         dyn([&] { return text(count.get()) | Bold; })
     ) | pad<1>).build();
-});
+}
+
+print(status());
 ```
 
 ### Pattern: Program with Plain Model (preferred)
@@ -276,10 +263,13 @@ struct MyApp {
     struct Inc {};
     using Msg = std::variant<Inc>;
 
-    static auto update(Model m, Msg) -> std::pair<Model, Cmd<Msg>> {
+    using Cmd = jaal::Cmd<Msg>;
+    using Sub = jaal::Sub<Msg, on_key>;
+
+    static Cmd update(Model& m, Inc) {
         m.count++;
         m.message = "Count: " + std::to_string(m.count);
-        return {m, {}};
+        return {};
     }
     static Element view(const Model& m) {
         return v(text(m.message), text(m.count) | Bold) | pad<1>;

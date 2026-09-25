@@ -1,325 +1,244 @@
-# Canvas API
+# Pixels and glyphs
 
-The Canvas API is maya's low-level rendering surface. While most applications
-use the DSL and element tree (`run()`, `print()`), the Canvas API gives you
-direct cell-level control for games, animations, particle systems, and complex
-visualizations.
+Games, fractals, fire, fluids, ray tracers and digital rain are ordinary
+maya programs. There is no separate canvas loop and no paint callback: the
+model holds the state, `update()` advances it on a `Tick`, and `view()`
+returns an element built from a picture. Two elements cover every case:
 
-Most applications use `run()` or `run<P>()` with the DSL and element tree.
-`canvas_run()` is the low-level escape hatch for apps that need direct
-cell-level control — games, particle systems, complex visualizations. See
-[Rendering Modes](07-rendering-modes.md) for how to choose.
+- `pixels(img)` draws an `Image` (a w × h RGB buffer), two pixels per cell.
+- `glyphs(grid)` draws a `Glyphs` grid of coloured characters.
 
-## Canvas Basics
+Both live in `<maya/element/pixels.hpp>`. They compose like any other
+element: put a status bar under them with `v(...)`, a border around them,
+or a sparse `Glyphs` over an image in a `zstack`.
 
-A `Canvas` is a 2D grid of `Cell` values. Each cell holds:
+> **What changed.** `canvas_run`, `CanvasConfig` and the
+> `(StylePool&, int W, int H)` / `(Canvas&, int W, int H)` callbacks are
+> deleted for applications. Pre-interning styles, keeping style ids in
+> globals and re-interning them on resize are all gone: `pixels()` and
+> `glyphs()` do the style bookkeeping for you.
+
+## Image
 
 ```cpp
-struct Cell {
-    char32_t character    = U' ';   // Unicode codepoint
-    uint16_t style_id     = 0;      // Index into StylePool
-    uint16_t hyperlink_id = 0;      // (reserved)
-    uint8_t  width        = 0;      // 0 = normal, 1 = wide first half,
-                                    //             2 = wide second half
+struct Rgb { std::uint8_t r = 0, g = 0, b = 0; };   // 24-bit colour
+
+Image img(w, h);              // w × h pixels, row-major, black
+Image img(w, h, Rgb{0,0,40}); // ...filled with a colour
+img(x, y) = Rgb{255, 128, 0}; // read / write a pixel
+img.width(); img.height(); img.empty();
+img.fill(Rgb{});              // clear
+img.data();                   // std::vector<Rgb>&, row-major
+```
+
+`Image` is a plain value type: copy it, keep it in a Model, compare it with
+`==`.
+
+A terminal cell is two pixels tall: `pixels()` draws each cell as the upper
+half block `▀` with the foreground set to the top pixel and the background to
+the bottom pixel. So a screen of `cols × rows` cells is `cols × 2·rows`
+pixels:
+
+```cpp
+auto [pw, ph] = Image::for_cells(cols, rows);   // {cols, rows * 2}
+```
+
+### fill_rows: per-pixel shaders on every core
+
+When the picture is a pure function of the model (a fractal, a ray tracer,
+a plasma), compute it with `fill_rows`:
+
+```cpp
+Image img(m.w, m.h);
+img.fill_rows([&](int x, int y) -> Rgb { return shade(m, x, y); });
+```
+
+Rows are spread over the machine's cores and *interleaved* (thread `t`
+takes rows `t, t+n, …`), because cost varies by region and contiguous bands
+would leave most threads idle behind the slowest. The function must only
+read shared state. Small images (under 4096 pixels) run on one thread.
+
+## pixels()
+
+```cpp
+pixels(Image img)                        // copies the image into the element
+pixels(std::shared_ptr<const Image> img) // shares it: building the view copies a pointer
+```
+
+The element fills the space layout gives it. The image is sampled to that
+size (nearest neighbour), so a model can either keep a fixed-resolution
+buffer and let it stretch, or size itself to the screen by handling a resize
+message (exact size = no sampling). Either way the view stays a pure function
+of the model.
+
+Cost: one style lookup per cell through a small direct-mapped cache keyed on
+the packed (top, bottom) colour pair, and the frame diff sends only the cells
+that changed.
+
+### Tip: quantise colours for the style cache
+
+Every distinct (top, bottom) pair becomes an interned style. A smooth
+gradient or a tone-mapped ray tracer can produce millions of distinct pairs,
+which thrashes the cache and the style pool. Dropping the low 3 bits of each
+channel (5 bits per channel) is visually indistinguishable and keeps the
+working set small:
+
+```cpp
+auto q = [](float f) {   // [0,1] -> 0..255, 5-bit
+    return static_cast<std::uint8_t>(static_cast<int>(std::clamp(f, 0.f, 1.f) * 255.f) & 0xF8);
 };
+return Rgb{q(r), q(g), q(b)};
 ```
 
-Cells are packed into 64 bits for efficient SIMD comparison during frame
-diffing.
+`raymarch.cpp` and `space3d.cpp` do exactly this. Palette-driven images
+(fire, life, a 256-entry lookup table) don't need it: they already use few
+colours.
 
-### Writing Cells
+## Glyphs and glyphs()
+
+`Glyphs` is the text twin of `Image`: a `cols × rows` grid of coloured
+characters, for character art such as digital rain, a starfield of `.`, `*`
+and `+`, or a spectrum of block glyphs.
 
 ```cpp
-// Set a single cell
-canvas.set(x, y, U'*', style_id);
-canvas.set(x, y, U'█', style_id);
-canvas.set(x, y, U'╭', border_style_id);
+struct Glyph {
+    char32_t ch   = U' ';
+    Rgb      fg   {200, 200, 200};
+    Rgb      bg   {0, 0, 0};
+    bool     bold = false;
+};
 
-// Write text (ASCII string → sequence of cells)
-canvas.write_text(x, y, "Hello", style_id);
-canvas.write_text(x, y, std::string_view{"Status"}, style_id);
-
-// Fill a region
-canvas.fill(Rect{pos, size}, U' ', bg_style_id);
-
-// Clear the entire canvas
-canvas.clear();
+Glyphs g(cols, rows);                        // filled with Glyph{}
+Glyphs g(cols, rows, Glyph{U' ', {}, {0, 8, 0}});
+g(x, y) = Glyph{U'ｱ', Rgb{120, 255, 140}};
+if (g.in(x, y)) { /* bounds check */ }
+g.text(2, 0, U"SCORE 120", Rgb{255, 255, 0}, Rgb{}, /*bold=*/true);  // clipped
 ```
 
-### Reading Cells
+`glyphs(std::move(g))` is the element. The grid is drawn from the top left
+of its slot and is not scaled, so size it to the slot in `update()` from a
+resize message, like an Image. Cells with `ch == 0` are left untouched, so a
+sparse grid can sit on top of something else in a `zstack`.
+
+## A complete program
+
+A plasma that fills the screen, animated at ~60 Hz, with a status bar and a
+pause key. The model sizes itself from `on_resize`; `view()` builds the
+image; `subscribe()` stops the timer while paused, so a still screen costs
+nothing.
 
 ```cpp
-Cell c = canvas.get(x, y);
-if (c.character == U'*') { ... }
-if (c.style_id == my_highlight) { ... }
-```
+#include <maya/element/pixels.hpp>
+#include <maya/app.hpp>
 
-### Canvas Dimensions
+#include <algorithm>
+#include <chrono>
+#include <cmath>
+#include <cstdint>
+#include <optional>
+#include <string>
+#include <variant>
 
-```cpp
-int w = canvas.width();
-int h = canvas.height();
-```
+using namespace maya;
+using namespace maya::dsl;
+using namespace std::chrono_literals;
 
-## StylePool — Style Interning
-
-Every unique `Style` gets a compact `uint16_t` ID via the `StylePool`. This
-keeps cells at 8 bytes and enables fast SIMD comparison.
-
-### Interning Styles
-
-```cpp
-uint16_t id = pool.intern(Style{}.with_bold().with_fg(Color::green()));
-```
-
-If the style was already interned, the existing ID is returned. The pool uses
-open-addressing hashing for O(1) average lookup.
-
-### Looking Up Styles
-
-```cpp
-const Style& s = pool.get(id);
-```
-
-### Pool Lifecycle
-
-In `canvas_run()`, the pool is **cleared and rebuilt on every resize**. Your
-`on_resize` callback must re-intern all styles:
-
-```cpp
-[&](StylePool& pool, int W, int H) {
-    // Pool was just cleared — re-intern everything
-    s_bold  = pool.intern(Style{}.with_bold().with_fg(Color::white()));
-    s_dim   = pool.intern(Style{}.with_dim().with_fg(Color::gray()));
-    s_bar   = pool.intern(Style{}.with_fg(Color::rgb(80, 200, 255)));
-
-    // Pre-intern gradient palettes
-    for (int i = 0; i < kGradientSteps; ++i) {
-        float t = float(i) / float(kGradientSteps - 1);
-        auto c = lerp_color(color_a, color_b, t);
-        gradient[i] = pool.intern(Style{}.with_fg(c));
-    }
-}
-```
-
-### Pre-Interning for Performance
-
-Intern all styles upfront in `on_resize`. **Never intern inside `on_paint`** —
-the pool would grow unboundedly and the hash lookups add up.
-
-For complex themes with many color combinations, pre-intern all needed combos:
-
-```cpp
-// Pre-intern NxN heatmap palette (fg=top pixel, bg=bottom pixel)
-for (int fi = 0; fi < kHeat; ++fi) {
-    for (int bi = 0; bi < kHeat; ++bi) {
-        heat_styles[fi][bi] = pool.intern(
-            Style{}.with_fg(heat_color(fi))
-                   .with_bg(heat_color(bi))
-        );
-    }
-}
-```
-
-## Clip Regions
-
-The canvas supports a clip rectangle stack for implementing `overflow: hidden`:
-
-```cpp
-canvas.push_clip(Rect{...});
-// All set/write_text calls are clipped to this rectangle
-canvas.set(x, y, ch, sid);  // Only written if (x,y) is inside clip rect
-canvas.pop_clip();
-```
-
-You typically don't use this directly — the renderer handles it for
-`BoxElement` nodes with `Overflow::Hidden`.
-
-## Unicode and Wide Characters
-
-### Standard Characters
-
-```cpp
-canvas.set(x, y, U'A', sid);     // 1 cell wide
-canvas.set(x, y, U'α', sid);     // 1 cell wide
-canvas.set(x, y, U'→', sid);     // 1 cell wide
-```
-
-### Box-Drawing Characters
-
-```cpp
-canvas.set(x, y, U'┌', sid);     // Top-left corner
-canvas.set(x, y, U'─', sid);     // Horizontal line
-canvas.set(x, y, U'│', sid);     // Vertical line
-canvas.set(x, y, U'╭', sid);     // Rounded corner
-```
-
-### Block Elements (for bars and gauges)
-
-```cpp
-// Full blocks
-canvas.set(x, y, U'█', sid);     // Full block
-canvas.set(x, y, U'▓', sid);     // Dark shade
-canvas.set(x, y, U'▒', sid);     // Medium shade
-canvas.set(x, y, U'░', sid);     // Light shade
-
-// Partial blocks (vertical)
-canvas.set(x, y, U'▁', sid);     // Lower 1/8
-canvas.set(x, y, U'▂', sid);     // Lower 2/8
-// ... through U'▇' (7/8) and U'█' (full)
-
-// Half blocks (for 2x vertical resolution)
-canvas.set(x, y, U'▀', sid);     // Upper half (fg=top, bg=bottom)
-canvas.set(x, y, U'▄', sid);     // Lower half
-```
-
-### Braille Characters (for sub-cell resolution)
-
-Braille characters (U+2800–U+28FF) encode 2x4 pixel grids, giving 2x horizontal
-and 4x vertical sub-cell resolution:
-
-```cpp
-// Each braille char has 8 dots (2 cols × 4 rows)
-// Dot positions map to bits:
-//   col 0 (left)   col 1 (right)
-//   row 0: bit 0   bit 4
-//   row 1: bit 1   bit 5
-//   row 2: bit 2   bit 6
-//   row 3: bit 3   bit 7
-
-uint8_t dots = 0;
-dots |= 0x01;  // Top-left dot
-dots |= 0x80;  // Bottom-right dot
-canvas.set(x, y, static_cast<char32_t>(0x2800 + dots), sid);
-```
-
-This technique is used in `viz.cpp` for area charts with sub-cell precision.
-
-## Half-Block Heatmaps
-
-Use `▀` (upper half block) with fg=top color and bg=bottom color to get 2x
-vertical resolution in color heatmaps:
-
-```cpp
-// Each terminal row represents TWO pixel rows:
-//   fg color = top pixel value
-//   bg color = bottom pixel value
-for (int cy = 0; cy < ch; ++cy) {
-    for (int cx = 0; cx < cw; ++cx) {
-        float top_val = compute(cx, cy * 2);
-        float bot_val = compute(cx, cy * 2 + 1);
-        int fi = int(top_val * (kPalette - 1));
-        int bi = int(bot_val * (kPalette - 1));
-        canvas.set(cx, cy, U'▀', heatmap_styles[fi][bi]);
-    }
-}
-```
-
-## Canvas Rendering Patterns
-
-### Pattern: Status Bar
-
-```cpp
-void paint_bar(Canvas& canvas, int W, int H, uint16_t bg_id, uint16_t text_id) {
-    int y = H - 1;
-    // Fill background
-    for (int x = 0; x < W; ++x)
-        canvas.set(x, y, U' ', bg_id);
-    // Write text
-    canvas.write_text(1, y, "status text", text_id);
-}
-```
-
-### Pattern: Sparkline
-
-```cpp
-void paint_sparkline(Canvas& canvas, int x, int y,
-                     const std::deque<float>& data, int w, uint16_t sid) {
-    static constexpr char32_t blocks[] = {
-        U'▁', U'▂', U'▃', U'▄', U'▅', U'▆', U'▇', U'█'
+struct Plasma {
+    struct Model {
+        int   w = 0, h = 0;   // pixels: w = columns, h = 2 × (rows - 1)
+        float t = 0.f;
+        bool  paused = false;
     };
-    int start = std::max(0, int(data.size()) - w);
-    for (int i = start, dx = 0; i < int(data.size()) && dx < w; ++i, ++dx) {
-        int level = std::clamp(int(data[i] * 7.99f), 0, 7);
-        canvas.set(x + dx, y, blocks[level], sid);
+
+    struct Tick {};
+    struct Resize { int cols, rows; };
+    struct Pause {};
+    struct Quit {};
+    using Msg = std::variant<Tick, Resize, Pause, Quit>;
+
+    using Cmd = jaal::Cmd<Msg>;
+    using Sub = jaal::Sub<Msg, on_key, on_resize>;
+
+    static Cmd update(Model& m, Resize r) {
+        m.w = std::max(1, r.cols);
+        m.h = std::max(2, (r.rows - 1) * 2);   // one row of cells for the status bar
+        return {};
     }
-}
-```
+    static Cmd update(Model& m, Tick)  { m.t += 0.03f; return {}; }
+    static Cmd update(Model& m, Pause) { m.paused = !m.paused; return {}; }
+    static Cmd update(Model&,   Quit)  { return Cmd::quit(0); }
 
-### Pattern: Particle System
-
-```cpp
-void paint_particles(Canvas& canvas, int W, int H) {
-    for (const auto& p : particles) {
-        int cx = int(p.x);
-        int cy = int(p.y);
-        if (cx < 0 || cx >= W || cy < 0 || cy >= H) continue;
-
-        int grad_idx = int((1.0f - p.life) * (kGradSteps - 1));
-        canvas.set(cx, cy, p.glyph, gradient_styles[p.palette][grad_idx]);
-    }
-}
-```
-
-### Pattern: Bordered Panel
-
-```cpp
-void paint_panel(Canvas& canvas, int x0, int y0, int x1, int y1,
-                 uint16_t border_sid, uint16_t title_sid) {
-    // Corners
-    canvas.set(x0, y0, U'╭', border_sid);
-    canvas.set(x1, y0, U'╮', border_sid);
-    canvas.set(x0, y1, U'╰', border_sid);
-    canvas.set(x1, y1, U'╯', border_sid);
-
-    // Horizontal edges
-    for (int x = x0 + 1; x < x1; ++x) {
-        canvas.set(x, y0, U'─', border_sid);
-        canvas.set(x, y1, U'─', border_sid);
+    static Image render(const Model& m) {
+        auto q = [](float f) {   // 5-bit channels keep the style cache small
+            return static_cast<std::uint8_t>(static_cast<int>(std::clamp(f, 0.f, 1.f) * 255.f) & 0xF8);
+        };
+        Image img(m.w, m.h);
+        img.fill_rows([&](int x, int y) -> Rgb {
+            const float u = static_cast<float>(x) / 16.f, v = static_cast<float>(y) / 8.f;
+            const float s = std::sin(u + m.t) + std::sin(v - m.t) + std::sin((u + v) * 0.5f + m.t * 1.3f);
+            return {q(0.5f + 0.5f * std::sin(s)), q(0.5f + 0.5f * std::sin(s + 2.f)), q(0.5f + 0.5f * std::sin(s + 4.f))};
+        });
+        return img;
     }
 
-    // Vertical edges
-    for (int y = y0 + 1; y < y1; ++y) {
-        canvas.set(x0, y, U'│', border_sid);
-        canvas.set(x1, y, U'│', border_sid);
+    static Element status_bar(const Model& m) {
+        return h(text(" PLASMA") | Bold | Fg<255, 140, 40>,
+                 text("  [space] pause  [q] quit") | Dim,
+                 spacer(),
+                 text(m.paused ? "paused " : "")) | bgc(Color::rgb(20, 20, 20));
     }
 
-    // Title
-    canvas.write_text(x0 + 2, y0, "Title", title_sid);
-}
-```
+    static Element view(const Model& m) {
+        if (m.w == 0) return text("");       // no size yet
+        return v(pixels(render(m)), status_bar(m));
+    }
 
-## SIMD-Accelerated Frame Diffing
-
-maya's frame diff engine compares the current and previous canvas buffers using
-SIMD instructions. Because cells are 64-bit packed values, the diff can compare
-8 cells at once with AVX-512, 4 with AVX2, or 2 with SSE2/NEON.
-
-Functions available in `maya::simd`:
-
-| Function | Description |
-|----------|-------------|
-| `find_first_diff(a, b, count)` | Find index of first differing cell |
-| `skip_equal(a, b, start, end)` | Find next diff starting from index |
-| `bulk_eq(a, b, count)` | Check if two buffers are identical |
-| `streaming_fill(dst, count, value)` | Non-temporal fill (bypasses cache) |
-
-The framework uses these internally — you don't call them directly. The result
-is that only changed cells are re-serialized and written to the terminal,
-making even full-screen 60fps animations efficient.
-
-## AlignedBuffer
-
-Canvas storage uses `AlignedBuffer` — a 64-byte cache-line aligned buffer
-optimized for SIMD access:
-
-```cpp
-struct AlignedBuffer {
-    AlignedBuffer(size_t count, uint64_t fill_value);
-    void resize(size_t count, uint64_t fill_value);
-    uint64_t* data();
-    size_t size();
+    static Sub subscribe(const Model& m) {
+        auto resize = Sub::on(on_resize{}, [](const ResizeEvent& r) -> std::optional<Msg> {
+            return Resize{r.width.value, r.height.value};
+        });
+        auto keys_ = keys<Sub>({{' ', Pause{}}, {'q', Quit{}}, {SpecialKey::Escape, Quit{}}});
+        if (m.paused) return Sub::batch(std::move(resize), std::move(keys_));
+        return Sub::batch(Sub::every(16ms, Tick{}), std::move(resize), std::move(keys_));
+    }
+    static bool subs_key(const Model& m) { return m.paused; }
 };
+
+static_assert(Program<Plasma>);
+
+int main() { return run<Plasma>({.title = "plasma"}); }
 ```
 
-You don't interact with this directly — it's the canvas's internal storage.
+Points to notice:
+
+- **All state is in the Model.** The image is rebuilt from it in `view()`;
+  nothing is kept in globals or statics.
+- **Size comes from a message.** `on_resize` delivers the terminal size
+  (also once at start-up); `update()` turns it into pixel dimensions.
+  Until it arrives, `m.w == 0` and the view is empty.
+- **Animation is a subscription.** `Sub::every(16ms, Tick{})` drives the
+  frame rate. `subs_key()` tells the runtime what `subscribe()` depends on,
+  so the timer is only rebuilt when `paused` flips.
+- **Simulation state lives in the model, too.** For a stateful effect (the
+  Doom fire's heat field, Life's grid, particles) keep the buffer in the
+  Model, advance it in `update(Model&, Tick)`, and have `render()` map it
+  through a palette into an Image. See `examples/doom_fire.cpp`.
+
+## Where to look next
+
+| Example | Shows |
+|---------|-------|
+| `doom_fire.cpp`  | heat field in the Model, palette LUT into an Image, embers drawn as whole cells |
+| `mandelbrot.cpp` | `fill_rows` per-pixel shader, zoom/pan messages |
+| `raymarch.cpp`, `space3d.cpp` | ray tracing with `fill_rows` and 5-bit quantisation |
+| `fluid.cpp`, `life.cpp`, `particles.cpp` | simulations stepped in `update()` |
+| `breakout.cpp`, `snake.cpp` | games: pixels plus text overlays |
+| `matrix.cpp` | `Glyphs` digital rain |
+
+## Low-level: Canvas and StylePool
+
+`Canvas`, `Cell` and `StylePool` still exist as the renderer's internals:
+the element tree paints into a `Canvas`, cells are packed into 64 bits and
+diffed with SIMD, and styles are interned into a `StylePool`. Applications
+no longer touch them: `pixels()` and `glyphs()` are the cell-level surface.
+See [Wire efficiency](10-wire-efficiency.md) for how frames are diffed.

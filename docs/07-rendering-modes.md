@@ -1,349 +1,228 @@
 # Rendering Modes
 
-maya provides four rendering modes, each suited to different use cases. Choose
-the one that matches your application's needs.
+There is one way to run an interactive maya program — `run<P>(Options)` — and
+two places it can draw: the alternate screen (**fullscreen**) or the terminal's
+normal scrollback (**inline**). Static output that needs no runtime at all goes
+through `print()` / `render_to_string()`.
 
 ## Overview
 
-| Mode | Function | Screen | Event Loop | Use Case |
-|------|----------|--------|------------|----------|
-| **Fullscreen** | `run<P>({.mode = Mode::Fullscreen})` | Alt screen | Yes | Interactive TUIs, dashboards |
-| **Inline** | `run<P>({.mode = Mode::Inline})` | Scrollback | Yes | Claude Code-style apps |
-| **Live** | `live()` | Scrollback | Timer-based | Progress bars, streaming output |
-| **Canvas** | `canvas_run()` | Alt screen | Yes | Games, animations, visualizations |
-| **One-shot** | `print()` | Scrollback | No | CLI output, reports, status cards |
+| Mode | How | Screen | Runtime | Use Case |
+|------|-----|--------|---------|----------|
+| **Fullscreen** | `run<P>({.mode = Mode::Fullscreen})` (default) | Alt screen | jaal | Interactive TUIs, dashboards, games, pixel art |
+| **Inline** | `run<P>({.mode = Mode::Inline})` | Scrollback | jaal | Claude Code-style sessions, progress bars, streaming output |
+| **Static** | `print(el)` / `render_to_string(el, w)` | Scrollback / string | none | CLI output, reports, status cards |
 
-## run() — Interactive Apps
+!!! note "What changed"
+    The four separate loops — `run(cfg, event_fn, render_fn)`, `live()`,
+    `canvas_run()` and the old `run<P>(RunConfig)` — are gone. A progress bar
+    is now a program run with `Mode::Inline` and a `Sub::every`; a canvas demo
+    is a program whose `view()` returns `pixels(img)` or `glyphs(g)`;
+    `RunConfig` is now `Options`.
 
-The primary API for interactive terminal applications. Two forms:
+## run\<P\>() — Interactive Programs
 
-### Simple: run(config, event_fn, render_fn)
-
-For quick prototypes and simple tools — closures, no boilerplate:
+A program is a jaal program whose `view()` returns an `Element`:
 
 ```cpp
-Signal<int> count{0};
+#include <maya/app.hpp>
+using namespace maya;
+using namespace maya::dsl;
 
-run(
-    {.title = "counter"},
-    [&](const Event& ev) {
-        on(ev, '+', '=', [&] { count.update([](int& n) { ++n; }); });
-        on(ev, '-', '_', [&] { count.update([](int& n) { --n; }); });
-        return !key(ev, 'q');
-    },
-    [&] {
-        return (v(
-            dyn([&] { return text("Count: " + std::to_string(count.get()),
-                                  Style{}.with_bold()); }),
-            t<"[+/-] change  [q] quit"> | Dim
-        ) | pad<1>).build();
+struct Counter {
+    struct Model { int count = 0; };
+    struct Inc {}; struct Dec {}; struct Quit {};
+    using Msg = std::variant<Inc, Dec, Quit>;
+
+    using Cmd = jaal::Cmd<Msg>;
+    using Sub = jaal::Sub<Msg, on_key>;
+
+    static Cmd update(Model& m, Inc)  { ++m.count; return {}; }
+    static Cmd update(Model& m, Dec)  { --m.count; return {}; }
+    static Cmd update(Model&,   Quit) { return Cmd::quit(0); }
+
+    static Element view(const Model& m) {
+        return text("count: " + std::to_string(m.count), Style{}.with_bold());
     }
-);
-```
 
-Event function returns `bool` (false = quit) or `void` (call `maya::quit()`).
-Render function returns `Element`, optionally taking `const Ctx&` for terminal size/theme.
-
-### Program: run\<P\>(config)
-
-For complex apps — pure functions, effects as data, testable logic:
-
-```cpp
-template <Program P>
-void run(RunConfig cfg = {});
-```
-
-A type `P` satisfies `Program` if it provides:
-
-```cpp
-struct P {
-    using Model = /* your state type */;
-    using Msg   = /* std::variant of message types */;
-
-    static auto init()                              -> Model; // or pair<Model, Cmd<Msg>>
-    static auto update(Model m, Msg msg)            -> std::pair<Model, Cmd<Msg>>;
-    static auto view(const Model&)                  -> Element;
-    static auto subscribe(const Model&)             -> Sub<Msg>; // optional
+    static Sub subscribe(const Model&) {
+        return keys<Sub>({{'+', Inc{}}, {'-', Dec{}}, {'q', Quit{}}});
+    }
 };
+
+int main() { return run<Counter>({.title = "counter"}); }
 ```
 
-### RunConfig
+`run<P>()` opens the terminal and hands it to jaal's loop; it returns the
+exit code passed to `Cmd::quit`. The mode is just an option — the same program
+runs fullscreen or inline unchanged.
+
+### Options
 
 ```cpp
-struct RunConfig {
-    std::string_view title      = "";              // Terminal window title
-    int              fps        = 0;               // 0 = event-driven, >0 = continuous
-    bool             mouse      = false;           // Enable mouse reporting
-    Mode             mode       = Mode::Fullscreen;// Rendering mode
-    Theme            theme      = theme::dark;     // Color theme
+struct Options {
+    std::string_view title        = "";                  // Terminal window title
+    int              fps          = 0;                   // 0 = event-driven, >0 = continuous
+    bool             mouse        = false;               // Enable mouse reporting
+    bool             hover_motion = false;               // Also report bare motion (hover)
+    Mode             mode         = Mode::Fullscreen;    // Fullscreen or Inline
+    RenderBackend    backend      = RenderBackend::Ansi; // Frame transport
+    Theme            theme        = theme::native;       // Colour theme
+    bool             enhanced_keyboard = true;           // Kitty keyboard protocol
 };
 ```
 
 ### Event-Driven vs Continuous
 
-- **`fps = 0`** (default): Only re-renders when an event arrives (key press,
-  mouse move, resize). Minimal CPU usage. Best for static or user-driven UIs.
+- **`fps = 0`** (default): a frame is drawn only when something changes — a
+  message was handled, the terminal resized. A still screen costs nothing.
+- **`fps = N`**: redraw continuously at up to N frames per second, regardless
+  of input.
 
-- **`fps = 30`** (or any positive value): Re-renders at the given frame rate
-  regardless of input. Required for animations, timers, live data.
-
-### Inline Mode
-
-Set `mode = Mode::Inline` to render in the scrollback instead of the alt screen:
-
-```cpp
-run({.mode = Mode::Inline}, event_fn, render_fn);
-// or
-run<P>({.mode = Mode::Inline});
-```
-
-This gives you event handling with inline rendering — useful for TUIs that
-should stay in the terminal history.
-
-## live() — Timer-Based Inline Rendering
-
-For animations and progress displays that render inline (in the terminal's
-scrollback) without taking over the screen. No event handling — just a render
-loop with a timer.
-
-### Signature
+Prefer driving animation from the model: put a `Sub::every(16ms, Tick{})` in
+`subscribe()`, advance state in `update(Model&, Tick)`, and drop the
+subscription when the animation stops. That keeps `fps = 0` and makes "idle"
+genuinely idle:
 
 ```cpp
-template <AnyLiveRenderFn RenderFn>
-void live(LiveConfig cfg, RenderFn&& render_fn);
-```
-
-### LiveConfig
-
-```cpp
-struct LiveConfig {
-    int   fps       = 30;   // Target frames per second
-    int   max_width = 0;    // 0 = auto-detect terminal width
-    bool  cursor    = false; // Show cursor during rendering
-};
-```
-
-### Render Function
-
-Two signatures:
-
-```cpp
-// With delta time (seconds since last frame)
-[&](float dt) -> Element { ... }
-
-// Without delta time
-[&]() -> Element { ... }
-```
-
-### Stopping the Loop
-
-Call `maya::quit()` from inside the render function:
-
-```cpp
-live({.fps = 30}, [&](float dt) {
-    elapsed += dt;
-    if (elapsed > 5.0f) quit();  // Stop after 5 seconds
-    return text("Time: " + std::to_string(elapsed));
-});
-```
-
-### Example: Progress Bar
-
-```cpp
-float progress = 0;
-live({.fps = 30}, [&](float dt) {
-    progress += dt * 0.2f;
-    if (progress >= 1.0f) quit();
-
-    int filled = static_cast<int>(progress * 40);
-    std::string bar(filled, '#');
-    bar += std::string(40 - filled, '.');
-
-    return (v(
-        text("Installing...") | Bold,
-        text("[" + bar + "] " + std::to_string(int(progress * 100)) + "%")
-    ) | pad<0, 1>).build();
-});
-```
-
-### How It Works
-
-`live()` renders each frame by:
-1. Building the element tree from your render function
-2. Laying out and painting to a canvas
-3. Serializing to ANSI escape sequences
-4. Moving the cursor up to overwrite the previous frame
-5. Writing the new frame
-6. Sleeping until the next frame time
-
-The cursor is hidden during rendering and restored on exit. Output stays in the
-terminal scrollback — it doesn't use the alt screen.
-
-## canvas_run() — Imperative Canvas Painting
-
-For maximum control: direct cell-level painting on a double-buffered canvas.
-Best for games, particle systems, complex visualizations, and anything that
-needs per-cell control.
-
-### Signature
-
-```cpp
-Status canvas_run(
-    CanvasConfig                                   cfg,
-    std::function<void(StylePool&, int w, int h)>  on_resize,
-    std::function<bool(const Event&)>              on_event,
-    std::function<void(Canvas&, int w, int h)>     on_paint
-);
-```
-
-### CanvasConfig
-
-```cpp
-struct CanvasConfig {
-    int         fps        = 60;              // Target frame rate
-    bool        mouse      = false;           // Enable mouse reporting
-    Mode        mode       = Mode::Fullscreen;// Rendering mode
-    bool        auto_clear = true;            // Clear the canvas before each on_paint
-    std::string title;                        // Terminal window title
-};
-```
-
-### Callbacks
-
-**on_resize(StylePool& pool, int w, int h)**
-Called at startup and after each terminal resize. The style pool is cleared
-before the call — re-intern all your styles here:
-
-```cpp
-[&](StylePool& pool, int W, int H) {
-    // Pre-intern styles (compact uint16_t IDs for canvas cells)
-    style_bold = pool.intern(Style{}.with_bold().with_fg(Color::green()));
-    style_dim  = pool.intern(Style{}.with_dim().with_fg(Color::gray()));
-
-    // Rebuild size-dependent state
-    particles.resize(W * H);
+static Sub subscribe(const Model& m) {
+    if (m.paused) return keys<Sub>({{'p', Pause{}}, {'q', Quit{}}});
+    return Sub::batch(
+        Sub::every(16ms, Tick{}),
+        keys<Sub>({{'p', Pause{}}, {'q', Quit{}}}));
 }
 ```
 
-**on_event(const Event& ev) -> bool**
-Same as `run()` — return false to quit:
+### Frame Flow Control
+
+maya never draws more than **one frame ahead of the terminal**. Each frame
+ends with a Device Status Report query (`CSI 5 n`); the terminal answers once
+it has parsed everything before it, which acknowledges that the frame reached
+the glass. While a frame is unacknowledged, your program keeps running —
+messages are handled and the model updates — but nothing new is drawn. The
+next frame drawn is the **latest** state.
+
+Why it matters: over SSH the pty drains into sshd instantly, and the real
+bottleneck (the network, the remote terminal's parser) sits behind buffers
+that can hold megabytes. A program that draws as fast as the pty accepts fills
+them, and every keypress — including `q` — then waits behind seconds of stale
+frames. With flow control, a burst of input costs one frame rather than a
+queue of them, and the frame rate settles at exactly what the link sustains.
+Locally the ack returns in well under a millisecond, so nothing is throttled.
+
+A terminal that never answers (a dumb pipe, a very old emulator) is detected
+by timeout and flow control switches itself off. You don't configure any of
+this; `fps` is an upper bound, not a promise.
+
+## Fullscreen Mode
+
+`Mode::Fullscreen` (the default) switches to the alternate screen, so the
+program owns the whole window and the user's shell history reappears
+untouched on exit. Frames are diffed cell by cell; only changed cells are
+written.
+
+Games, simulations and pixel graphics are ordinary fullscreen programs.
+There is no separate canvas loop: the model holds the state, `update(Tick)`
+advances it, and `view()` draws it — for example with an `Image`:
 
 ```cpp
-[&](const Event& ev) -> bool {
-    if (key(ev, 'q')) return false;
-    on(ev, 'p', [&] { paused = !paused; });
-    return true;
-}
-```
+#include <maya/app.hpp>
+#include <maya/element/pixels.hpp>
+using namespace maya;
+using namespace maya::dsl;
+using namespace std::chrono_literals;
 
-**on_paint(Canvas& canvas, int w, int h)**
-Called every frame. The canvas is pre-cleared. Paint your frame:
+struct Plasma {
+    struct Model { float t = 0; int w = 80, h = 24; };
+    struct Tick {}; struct Resized { int w, h; }; struct Quit {};
+    using Msg = std::variant<Tick, Resized, Quit>;
+    using Cmd = jaal::Cmd<Msg>;
+    using Sub = jaal::Sub<Msg, on_key, on_resize>;
 
-```cpp
-[&](Canvas& canvas, int W, int H) {
-    for (auto& particle : particles) {
-        canvas.set(particle.x, particle.y, particle.glyph, particle.style_id);
+    static Cmd update(Model& m, Tick)      { m.t += 0.016f; return {}; }
+    static Cmd update(Model& m, Resized r) { m.w = r.w; m.h = r.h; return {}; }
+    static Cmd update(Model&, Quit)        { return Cmd::quit(0); }
+
+    static Element view(const Model& m) {
+        Image img(m.w, m.h * 2);                        // half blocks: 2 px per row
+        img.fill_rows([&](int x, int y) -> Rgb {
+            const float v = std::sin(x * 0.1f + m.t) + std::sin(y * 0.1f - m.t);
+            const auto c = static_cast<uint8_t>(127 + 63 * v);
+            return Rgb{c, uint8_t(255 - c), 200};
+        });
+        return pixels(std::move(img));
     }
-    canvas.write_text(0, H - 1, "status bar", bar_style);
-}
-```
 
-### Return Value
-
-`canvas_run()` returns a `Status` (`Result<void>`). Check for errors:
-
-```cpp
-auto result = canvas_run(config, on_resize, on_event, on_paint);
-if (!result) {
-    std::println(std::cerr, "maya: {}", result.error().message);
-    return 1;
-}
-```
-
-### Example: Starfield
-
-```cpp
-struct Star { float x, y, speed; };
-std::vector<Star> stars;
-uint16_t star_style;
-
-auto result = canvas_run(
-    {.fps = 60, .title = "starfield"},
-
-    [&](StylePool& pool, int W, int H) {
-        star_style = pool.intern(Style{}.with_bold().with_fg(Color::white()));
-        stars.clear();
-        for (int i = 0; i < 200; ++i)
-            stars.push_back({randf(0, W), randf(0, H), randf(0.5f, 3.0f)});
-    },
-
-    [&](const Event& ev) { return !key(ev, 'q'); },
-
-    [&](Canvas& canvas, int W, int H) {
-        for (auto& s : stars) {
-            s.x -= s.speed;
-            if (s.x < 0) { s.x = W; s.y = randf(0, H); }
-            canvas.set(int(s.x), int(s.y), U'*', star_style);
-        }
+    static Sub subscribe(const Model&) {
+        return Sub::batch(
+            Sub::every(16ms, Tick{}),
+            keys<Sub>({{'q', Quit{}}}),
+            Sub::on(on_resize{}, [](const ResizeEvent& r) -> std::optional<Msg> {
+                return Resized{r.width.value, r.height.value};
+            }));
     }
-);
+};
+
+int main() { return run<Plasma>({.title = "plasma"}); }
 ```
 
-## print() — One-Shot Output
+See `examples/doom_fire.cpp`, `mandelbrot.cpp`, `raymarch.cpp` and
+[Canvas API](08-canvas-api.md) for `Image`, `pixels()` and `glyphs()`.
 
-Render an element tree to stdout and return. No event loop, no terminal control.
-Perfect for CLI tools that want styled output:
+## Inline Mode
+
+`Mode::Inline` renders into the terminal's normal scrollback instead of the
+alt screen. The program's output stays in the terminal history after it
+exits — ideal for agent sessions, build pipelines, and progress displays.
 
 ```cpp
-void print(const Element& root);           // Auto-detect terminal width
-void print(const Element& root, int width); // Explicit width
+struct Progress {
+    struct Model { int pct = 0; std::chrono::milliseconds step{30}; };
+    struct Tick {};
+    using Msg = std::variant<Tick>;
+    using Cmd = jaal::Cmd<Msg>;
+    using Sub = jaal::Sub<Msg>;
+
+    static Cmd update(Model& m, Tick) {
+        if (++m.pct >= 100) return Cmd::quit(0);
+        return {};
+    }
+
+    static Element view(const Model& m) {
+        return h(text("Downloading "),
+                 text(std::string(m.pct / 5, '#') + std::string(20 - m.pct / 5, '.')),
+                 text(" " + std::to_string(m.pct) + "%")).build();
+    }
+
+    static Sub subscribe(const Model& m) { return Sub::every(m.step, Tick{}); }
+};
+
+int main() { return run<Progress>({.mode = Mode::Inline}); }
 ```
 
-### Example
+(See `examples/inline_progress.cpp`.) Everything else — events, commands,
+subscriptions — works exactly as in fullscreen.
 
-```cpp
-constexpr auto card = v(
-    t<"Build Status"> | Bold | Fg<100, 180, 255>,
-    t<"">,
-    h(t<"Tests:">  | Dim, t<" 142 passed"> | Fg<80, 220, 120>),
-    h(t<"Lint:">   | Dim, t<" 0 warnings"> | Fg<80, 220, 120>),
-    h(t<"Bundle:"> | Dim, t<" 2.4 MB"> | Fg<240, 200, 60>)
-) | border_<Round> | bcol<60, 65, 80> | pad<1>;
+### Inline Scrollback Preservation
 
-print(card.build());
-```
+When building inline UIs — particularly AI agent sessions, multi-step build
+pipelines, or any workflow where components complete and new ones appear —
+preserving the terminal scrollback is critical. The user should be able to
+scroll up and see the full history of what happened: expanded diffs, tool
+output, test results, etc.
 
-Output (with ANSI colors in a real terminal):
-```
-╭──────────────────────────╮
-│ Build Status             │
-│                          │
-│ Tests:  142 passed       │
-│ Lint:   0 warnings       │
-│ Bundle: 2.4 MB           │
-╰──────────────────────────╯
-```
-
-## Inline Scrollback Preservation
-
-When building inline (non-fullscreen) UIs — particularly AI agent sessions,
-multi-step build pipelines, or any workflow where components complete and new
-ones appear — preserving the terminal scrollback is critical.  The user should
-be able to scroll up and see the full history of what happened: expanded diffs,
-tool output, test results, etc.
-
-### The Problem: Content Shrinkage Destroys Scrollback
+#### The Problem: Content Shrinkage Destroys Scrollback
 
 The inline renderer works by overwriting its output in place each frame: it
 moves the cursor up to the top of the previous frame, writes the new frame,
 and erases any leftover lines below.
 
-This works perfectly when content height stays the same or grows.  But when
+This works perfectly when content height stays the same or grows. But when
 content **shrinks** — e.g. a tool card collapses from 20 rows (showing a full
 diff) to 2 rows (just a status line) — the old expanded content at those
 terminal rows is **overwritten** with the shorter content, and the leftover
-lines are **erased** with `\x1b[2K`.  The old diff is gone from the terminal
-buffer entirely.  The user cannot scroll up to see it.
+lines are **erased** with `\x1b[2K`. The old diff is gone from the terminal
+buffer entirely. The user cannot scroll up to see it.
 
 ```
 Frame N (tool running — 20 rows):
@@ -365,19 +244,17 @@ Frame N+1 (tool done — 2 rows):
   Rows 3–20 erased.  Diff is gone from scrollback.
 ```
 
-### The Solution: Two-Part Fix
-
 Maya solves this at **both** the framework and application levels.
 
 #### 1. Framework: Row-Hash Committed Scrollback
 
 The inline renderer computes a fast hash (FNV-1a over packed 64-bit cells) for
-every canvas row each frame.  It compares these hashes against the previous
+every canvas row each frame. It compares these hashes against the previous
 frame to find the **stable prefix** — the longest run of rows from the top that
 are identical between frames.
 
 Stable rows are **committed** to scrollback: the cursor is never moved above
-them and they are never overwritten.  Only the "live" region below the
+them and they are never overwritten. Only the "live" region below the
 committed area is re-rendered each frame.
 
 ```
@@ -392,7 +269,7 @@ Canvas row 19: [Spinner / status]   ← CHANGING → live region starts here
 Canvas row 20: [Status bar]         ← CHANGING → live
 ```
 
-Once committed, a row stays committed for the entire inline session.  Even if
+Once committed, a row stays committed for the entire inline session. Even if
 the canvas content at that position later changes (e.g. the tool card header
 switches from a spinner to a checkmark), the committed row in the terminal
 retains its original content — which is exactly what scrollback preservation
@@ -410,9 +287,9 @@ overwritten in place each frame, with leftover lines erased when it shrinks.
 
 #### 2. Application: Content Should Only Grow
 
-The framework's row-hash comparison works best when content **grows
-monotonically** — each new component adds rows below existing ones, and
-completed components keep their content visible.
+The row-hash comparison works best when content **grows monotonically** —
+each new component adds rows below existing ones, and completed components
+keep their content visible.
 
 This mirrors how Claude Code (built on Ink) works:
 
@@ -425,9 +302,9 @@ This mirrors how Claude Code (built on Ink) works:
 
 ```cpp
 // Tool status changes but content stays visible
-if (phase_timer > 2.0f) {
-    edit_status = TaskStatus::Completed;  // header shows ✓
-    // DiffView stays in the tree — height doesn't change
+static Cmd update(Model& m, EditDone) {
+    m.edit_status = TaskStatus::Completed;  // header shows ✓
+    return {};                              // DiffView stays in the tree
 }
 ```
 
@@ -435,22 +312,23 @@ if (phase_timer > 2.0f) {
 
 ```cpp
 // ❌ Dramatic collapse — destroys scrollback content
-if (phase_timer > 2.0f) {
-    edit_status = TaskStatus::Completed;
-    tool_collapsed = true;  // Hides DiffView, height drops 15+ rows
+static Cmd update(Model& m, EditDone) {
+    m.edit_status    = TaskStatus::Completed;
+    m.tool_collapsed = true;   // hides DiffView, height drops 15+ rows
+    return {};
 }
 ```
 
-If you need user-toggleable collapse, use key bindings:
+If you need user-toggleable collapse, bind it to a key so the user decides
+when it happens:
 
 ```cpp
-if (key(ev, '2')) tool_collapsed = !tool_collapsed;
+static Cmd update(Model& m, ToggleCollapse) { m.tool_collapsed = !m.tool_collapsed; return {}; }
+
+static Sub subscribe(const Model&) { return keys<Sub>({{'2', ToggleCollapse{}}}); }
 ```
 
-This way, the user controls when to collapse — the framework doesn't do it
-automatically during the session flow.
-
-### How It All Fits Together
+#### How It All Fits Together
 
 ```
 Session start:
@@ -473,115 +351,103 @@ User scrolls up in terminal:
   └─ Sees full diffs, file contents, test output — all preserved
 ```
 
-### Limitations
+#### Limitations
 
 - **Hash collisions**: The FNV-1a row hash has a theoretical collision risk.
   In practice, terminal content collisions are astronomically unlikely (one in
-  ~2^64 per row pair per frame).  A false match would cause one row to be
+  ~2^64 per row pair per frame). A false match would cause one row to be
   skipped for one frame — self-correcting on the next frame when the hash
   changes.
 
 - **Content above committed boundary can't update**: If you change content
   at a row that's already committed (e.g. updating an old tool card header),
-  the terminal won't reflect the change.  The committed row retains what was
-  originally rendered.  This is by design — it's the scrollback preservation
+  the terminal won't reflect the change. The committed row retains what was
+  originally rendered. This is by design — it's the scrollback preservation
   guarantee.
 
 - **Very tall content**: When content exceeds the terminal height, the top
-  rows are cropped via `skip_rows`.  Rows that were visible and committed but
+  rows are cropped via `skip_rows`. Rows that were visible and committed but
   get cropped remain in the terminal's scrollback from when they were written.
 
-### Cmd-Level Scrollback Control
+### Scrollback Effects
 
-Most apps get correct scrollback for free from the row-hash mechanism above.
-Hosts that manage their own sealed history (agent sessions that trim old turns)
-drive it explicitly through `Cmd`s from `update()`:
+Most programs get correct scrollback for free from the row-hash mechanism.
+Programs that manage their own sealed history (agent sessions that virtualise
+or trim old turns) drive it explicitly with **terminal effects** returned from
+`update()`. Like every effect, each one must be listed in the program's `Cmd`
+row (or use `terminal_cmd<Msg>`, which lists them all). All of them are
+no-ops in fullscreen.
 
-| Cmd | Use |
-|-----|-----|
-| `Cmd::commit_scrollback(ScrollbackDebt)` | Commit trimmed rows using a maya-measured token. Obtain the debt from `ScrollbackLedger::harvest()` — the row count comes from maya's own paint pass and structurally cannot drift from the wire. |
-| `Cmd::commit_scrollback_overflow()` | Commit every row of the last frame that has provably overflowed the viewport. A "trigger" — maya derives the safe row count itself. |
-| `Cmd::force_redraw()` | Schedule a soft viewport repaint next frame. |
-| `Cmd::reset_inline()` | Hard inline reset (destructive scrollback wipe) — wholesale model swaps only. |
-
-> Prefer the typed `ScrollbackLedger` path over the deprecated raw-int
-> `commit_scrollback(int)`: every historical trim-corruption bug was drift
-> between a host's guessed row count and what maya painted. Hold your sealed
-> prefix in a `ScrollbackLedger`, render it via `ledger_ref` /
-> `Conversation::Config::ledger`, and pass `ledger.harvest()` to the Cmd. See
-> [internals/witness-chain.md](internals/witness-chain.md).
-
-### Handing Off the Terminal: `Cmd::suspend()`
-
-When an inline app needs to run an interactive child that owns the real tty
-(a sudo prompt, `$EDITOR`, a pager), return `Cmd::suspend(run)`. Maya tears
-the TUI down to a clean cooked tty, runs the child synchronously, then
-restores raw mode, re-anchors below the child's output, and dispatches the
-`Msg` the callable returned so `update()` can fold the result back in. See
-[API Reference → Cmd::suspend()](11-api-reference.md#cmdsuspend--hand-the-real-terminal-to-an-interactive-child).
-
-## Choosing the Right Mode
-
-```
-Need interactivity?
-├── Yes: Need per-cell control?
-│   ├── Yes → canvas_run()           (games, animations, visualizations)
-│   └── No  → run() or run<P>()      (dashboards, forms, menus)
-│       └── Want scrollback output? → run({.mode = Mode::Inline}) or run<P>({.mode = Mode::Inline})
-└── No: Need animation?
-    ├── Yes → live()     (progress bars, streaming output)
-    └── No  → print()          (CLI reports, status cards)
-```
-
-## Quitting
-
-### Simple run(): return false or call quit()
-
-In simple `run()` apps, quit either by returning `false` from the event function
-or by calling `maya::quit()` if the event function returns `void`:
+| Effect (Cmd row) | Payload | Use |
+|------------------|---------|-----|
+| `commit_scrollback` | `commit_from<Cmd>(ledger.harvest())` | Commit rows of the last frame before `view()` returns a shorter tree, so the shrink isn't read as rows removed and erased. |
+| `commit_overflow` | `CommitOverflow{}` | Commit every row of the last frame that has provably scrolled past the viewport; maya derives the safe row count itself. |
+| `force_redraw` | `ForceRedraw{}` | Soft repaint of the live viewport on the next frame. |
+| `reset_inline` | `ResetInline{}` | Hard inline reset (destructive scrollback wipe) — wholesale model swaps only. |
 
 ```cpp
-// Event function returning bool — return false to quit
-run({}, [&](const Event& ev) {
-    return !key(ev, 'q');  // false = quit
-}, render_fn);
+struct Chat {
+    struct Model { ScrollbackLedger frozen; std::vector<Turn> live; /* … */ };
+    // …
+    using Cmd = jaal::Cmd<Msg, commit_scrollback, commit_overflow>;
 
-// Event function returning void — call quit() to quit
-run({}, [&](const Event& ev) {
-    if (key(ev, 'q')) quit();
-}, render_fn);
+    static Cmd update(Model& m, SealTurns) {
+        // Move finished turns out of the live tree; the ledger recorded the
+        // rows maya painted for them, so the commit can't drift from the wire.
+        seal_finished(m);
+        return commit_from<Cmd>(m.frozen.harvest());   // empty debt → no-op
+    }
+};
 ```
 
-### Program apps: Cmd\<Msg\>::quit()
+`commit_scrollback` deliberately carries a typed `ScrollbackDebt`, not an
+`int`: a debt can only be minted by `ScrollbackLedger::harvest()`, whose rows
+were recorded by maya's own paint pass, so a program structurally can't commit
+a row count that differs from what is on screen. Render the sealed prefix via
+`ledger_ref` / `Conversation::Config::ledger` so the paint pass records it.
 
-In `run<P>()` apps, quit by returning `Cmd<Msg>::quit()` from `update()`:
+## print() / render_to_string() — Static Output
+
+Render an element tree once, with no runtime, no event loop and no terminal
+control. Perfect for CLI tools that want styled output. Both live in
+`<maya/print.hpp>` (included by `<maya/maya.hpp>`):
 
 ```cpp
-static auto update(Model model, Msg msg) -> std::pair<Model, Cmd<Msg>> {
-    return std::visit(overload{
-        [&](Quit) { return std::pair{model, Cmd<Msg>::quit()}; },
-        // ...
-    }, msg);
+void        print(const Element& root);               // auto-detect terminal width
+void        print(const Element& root, int width);    // explicit width
+std::string render_to_string(const Element& root, int width = 80);  // ANSI string, no I/O
+```
+
+`render_to_string` is maya's `renderToString`: useful for tests, logs, or
+embedding styled output in another tool.
+
+### Example
+
+```cpp
+#include <maya/maya.hpp>
+using namespace maya;
+using namespace maya::dsl;
+
+int main() {
+    constexpr auto card = v(
+        t<"Build Status"> | Bold | Fg<100, 180, 255>,
+        t<"">,
+        h(t<"Tests:">  | Dim, t<" 142 passed"> | Fg<80, 220, 120>),
+        h(t<"Lint:">   | Dim, t<" 0 warnings"> | Fg<80, 220, 120>),
+        h(t<"Bundle:"> | Dim, t<" 2.4 MB"> | Fg<240, 200, 60>)
+    ) | border_<Round> | bcol<60, 65, 80> | pad<1>;
+
+    print(card.build());
 }
 ```
 
-### canvas_run() / live(): maya::quit()
-
-```cpp
-void maya::quit() noexcept;
+Output (with ANSI colors in a real terminal):
 ```
-
-Call from anywhere — event handlers, render functions, signal effects — to
-schedule a clean exit after the current frame. Thread-local, safe to call
-from any context.
-
-```cpp
-// In canvas_run event handler
-on(ev, 'q', [] { quit(); });
-
-// In live render
-live({}, [&](float dt) {
-    if (done) quit();
-    return text("...");
-});
+╭──────────────────────────╮
+│ Build Status             │
+│                          │
+│ Tests:  142 passed       │
+│ Lint:   0 warnings       │
+│ Bundle: 2.4 MB           │
+╰──────────────────────────╯
 ```

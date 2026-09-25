@@ -591,28 +591,13 @@ renders as zero-size.
 
 ## Using DSL Trees in Applications
 
-DSL trees integrate the same way regardless of which application API you use —
-the render side always produces an `Element` via `.build()`.
-
-### Simple `run()`
-
-The render closure returns an `Element` directly. Just build the tree:
-
-```cpp
-maya::run(cfg,
-    [](const maya::Event& e) { /* handle input */ },
-    [] {
-        return v(
-            t<"Hello"> | Bold,
-            text("frame " + std::to_string(frame))
-        ) | border_<Round> | pad<1>;
-    }
-);
-```
+A DSL tree is an `Element` (via `.build()`, or implicitly where an `Element`
+is expected). There are two places one goes: a program's `view()`, and
+`print()` for one-shot output.
 
 ### Program `run<P>()`
 
-The `view` function receives the model and returns an `Element`. Same pattern:
+The `view` function receives the model and returns an `Element`:
 
 ```cpp
 struct MyProgram {
@@ -625,20 +610,18 @@ struct MyProgram {
     }
 };
 
-maya::run<MyProgram>(cfg);
+maya::run<MyProgram>({.title = "my program"});
 ```
 
-### `live()` and `print()`
+For continuously updating output, add a `Sub::every(...)` tick in
+`subscribe()`; for output that stays in scrollback, run with
+`.mode = Mode::Inline`.
 
-`live()` works like simple `run()` — the render closure returns an `Element`.
-`print()` renders once and exits; just call `.build()` directly:
+### `print()`
+
+`print()` renders once and returns; just call `.build()` directly:
 
 ```cpp
-// live(): continuous rendering
-maya::live([] {
-    return v(t<"Status"> | Bold, text(current_status));
-});
-
 // print(): one-shot
 maya::print(v(t<"Report"> | Bold, map(rows, row_fn)).build());
 ```

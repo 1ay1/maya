@@ -1,77 +1,129 @@
 # Event Handling
 
-maya's event system gives you keyboard, mouse, paste, focus, and resize events
-through a unified `Event` variant type and a set of ergonomic predicate/helper
-functions.
+A maya program never receives events directly. The terminal's keyboard,
+mouse, paste, focus, and resize input arrive through **event sources** that
+your program subscribes to in `subscribe()`. Each subscription turns an event
+into one of your `Msg` alternatives (or ignores it), and jaal hands that message
+to the matching `update()` overload.
 
-## Program Apps: Declarative Event Handling
+| Source | Event type | Carries |
+|--------|------------|---------|
+| `on_key` | `KeyEvent` | `key` (`CharKey` or `SpecialKey`), `mods`, `raw_sequence` |
+| `on_mouse` | `MouseEvent` | `button`, `kind` (`Press`/`Release`/`Move`), `x`, `y` (1-based), `mods` |
+| `on_paste` | `PasteEvent` | `content` (the pasted bytes) |
+| `on_focus` | `FocusEvent` | `focused` (gained / lost) |
+| `on_resize` | `ResizeEvent` | `width`, `height` |
 
-In the Program architecture (`run<P>(RunConfig)`), event handling is declarative.
-You define a `subscribe()` function that returns a `Sub<Msg>` describing which
-events map to which messages. The framework dispatches matched messages to your
-`update()` function.
+!!! note "What changed"
+    The callback loops (`run(cfg, event_fn, render_fn)`, `canvas_run`),
+    `key_map<Msg>` and `maya::set_mouse()` are gone. Events now reach a
+    program only as subscriptions, and changing the terminal (mouse capture,
+    clipboard) is a `Cmd` returned from `update()`. The `Event` helpers
+    (`key(ev, …)`, `mouse_clicked(ev)`, …) remain for widgets, whose
+    `handle()` takes an event.
 
-### key_map: Simple Key-to-Message Mapping
+## Say What You Use
 
-For straightforward key bindings, use `key_map<Msg>()`:
+A program lists the event sources it needs in its `Sub` type. Asking for a
+subscription you didn't list is a compile error, not a silently dead handler:
 
 ```cpp
-static auto subscribe(const Model&) -> Sub<Msg> {
-    return key_map<Msg>({
-        {'q', Quit{}}, {'+', Increment{}},
-        {SpecialKey::Up, MoveUp{}},
+#include <maya/app.hpp>
+using namespace maya;
+using namespace maya::dsl;
+
+struct Editor {
+    struct Model { std::string text; int w = 0, h = 0; };
+    struct Typed { KeyEvent key; };
+    struct Pasted { std::string text; };
+    struct Resized { int w, h; };
+    struct Quit {};
+    using Msg = std::variant<Typed, Pasted, Resized, Quit>;
+
+    using Cmd = jaal::Cmd<Msg>;
+    using Sub = jaal::Sub<Msg, on_key, on_paste, on_resize>;   // the sources used
+
+    static Cmd update(Model& m, Typed t);
+    static Cmd update(Model& m, Pasted p)  { m.text += p.text; return {}; }
+    static Cmd update(Model& m, Resized r) { m.w = r.w; m.h = r.h; return {}; }
+    static Cmd update(Model&, Quit)        { return Cmd::quit(0); }
+
+    static Element view(const Model& m);
+
+    static Sub subscribe(const Model&) {
+        return Sub::batch(
+            Sub::on(on_key{}, [](const KeyEvent& k) -> std::optional<Msg> {
+                if (ctrl_is(k, 'c')) return Quit{};
+                return Typed{k};
+            }),
+            Sub::on(on_paste{}, [](const PasteEvent& p) -> std::optional<Msg> {
+                return Pasted{p.content};
+            }),
+            Sub::on(on_resize{}, [](const ResizeEvent& r) -> std::optional<Msg> {
+                return Resized{r.width.value, r.height.value};
+            }));
+    }
+};
+
+int main() { return run<Editor>({.title = "editor"}); }
+```
+
+`Sub::on(source{}, fn)` is the general form. The lambda **must be
+captureless**: everything it needs is in the event, and anything else belongs
+in the model (and therefore in the message). Return `std::nullopt` to ignore
+an event.
+
+`subscribe()` is re-evaluated as the model changes and jaal diffs the result,
+so a subscription that should only exist in some states (a modal's key
+handler, a drag-in-progress mouse handler) is just an `if` in `subscribe()`.
+
+## Keyboard Events
+
+### keys\<Sub\>: Simple Key-to-Message Mapping
+
+For straightforward bindings, `keys<Sub>()` builds the `on_key` subscription
+from a table:
+
+```cpp
+static Sub subscribe(const Model&) {
+    return keys<Sub>({
+        {'q', Quit{}},
+        {'+', Increment{}}, {'-', Decrement{}},
+        {SpecialKey::Up, MoveUp{}}, {SpecialKey::Escape, Quit{}},
     });
 }
 ```
 
-### Sub::on_key: Complex Key Matching
-
-For more complex matching logic, use `Sub<Msg>::on_key()`:
-
-```cpp
-Sub<Msg>::on_key([](const KeyEvent& k) -> std::optional<Msg> {
-    if (key_is(k, 'q')) return Quit{};
-    if (ctrl_is(k, 'c')) return Quit{};
-    return std::nullopt;
-})
-```
-
-The predicates `key_is()`, `ctrl_is()`, and `alt_is()` work on `KeyEvent&`
-(not `Event&`) and are designed for use inside `Sub<Msg>::on_key()` filters.
-
-## The Event Type
+Each entry matches a **plain** key with no modifiers, so `'q'` doesn't also
+fire on Alt+Q. Combine it with other sources with `Sub::batch`:
 
 ```cpp
-using Event = std::variant<KeyEvent, MouseEvent, PasteEvent, FocusEvent, ResizeEvent>;
+return Sub::batch(
+    Sub::every(16ms, Tick{}),
+    keys<Sub>({{'p', Pause{}}, {'q', Quit{}}}));
 ```
-
-You never inspect the variant directly — instead, use the predicate functions.
-
-## Keyboard Events
 
 ### Key Predicates
 
+For anything richer than a table (modifiers, ranges, a fallback), write an
+`on_key` handler and use the predicates. They take a `KeyEvent&`:
+
 ```cpp
-key(ev, 'q')                   // Was 'q' pressed?
-key(ev, '+')                   // Was '+' pressed?
-key(ev, SpecialKey::Escape)    // Was Escape pressed?
-key(ev, SpecialKey::Enter)     // Was Enter pressed?
-key(ev, SpecialKey::Up)        // Was arrow up pressed?
+key_is(k, 'q')                  // plain 'q' (no modifiers)
+key_is(k, SpecialKey::Enter)    // Enter
+key_is(k, SpecialKey::Up)       // arrow up
+ctrl_is(k, 'c')                 // Ctrl+C
+alt_is(k, 'x')                  // Alt+X
 ```
 
-### Modifier Keys
-
 ```cpp
-ctrl(ev, 'c')    // Ctrl+C
-ctrl(ev, 's')    // Ctrl+S
-alt(ev, 'x')     // Alt+X
-shift(ev, SpecialKey::Tab)  // Shift+Tab (BackTab)
-```
-
-### Any Key
-
-```cpp
-any_key(ev)      // Was any key pressed?
+Sub::on(on_key{}, [](const KeyEvent& k) -> std::optional<Msg> {
+    if (key_is(k, 'q') || ctrl_is(k, 'c')) return Quit{};
+    if (key_is(k, SpecialKey::Tab))        return NextTab{};
+    for (char c = '1'; c <= '8'; ++c)
+        if (key_is(k, c)) return GotoTab{c - '1'};
+    return Scroll{k};              // everything else goes to the scroll view
+})
 ```
 
 ### Special Keys
@@ -88,188 +140,175 @@ SpecialKey::F1 ... F12
 
 ### Raw Key Access
 
+A `KeyEvent` is a plain struct; pass it through in a message when `update()`
+needs the whole thing (a text input, a scroll view):
+
 ```cpp
-if (auto* ke = as_key(ev)) {
-    // ke->key is the Key variant (CharKey or SpecialKey)
-    // ke->mods has .ctrl, .alt, .shift, .super_
-    // ke->raw_sequence is the raw ANSI bytes
+struct KeyEvent {
+    Key         key;           // std::variant<CharKey, SpecialKey>
+    Modifiers   mods;          // .ctrl, .alt, .shift, .super_
+    std::string raw_sequence;  // the bytes that produced it
+};
+
+if (auto* ch = std::get_if<CharKey>(&k.key)) {
+    // ch->codepoint is a char32_t
 }
 ```
 
-## Fire-and-Forget Handlers (canvas_run / legacy callbacks)
-
-The `on()` helper combines a predicate with an action — returns `bool` (true
-if matched). This is used in `canvas_run()` event callbacks:
-
-```cpp
-// Single key
-on(ev, 'q', [&] { should_quit = true; });
-
-// Two keys (either matches)
-on(ev, '+', '=', [&] { count++; });
-on(ev, '-', '_', [&] { count--; });
-
-// Special key
-on(ev, SpecialKey::Enter, [&] { submit(); });
-```
-
-### on() in Practice
-
-In `canvas_run()`, the event handler is a function that receives events. Use
-`on()` for each action:
-
-```cpp
-[&](const Event& ev) {
-    on(ev, '+', '=', [&] { count.update([](int& n) { ++n; }); });
-    on(ev, '-', '_', [&] { count.update([](int& n) { --n; }); });
-    on(ev, 'r',      [&] { count.set(0); });
-    on(ev, 't',      [&] { theme = (theme + 1) % kThemeCount; });
-    return !key(ev, 'q');  // false = quit
-}
-```
+`Options::enhanced_keyboard` (on by default) negotiates the kitty keyboard
+protocol where supported, so chords legacy encoding can't express
+(Ctrl+/, Ctrl+Tab, Shift+Enter) and a bare Esc arrive unambiguously.
+Terminals that don't support it ignore the request.
 
 ## Mouse Events
 
-Enable mouse events in the config:
+Mouse reporting is off by default. Turn it on with `.mouse = true` in
+`Options` and subscribe with `on_mouse`:
 
 ```cpp
-run<P>({.mouse = true});
-// or
-canvas_run({.mouse = true}, ...);
-```
+using Sub = jaal::Sub<Msg, on_key, on_mouse>;
 
-### Mouse Predicates
-
-```cpp
-mouse_clicked(ev)                        // Left button clicked
-mouse_clicked(ev, MouseButton::Right)    // Right button clicked
-mouse_clicked(ev, MouseButton::Middle)   // Middle button clicked
-mouse_released(ev)                       // Left button released
-mouse_moved(ev)                          // Mouse moved
-scrolled_up(ev)                          // Scroll wheel up
-scrolled_down(ev)                        // Scroll wheel down
-```
-
-### Mouse Position
-
-```cpp
-if (auto pos = mouse_pos(ev)) {
-    int col = pos->col;   // 1-based column
-    int row = pos->row;   // 1-based row
+static Sub subscribe(const Model&) {
+    return Sub::batch(
+        keys<Sub>({{'q', Quit{}}}),
+        Sub::on(on_mouse{}, [](const MouseEvent& me) -> std::optional<Msg> {
+            if (me.button == MouseButton::ScrollUp)   return ZoomIn{};
+            if (me.button == MouseButton::ScrollDown) return ZoomOut{};
+            if (me.kind == MouseEventKind::Press && me.button == MouseButton::Left)
+                return Click{me.x.value, me.y.value};      // 1-based
+            return std::nullopt;
+        }));
 }
+
+int main() { return run<Mandel>({.title = "mandelbrot", .mouse = true}); }
 ```
-
-Coordinates are **frame-relative**, not absolute. In inline mode (`Mode::Inline`)
-your UI is drawn partway down the terminal, but the runtime translates the raw
-SGR position into your frame's coordinate space (it learns the frame's top row
-via a one-time cursor-position query when mouse is enabled). So a click on the
-top-left cell reports `(1, 1)` whether the app is at the top of the screen or 20
-rows down — identical to fullscreen mode. Mouse events that land **outside** the
-frame (in the surrounding scrollback) are dropped before reaching your handler.
-
-### Raw Mouse Access
 
 ```cpp
-if (auto* me = as_mouse(ev)) {
-    // me->button: MouseButton enum
-    // me->kind: MouseEventKind (Press, Release, Move)
-    // me->x: Columns, me->y: Rows
-    // me->mods: Modifiers (.ctrl, .alt, .shift)
-}
+struct MouseEvent {
+    MouseButton    button;  // Left, Right, Middle, ScrollUp, ScrollDown,
+                            // ScrollLeft, ScrollRight, None
+    MouseEventKind kind;    // Press, Release, Move
+    Columns        x;       // x.value: 1-based column
+    Rows           y;       // y.value: 1-based row
+    Modifiers      mods;    // .ctrl, .alt, .shift
+};
 ```
 
-### Mouse Example (canvas_run callback)
+Motion without a button held is only reported when `.hover_motion = true`.
 
-```cpp
-canvas_run(
-    {.mouse = true},
-    on_resize,
-    [&](const Event& ev) {
-        if (mouse_clicked(ev)) {
-            auto pos = mouse_pos(ev);
-            if (pos) {
-                click_x = pos->col;
-                click_y = pos->row;
-            }
-        }
-        if (scrolled_up(ev))   zoom_in();
-        if (scrolled_down(ev)) zoom_out();
-        return !key(ev, 'q');
-    },
-    on_paint
-);
-```
-
-For Program apps, mouse events are handled via `Sub<Msg>::on_mouse()` in `subscribe()`.
-
-### Mouse capture vs. native terminal scroll — `set_mouse()`
+### Mouse Capture vs. Native Terminal Scroll
 
 While mouse reporting is on, the terminal delivers the scroll **wheel** to your
-app (as mouse buttons), so the terminal's own scrollback stops scrolling until
-the app exits. This is the terminal mouse protocol, not maya — no app can have
-in-app clicks *and* native scrollback at the same time. Capture is always
-released on exit.
+program (as mouse buttons), so the terminal's own scrollback and text
+selection stop working until the program exits. This is the terminal mouse
+protocol, not maya — no program can have in-app clicks *and* native scrollback
+at the same time. Capture is always released on exit.
 
-When you need to switch between the two at runtime, call `maya::set_mouse()`
-(declared in `maya/app/quit.hpp`, alongside `maya::quit()`):
+To switch at runtime, list the `set_mouse` terminal effect in your `Cmd` and
+return `SetMouse{bool}` from `update()`:
 
 ```cpp
-#include "maya/app/quit.hpp"
+using Cmd = jaal::Cmd<Msg, set_mouse>;
 
-run({.mouse = true}, [&](const Event& ev) {
-    if (key(ev, 'm')) maya::set_mouse(false);  // release wheel → terminal scrolls
-    if (key(ev, 'M')) maya::set_mouse(true);   // recapture clicks/drag/wheel
-    if (key(ev, 'q')) maya::quit();
-    return true;
-}, render);
+static Cmd update(Model& m, ToggleMouse) {
+    m.mouse = !m.mouse;
+    return Cmd(SetMouse{m.mouse});   // false: terminal scrolls/selects again
+}
 ```
 
-`set_mouse(bool)` sets a pending request that the `run()` / `Program` loop
-applies on its next iteration (mirroring `quit()`), emitting the enable/disable
-sequence and keeping the runtime's mouse state in sync so the terminal is
-correctly restored on exit. It also works from a `Program`'s `update()` /
-`subscribe()`. If an app doesn't need the mouse, simply leave `mouse = false`
-(the default) and native terminal scroll works untouched.
+Capture starts as `Options::mouse` says. If a program doesn't need the mouse,
+leave `mouse = false` (the default) and native terminal scroll works untouched.
+
+## Scroll Views
+
+Scrollable regions keep their offset in a `ScrollState` that lives **in the
+model**, marked `mutable` because the renderer writes the measured content
+extent (`max_y`) back into it after layout — that is how scrolling clamps
+with no code of yours.
+
+- **Mouse:** the Screen forwards wheel and scrollbar drag to every painted
+  `ScrollState` automatically. You don't subscribe to anything for it (just
+  run with `.mouse = true`).
+- **Keys:** keys are the program's. Route them with a message and call
+  `state.handle(key, viewport_h)` in `update()`.
+
+```cpp
+constexpr int kViewportH = 8;
+
+struct ScrollClip {
+    struct Model { mutable ScrollState state; };
+    struct Scroll { KeyEvent key; };
+    struct Quit {};
+    using Msg = std::variant<Scroll, Quit>;
+    using Cmd = jaal::Cmd<Msg>;
+    using Sub = jaal::Sub<Msg, on_key>;
+
+    static Cmd update(Model& m, Scroll s) { (void)m.state.handle(s.key, kViewportH); return {}; }
+    static Cmd update(Model&, Quit)       { return Cmd::quit(0); }
+
+    static Element view(const Model& m) {
+        return h(
+            content() | scroll(m.state, kViewportH) | grow_<1>,
+            scrollbar_y(m.state, kViewportH));
+    }
+
+    static Sub subscribe(const Model&) {
+        return Sub::on(on_key{}, [](const KeyEvent& k) -> std::optional<Msg> {
+            if (key_is(k, 'q')) return Quit{};
+            return Scroll{k};
+        });
+    }
+};
+
+int main() { return run<ScrollClip>({.title = "scroll", .mouse = true}); }
+```
+
+`handle(key, viewport_h, viewport_w)` understands arrows, PageUp/PageDown
+(one viewport), Home/End, and Ctrl+Home/Ctrl+End, and returns whether it
+consumed the key.
 
 ## Resize Events
 
 ```cpp
-if (resized(ev)) {
-    // Terminal was resized
-}
-
-int w, h;
-if (resized(ev, &w, &h)) {
-    // w and h now hold the new terminal size
-}
+Sub::on(on_resize{}, [](const ResizeEvent& r) -> std::optional<Msg> {
+    return Resized{r.width.value, r.height.value};
+})
 ```
 
-In `run()` with `Ctx`, the context's `size` field is automatically updated on
-resize, so you usually don't need to handle this yourself.
+Layout already adapts to the terminal size on its own; subscribe to
+`on_resize` only when the **model** depends on the size (a simulation grid,
+a pixel buffer sized to the screen).
 
 ## Paste Events
 
-If the terminal supports bracketed paste:
+If the terminal supports bracketed paste, a paste arrives as one
+`PasteEvent` instead of a flood of key events:
 
 ```cpp
-std::string pasted_text;
-if (pasted(ev, &pasted_text)) {
-    // pasted_text contains the clipboard content
-}
+Sub::on(on_paste{}, [](const PasteEvent& p) -> std::optional<Msg> {
+    return Pasted{p.content};
+})
 ```
 
-### Clipboard reads and image paste over SSH
+### Clipboard Reads and Image Paste over SSH
 
-`Cmd<Msg>::query_clipboard()` asks the terminal to send its clipboard back,
-and the reply arrives as a **`PasteEvent`** — the same event `pasted()` above
-matches. This works across SSH with **no remote clipboard tool**, because the
-request and reply travel in-band over the terminal escape channel.
+The `query_clipboard` terminal effect asks the terminal to send its clipboard
+back, and the reply arrives as a **`PasteEvent`** — so subscribe with
+`on_paste` to receive it. This works across SSH with **no remote clipboard
+tool**, because the request and reply travel in-band over the terminal escape
+channel.
+
+```cpp
+using Cmd = jaal::Cmd<Msg, query_clipboard>;
+using Sub = jaal::Sub<Msg, on_key, on_paste>;
+
+static Cmd update(Model&, AskClipboard) { return Cmd(QueryClipboard{}); }
+```
 
 Maya picks the read protocol from the host terminal:
 
 - **OSC 52** (the portable default) — a *text-only* protocol. Its reply can
-  never carry image bytes, so on a plain terminal `query_clipboard()` returns
-  text.
+  never carry image bytes, so on a plain terminal the query returns text.
 - **OSC 5522** (kitty's multi-format clipboard read) — the only in-band escape
   path that can carry **image** bytes. When maya detects a kitty host it sends
   this instead, reassembles the chunked `status=OK` / `DATA` / `DONE` reply,
@@ -282,106 +321,30 @@ read only when `KITTY_WINDOW_ID` is set or `TERM` looks like kitty (an sshd
 forwards those env vars but not arbitrary terminal capabilities). Everywhere
 else it falls back to OSC 52 text.
 
-!!! note "The app-facing shape is unchanged"
-    A `PasteEvent` carries opaque `content` bytes either way — for an image the
-    bytes *are* the image (e.g. PNG). You handle both with the same `pasted()`
-    check; sniff the payload (magic bytes) if you need to tell text from an
-    image. Nothing in your `update()` changes to gain SSH image paste.
+!!! note "The app-facing shape is the same either way"
+    A `PasteEvent` carries opaque `content` bytes — for an image the bytes
+    *are* the image (e.g. PNG). You handle both with the same `on_paste`
+    subscription; sniff the payload (magic bytes) if you need to tell text
+    from an image.
 
 ## Focus Events
 
 ```cpp
-if (focused(ev))   { /* Terminal gained focus */ }
-if (unfocused(ev)) { /* Terminal lost focus */ }
+Sub::on(on_focus{}, [](const FocusEvent& f) -> std::optional<Msg> {
+    return f.focused ? Msg{Focused{}} : Msg{Blurred{}};
+})
 ```
 
-## Event Handler Patterns
-
-### Program Pattern: Declarative subscribe()
-
-For `run<P>()` apps, define a `subscribe()` function:
-
-```cpp
-static auto subscribe(const Model&) -> Sub<Msg> {
-    return key_map<Msg>({
-        {'q', Quit{}}, {'+', Increment{}}, {'-', Decrement{}},
-        {'r', Reset{}}, {'t', CycleTheme{}},
-    });
-}
-
-static auto update(Model model, Msg msg) -> std::pair<Model, Cmd<Msg>> {
-    return std::visit(overload{
-        [&](Quit)       { return std::pair{model, Cmd<Msg>::quit()}; },
-        [&](Increment)  { model.count++; return std::pair{model, Cmd<Msg>::none()}; },
-        // ...
-    }, msg);
-}
-```
-
-### canvas_run() Callback Patterns
-
-These patterns apply to `canvas_run()` event callbacks.
-
-#### Pattern 1: Bool Return (Quit Control)
-
-```cpp
-// Return false to quit, true to continue
-[&](const Event& ev) -> bool {
-    on(ev, '+', [&] { count++; });
-    on(ev, '-', [&] { count--; });
-    if (key(ev, 'q') || key(ev, SpecialKey::Escape)) return false;
-    return true;
-}
-```
-
-#### Pattern 2: Void Return (Use quit())
-
-```cpp
-// Call maya::quit() to exit
-[&](const Event& ev) {
-    on(ev, '+', [&] { count++; });
-    on(ev, '-', [&] { count--; });
-    on(ev, 'q', [] { quit(); });
-}
-```
-
-#### Pattern 3: Complex Event Dispatch
-
-```cpp
-[&](const Event& ev) {
-    // Key shortcuts
-    on(ev, 't', [&] { theme = (theme + 1) % kThemeCount; });
-    on(ev, 'T', [&] { theme = (theme + 1) % kThemeCount; });
-    on(ev, 'p', [&] { paused = !paused; });
-    on(ev, ' ', [&] { trigger_action(); });
-
-    // Speed control
-    on(ev, '+', '=', [&] { speed = std::min(5.0f, speed + 0.25f); });
-    on(ev, '-', '_', [&] { speed = std::max(0.1f, speed - 0.25f); });
-
-    // Mouse
-    if (auto pos = mouse_pos(ev)) {
-        hover_col = pos->col - 1;
-    }
-    if (mouse_clicked(ev)) {
-        auto pos = mouse_pos(ev);
-        if (pos) do_click(pos->col, pos->row);
-    }
-    if (scrolled_up(ev))   speed *= 1.25f;
-    if (scrolled_down(ev)) speed *= 0.8f;
-
-    // Quit
-    return !(key(ev, 'q') || key(ev, SpecialKey::Escape));
-}
-```
+A common use is pausing an animation while the terminal is in the
+background: keep a `focused` flag in the model and only include
+`Sub::every` in `subscribe()` while it's set.
 
 ## Input Parsing Internals
 
-maya's `InputParser` is a state-machine that parses raw terminal bytes into
-structured events:
+The input parser is a state machine that handles:
 
 - **Ground** → Normal character input
-- **Escape** → Start of escape sequence
+- **Escape** → After receiving `ESC`
 - **CSI** → Control Sequence Introducer (`ESC [`)
 - **SS3** → Single Shift 3 (`ESC O`) — some function keys
 - **OSC** → Operating System Command
@@ -395,4 +358,5 @@ The parser handles:
 - Focus events (in/out)
 - Ambiguous Escape (50ms timeout to distinguish ESC key from escape sequence)
 
-You never interact with `InputParser` directly — the framework handles it.
+You never interact with `InputParser` directly — the Screen parses input and
+the event sources deliver the results.

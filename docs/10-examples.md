@@ -1,87 +1,134 @@
 # Examples Walkthrough
 
-maya ships **35 examples** that progressively demonstrate its features.
-This guide walks through the major ones, explaining the patterns and
-techniques used.
+maya ships **54 examples** in [`examples/`](../examples/). Every one is a
+jaal program run by `maya::run<P>()`: a `Model`, one `update()` per message,
+a pure `view()` that returns an `Element`, and a `subscribe()` that says where
+messages come from. (The two exceptions, `stat_sheet_demo` and
+`editor_widget_check`, just `print()` or `render_to_string()` and exit.)
 
-> **The authoritative list is the [`examples/`](../examples/) directory** —
-> every `examples/*.cpp` is built as a `maya_<name>` target (the CMake build
-> globs the directory). Run `ls examples/*.cpp` for the current set. This
-> walkthrough covers the major examples by category; every code snippet is
-> checked against the live headers.
+Every `examples/<name>.cpp` is built as the target `maya_<name>` (the CMake
+build globs the directory):
 
-## 1. counter.cpp — The Simplest App
+```sh
+cmake --build build --target maya_counter && ./build/maya_counter
+```
 
-**Mode**: Fullscreen (`run<P>()`)
-**Lines**: ~30
-**Demonstrates**: Program concept, Model/Msg/update/view/subscribe, Cmd, key_map
+This guide walks through the patterns first, then lists all 54.
+
+## 1. counter.cpp — the smallest app
+
+The README's quickstart, verbatim:
 
 ```cpp
+#include <maya/app.hpp>
+
+#include <string>
+#include <variant>
+
+using namespace maya;
+using namespace maya::dsl;
+
 struct Counter {
     struct Model { int count = 0; };
-    struct Increment {}; struct Decrement {}; struct Reset {}; struct Quit {};
-    using Msg = std::variant<Increment, Decrement, Reset, Quit>;
-    static Model init() { return {}; }
-    static auto update(Model m, Msg msg) -> std::pair<Model, Cmd<Msg>> {
-        return std::visit(overload{
-            [&](Increment) { return std::pair{Model{m.count + 1}, Cmd<Msg>{}}; },
-            [&](Decrement) { return std::pair{Model{m.count - 1}, Cmd<Msg>{}}; },
-            [&](Reset)     { return std::pair{Model{0}, Cmd<Msg>{}}; },
-            [](Quit)       { return std::pair{Model{}, Cmd<Msg>::quit()}; },
-        }, msg);
-    }
+
+    struct Inc {}; struct Dec {}; struct Quit {};
+    using Msg = std::variant<Inc, Dec, Quit>;
+
+    using Cmd = jaal::Cmd<Msg>;
+    using Sub = jaal::Sub<Msg, on_key>;
+
+    static Cmd update(Model& m, Inc)  { ++m.count; return {}; }
+    static Cmd update(Model& m, Dec)  { --m.count; return {}; }
+    static Cmd update(Model&,   Quit) { return Cmd::quit(0); }
+
     static Element view(const Model& m) {
-        return v(t<"Counter"> | Bold | Fg<100,180,255>, blank_, text(m.count) | Bold, blank_,
-                 t<"+/- to change, r to reset, q to quit"> | Dim) | pad<1> | border_<Round>;
+        return v(
+            text("Count: " + std::to_string(m.count)) | Bold | Fg<100, 200, 255>,
+            t<"[+/-] change  [q] quit"> | Dim
+        ) | border_<Round> | bcol<50, 55, 70> | pad<1>;
     }
-    static auto subscribe(const Model&) -> Sub<Msg> {
-        return key_map<Msg>({{'q', Quit{}}, {'+', Increment{}}, {'=', Increment{}},
-                             {'-', Decrement{}}, {'r', Reset{}},
-                             {SpecialKey::Up, Increment{}}, {SpecialKey::Down, Decrement{}}});
+
+    static Sub subscribe(const Model&) {
+        return keys<Sub>({{'+', Inc{}}, {'-', Dec{}}, {'q', Quit{}}});
     }
 };
-int main() { run<Counter>({.title = "counter"}); }
+
+int main() { return run<Counter>({.title = "counter"}); }
 ```
 
 **Key patterns**:
-- **Program concept**: A struct with `Model`, `Msg`, `init`, `update`, `view`, and `subscribe`
-- **Model as plain data**: `Model` is a simple struct holding the app state
-- **`Cmd<Msg>{}`** for no side effects; `Cmd<Msg>::quit()` to exit
-- **`key_map<Msg>`** for declarative key bindings — maps keys to messages
-- **`view()` as pure function**: Takes `const Model&`, returns `Element`
-- `t<"..."> | Dim` for static styled text
-- `| pad<1> | border_<Round>` for padding and border around the whole UI
+- **Model is all the state**, a plain default-constructible struct.
+- **One struct per message**, collected in `Msg = std::variant<...>`.
+- **One `update()` overload per message.** It mutates the model in place and
+  returns a `Cmd`: `{}` for nothing, `Cmd::quit(0)` to exit.
+- **`Cmd` and `Sub` name what the program uses.** `jaal::Sub<Msg, on_key>`
+  says it listens to the keyboard; a host that can't provide a listed source
+  is a compile error.
+- **`keys<Sub>({...})`** maps keys to messages declaratively.
+- **`view()` is pure**: `const Model&` in, `Element` out.
 
-This is the canonical Program-style maya app.
+`basic.cpp` is the same program again, kept for side-by-side reading.
 
-## 2. markup.cpp / widgets.cpp — Feature Showcase
+## 2. stopwatch.cpp — ticks, delays, conditional subscriptions
 
-**Mode**: Fullscreen (`run<P>()`)
-**Demonstrates**: RunConfig, Program architecture, theme colors, nested layouts, conditional styling
+**Demonstrates**: `Sub::every()`, `Cmd::after()`, subscriptions that depend on
+the model.
 
-Builds on counter using the Program pattern with:
-- `{.title = "maya demo"}` — sets the terminal window title via RunConfig
-- Nested `h()` inside `v()` for two-column counter display
-- Conditional color based on counter sign (`c >= 0 ? success : error`)
-- Multiple message types for different interactions
-
-**Key pattern — theme-aware styling**:
 ```cpp
-static Element view(const Model& m) {
-    return (v(
-        text("Title", Style{}.with_bold().with_fg(theme::dark.primary)),
-        // ...
-    ) | border_<Round> | pad<1>).build();
+static Cmd update(Model& m, Lap) {
+    // ... record the lap, turn the flash on ...
+    return Cmd::after(std::chrono::milliseconds(300), FlashOff{});
+}
+
+static Sub subscribe(const Model& m) {
+    auto on_keys = keys<Sub>({{'q', Quit{}}, {' ', Toggle{}}, {'l', Lap{}}, {'r', Reset{}}});
+    if (m.running)
+        return Sub::batch(std::move(on_keys),
+                          Sub::every(std::chrono::milliseconds(10), Tick{}));
+    return on_keys;
 }
 ```
 
-## 3. Compile-Time DSL (see any `print()` usage)
+`subscribe()` is diffed after every update: when the stopwatch stops, the
+timer is torn down and a still screen costs nothing.
 
-**Mode**: One-shot (`print()`)
-**Demonstrates**: Fully constexpr UI, type-state safety, bcol after border
+## 3. inline_progress.cpp — inline mode
 
-Uses `print()` for one-shot output (no event loop).
-Shows that entire UI trees can be `constexpr`:
+**Demonstrates**: `Mode::Inline`, auto-quit, printing after the program ends.
+
+An inline program renders into the terminal's scrollback instead of the alt
+screen, so its last frame stays visible after exit. The progress card is just a
+program whose `Tick` advances the work and quits at 100%:
+
+```cpp
+struct Progress {
+    struct Model { std::chrono::milliseconds elapsed{0}, step{33}; };
+    struct Tick {};
+    using Msg = std::variant<Tick>;
+    using Cmd = jaal::Cmd<Msg>;
+    using Sub = jaal::Sub<Msg>;
+
+    static Cmd update(Model& m, Tick) {
+        m.elapsed = std::min<std::chrono::milliseconds>(m.elapsed + m.step, kDuration);
+        return m.elapsed >= kDuration ? Cmd::quit(0) : Cmd{};
+    }
+    static Element view(const Model& m) { return progress_card(/* ... */); }
+    static Sub subscribe(const Model& m) { return Sub::every(m.step, Tick{}); }
+};
+
+int main() {
+    const int rc = run<Progress>({.mode = Mode::Inline});
+    print(v(t<"Done"> | Bold | Fg<100, 255, 140>, blank_,
+            text("All work completed successfully.") | Dim) | pad<1> | border_<Round>);
+    return rc;
+}
+```
+
+`chat`, `agent`, `agent_session`, `stocks` and `sysmon` run inline too.
+
+## 4. Compile-time DSL and one-shot output
+
+**Demonstrates**: fully constexpr UI, type-state safety, `print()`.
 
 ```cpp
 constexpr auto card = v(
@@ -91,481 +138,190 @@ constexpr auto card = v(
     h(t<"Mem:"> | Dim, t<" 8.2G"> | Bold | Fg<180, 130, 255>)
 ) | border_<Round> | bcol<60, 65, 80> | pad<1>;
 
-print(ui.build());
+print(card);
 ```
 
-**Key insight**: Everything before `.build()` is evaluated by the compiler.
-The border color (`bcol<60, 65, 80>`) only compiles because `border_<Round>`
-comes first — type-state enforcement.
+The border colour (`bcol<...>`) only compiles because `border_<Round>` comes
+first. `print()` and `render_to_string()` need no program at all:
+`stat_sheet_demo`, `editor_widget_check` and `markup --dump` use them.
 
-Also demonstrates mixing constexpr and runtime with `dyn()`.
+## 5. Pixels and glyphs: games, simulations, fractals
 
-## 4. inline_progress.cpp — Inline Mode
+**Demonstrates**: `pixels(Image)`, `Image::fill_rows`, `glyphs(Glyphs)`,
+resize messages, `Tick` animation. See [Pixels and glyphs](08-canvas-api.md).
 
-**Mode**: `run()` with `Mode::Inline`
-**Demonstrates**: Inline rendering, live bar animation, theme cycling
+Every animation is a normal program. The model sizes itself from `on_resize`,
+`update()` advances the simulation on `Tick`, and `view()` turns the model
+into a picture:
 
-Uses simple `run()` with `{.mode = Mode::Inline}` — renders in the terminal scrollback
-instead of the alt screen. The output stays visible after exit.
-
-**Key pattern — runtime bar construction**:
 ```cpp
-int filled = std::abs(count) % 21;
-std::string bar;
-for (int i = 0; i < 20; ++i)
-    bar += (i < filled) ? "█" : "░";
-```
+// doom_fire.cpp
+static Element view(const Model& m) {
+    if (m.w == 0) return text("");              // no size yet
+    return v(pixels(render(m)), status_bar(m)); // Image + a text status bar
+}
 
-Shows that `text()` works with runtime strings for dynamic visualizations.
-
-## 5. inline_progress.cpp — Inline Progress Display
-
-**Mode**: Inline (`live()`)
-**Demonstrates**: Delta time, parallel progress bars, spinners, auto-quit
-
-Uses `live({.fps = 30}, [](float dt) { ... })` — the delta-time
-variant for smooth animation.
-
-**Key patterns**:
-- State advancement: `progress += speed * dt`
-- Auto-quit: `if (g_done == kN) quit()`
-- Spinner animation: `spin(g_time)` cycles through braille spinner frames
-- Sub-cell progress: partial block characters `▏▎▍▌▋▊▉` for smooth bars
-- Per-package state machine: waiting → downloading → done
-
-**Rendering approach**: Builds a `vector<Element>` dynamically, then wraps it
-in `v(rows)`. Each package gets a different row based on its state.
-
-## 6. agent.cpp — AI Agent Simulation
-
-**Mode**: Inline Program (`run<Agent>()`, `Mode::Inline`, `fps = 20`)
-**Demonstrates**: Streaming text, phase state machine, diff coloring, bordered output
-
-Simulates an AI coding agent with token-by-token text streaming. Each "block"
-(thinking, tool call, result, response) streams at a configurable speed.
-
-**Key patterns**:
-- **Streaming text**: Characters revealed over time via
-  `shown = min(phase_t * speed, content.size())`
-- **Phase state machine**: Advances through blocks sequentially with pause
-  between phases
-- **Diff rendering**: Detects `+` and `─` prefixes to color-code diff output
-- **Bordered tool results**: `vstack().border(Round).border_color(...)(content)`
-- **Spinner state**: `spin(total_t)` shows activity during thinking
-
-This example uses `v(rows)` for dynamic child lists and `vstack().border()`
-for runtime-styled bordered panels.
-
-## 7. dashboard.cpp — System Monitoring Dashboard
-
-**Mode**: Canvas (`canvas_run()`, `Mode::Fullscreen`, `fps = 60`, title "NEXUS")
-**Demonstrates**: Direct canvas painting, multi-panel grid, process table, sparklines
-
-A full monitoring dashboard painted directly to the `Canvas` (no element tree)
-for 60 fps throughput. Renders:
-- Header bar (uptime, load, summary)
-- CPU panel with per-core sparklines
-- Memory panel with gauge bar
-- Network panel with rx/tx sparklines
-- Disk I/O panel
-- Process table with color-coded rows
-- Status bar with theme selector
-
-**Key patterns**:
-
-**Interning styles once in `on_resize`** (not per-frame):
-```cpp
-[&](StylePool& pool, int w, int h) {
-    style_ids.accent = pool.intern(Style{}.with_fg(theme_accent()));
-    // ... rebuild the interned palette when size/theme changes
+static Sub subscribe(const Model&) {
+    return Sub::batch(
+        Sub::every(16ms, Tick{}),
+        Sub::on(on_resize{}, [](const ResizeEvent& r) -> std::optional<Msg> {
+            return Resize{r.width.value, r.height.value};
+        }),
+        keys<Sub>({{' ', ToggleSource{}}, {'q', Quit{}}, {SpecialKey::Escape, Quit{}}}));
 }
 ```
 
-**Braille sub-cell plotting** for smooth charts at 2×4 resolution per cell:
+Shaders compute each pixel on every core:
+
 ```cpp
-braille_plot(canvas, ox, oy, bw, bh, samples, style_id);
-braille_line(canvas, ox, oy, bw, bh, series, style_id);
+// space3d.cpp
+img.fill_rows([&](int x, int y) { return finish(trace(m, x, y, m.w, m.h), x, y, m.w, m.h); });
 ```
 
-**Direct canvas draw calls** in the paint pass (`draw_gauges`, `draw_radar`,
-`draw_hex`, `draw_spectrum`, `draw_waveform`, `draw_network`, `draw_status`):
+Character art uses a `Glyphs` grid instead of an Image:
+
 ```cpp
-[&](Canvas& canvas, int w, int h) {
-    draw_gauges(canvas, x, y, gw, gh);
-    draw_radar(canvas, rx, ry, rw, rh);
-    apply_glitch(canvas, w, h);   // full-frame post-effect
+// matrix.cpp
+static Element view(const Model& m) {
+    if (m.w == 0) return text("");
+    return v(glyphs(rain(m)), status_bar(m));
 }
 ```
 
-See also `sysmon.cpp` for the **element-tree** flavour of a system monitor
-(inline `run()` with widgets instead of raw canvas paint).
-
-## 8. chat.cpp — AI Agent Session
-
-**Mode**: Inline (`run()` with `Mode::Inline`)
-**Demonstrates**: Tool widgets, streaming markdown, activity bar, toast notifications
-
-An animated simulation of a Claude Code AI agent session, streaming content
-character-by-character. Showcases every major tool widget: `UserMessage`,
-`ThinkingBlock`, `ReadTool`, `SearchResult`, `PlanView`, `EditTool`,
-`WriteTool`, `Permission`, `BashTool`, `DiffView`, `AgentTool`, `FetchTool`,
-`AssistantMessage` with `StreamingMarkdown`, `ActivityBar`, `ToastManager`,
-`Badge`, and `Callout`.
+Mouse input is another subscription. `fluid.cpp` stirs the fluid by drag:
 
 ```cpp
-int main() {
-    maya::run(
-        {.fps = 30, .mode = Mode::Inline},
-        [](const Event& ev) {
-            return !(key(ev, 'q') || key(ev, SpecialKey::Escape));
-        },
-        [&] {
-            tick(app);
-            return build_ui(app);
-        }
-    );
-}
-```
+using Sub = jaal::Sub<Msg, on_key, on_mouse, on_resize>;
 
-## 9. deploy.cpp — CI/CD Deployment Pipeline
-
-**Mode**: Fullscreen (`run()`)
-**Demonstrates**: Multi-service pipeline, log streaming, environment switching
-
-A real-time animated deployment pipeline dashboard showing multiple
-microservices being built, tested, and deployed. Supports triggering new
-deployment waves, rollback, force-deploy, and environment selection
-(dev/staging/prod).
-
-## 10. hacker.cpp — Cyberpunk Hacker Terminal
-
-**Mode**: Fullscreen (`run()`)
-**Demonstrates**: Rapid data scrolling, sparklines, heatmaps, badge widgets
-
-A movie-style hacking terminal: rapid scrolling data, flashing alerts, network
-intrusion simulation, hex dumps, progress bars, sparklines, and heatmaps. Pure
-eye candy with three color themes (green, amber, cyan).
-
-## 11. ide.cpp — Terminal IDE Layout
-
-**Mode**: Fullscreen (`run()`)
-**Demonstrates**: Multi-panel layout, syntax highlighting, file tree, diagnostics
-
-A VS Code / Zed-inspired terminal IDE layout using the full maya widget
-toolkit. Features a file tree, tabbed editor with syntax highlighting, code
-outline, diagnostics panel, git status, terminal output panel, and status bar.
-Panels toggle with number keys; `b` triggers a simulated build.
-
-## 12. music.cpp — Terminal Music Player
-
-**Mode**: Fullscreen (`run()` with `fps = 15`)
-**Demonstrates**: Animated heatmap album art, sparkline visualizer, scrollable playlist
-
-A Spotify/Apple-Music-inspired terminal music player with animated heatmap
-album art, sparkline audio visualizer, progress bar, and scrollable playlist.
-All data is simulated. Supports play/pause, next/previous, shuffle, repeat, and
-volume control.
-
-## 13. space.cpp — Mission Control Dashboard
-
-**Mode**: Fullscreen (`run()` with `fps = 15`)
-**Demonstrates**: Gauges, sparklines, heatmap, line chart, bar chart, physics simulation
-
-A NASA-style mission control dashboard tracking a simulated spacecraft journey
-to Mars. Features telemetry gauges, sparklines, a heatmap, line chart, bar
-chart, crew status, subsystem health, random events, and physics simulation.
-
-## 14. stocks.cpp — Live Stock Ticker
-
-**Mode**: Inline (`run()` with `Mode::Inline`, `fps = 20`)
-**Demonstrates**: Animated charts, sparklines, color-coded gains/losses, news feed
-
-A visually rich terminal stock dashboard with animated price charts,
-sparklines, color-coded gains/losses, portfolio summary, and a scrolling news
-feed. Data uses correlated random walks. Output stays in scrollback after exit.
-
-## 15. sysmon.cpp — System Monitor
-
-**Mode**: Inline (`run()` with `Mode::Inline`, `fps = 15`)
-**Demonstrates**: CPU sparklines, process table, activity log, sort modes
-
-A fullscreen system monitor with fake-live telemetry: CPU cores with
-sparklines, memory banks, network interfaces, process table, entropy pool, and
-a scrolling activity log. Supports pause, log toggle, process sort, and speed
-control.
-
-## 16. matrix.cpp — Matrix Digital Rain
-
-**Mode**: Canvas (`canvas_run()`)
-**Demonstrates**: Direct canvas painting, per-cell animation, mouse interaction, shockwaves
-
-A full Matrix-style rain effect with:
-- Katakana + digit glyphs with random mutation
-- Variable-speed drops with trails
-- Mouse hover highlighting
-- Click-to-shockwave with ripple propagation
-- 7 color themes
-- Pause, speed control, jolt all drops
-
-**Key patterns**:
-
-**Style pre-interning for gradients**:
-```cpp
-for (int d = 0; d < kMaxTrail; ++d) {
-    float f = pow(1.0f - float(d) / float(kMaxTrail - 2), 1.7f);
-    auto r = uint8_t(f * trail.r + (1-f) * 7);
-    // ...
-    styles.theme[t][d] = pool.intern(Style{}.with_fg(Color::rgb(r, g, b)));
-}
-```
-
-**Direct canvas painting** (no element tree):
-```cpp
-[&](Canvas& canvas, int W, int H) {
-    rain->paint(canvas, styles, theme, hover_col, glitching);
-    paint_bar(canvas, styles, W, H, ...);
-}
-```
-
-**Mouse interaction**:
-```cpp
-if (auto pos = mouse_pos(ev)) hover_col = pos->col - 1;
-if (mouse_clicked(ev)) rain->shockwave(pos->col, pos->row);
-```
-
-## 17. spectrum.cpp — Signal Charts + Heatmap
-
-**Mode**: Canvas (`canvas_run()`, `Mode::Fullscreen`, `fps = 60`)
-**Demonstrates**: Braille sub-cell graphics, 2D heatmap, fast math, split panels
-
-Two visualization techniques side by side:
-- Left: Three braille area charts (CPU, MEM, NET) with sub-cell resolution
-- Right: 2D wave interference heatmap with 5 animated point sources
-
-**Key patterns**:
-
-**Braille area charts** — 2x4 sub-cell resolution per terminal cell:
-```cpp
-// Each terminal cell = 2px wide × 4px tall
-// Fill mask lookup table for O(1) per cell:
-static constexpr uint8_t kFill[2][5] = {
-    {0x0F, 0x0E, 0x0C, 0x08, 0x00},  // left column
-    {0xF0, 0xE0, 0xC0, 0x80, 0x00},  // right column
-};
-uint8_t mask = kFill[0][threshold_left] | kFill[1][threshold_right];
-canvas.set(x, y, char32_t(0x2800 + mask), gradient_style);
-```
-
-**Half-block heatmap** — 2x vertical resolution:
-```cpp
-canvas.set(cx, cy, U'▀', styles.heat[fg_index][bg_index]);
-// fg = top pixel color, bg = bottom pixel color
-```
-
-**Fast math approximations**:
-```cpp
-inline float fast_sin(float x) noexcept { /* polynomial approx */ }
-inline float fast_sqrt(float x) noexcept { /* Quake III rsqrt */ }
-```
-
-## 18. particles.cpp — Particle Physics
-
-**Mode**: Canvas (`canvas_run()`)
-**Demonstrates**: Physics simulation, particle lifecycle, auto-launch, mouse click-to-launch
-
-Renders fireworks with:
-- Rocket launch → ascent → explosion
-- 80-160 particles per burst with 4 explosion shapes
-- Gravity, drag, color aging
-- Background star field with twinkling
-- Multiple color palettes
-- Auto-launch with random timing + click-to-launch
-
-**Key patterns**:
-
-**Particle lifecycle**:
-```cpp
-for (auto& p : particles) {
-    p.vx *= kDrag;
-    p.vy *= kDrag;
-    p.vy += kGravity * kDt;
-    p.x += p.vx * kDt;
-    p.y += p.vy * kDt;
-    p.life -= p.decay;
-}
-std::erase_if(particles, [](const Particle& p) {
-    return p.life <= 0.f;
+auto mouse = Sub::on(on_mouse{}, [](const MouseEvent& e) -> std::optional<Msg> {
+    if (e.button != MouseButton::Left && e.kind != MouseEventKind::Move) return std::nullopt;
+    const int x = e.x.value - 1, y = (e.y.value - 1) * 2;   // 1-based cells -> pixels
+    switch (e.kind) {
+        case MouseEventKind::Press:   return Press{x, y};
+        case MouseEventKind::Move:    return Drag{x, y};
+        case MouseEventKind::Release: return Release{};
+    }
+    return std::nullopt;
 });
 ```
 
-**Color aging** — palette interpolation based on particle life:
+(Run it with `run<FluidSim>({.title = "fluid", .mouse = true})`.)
+
+## 6. agent_session.cpp — the reference agent app
+
+**Demonstrates**: `Sub::stream` background worker, SSE-shaped streaming, live
+tool cards, the status-bar family, inline mode with zero scrollback
+corruption.
+
+A Claude-Code-style inline TUI (~2300 lines). A background stream feeds
+Anthropic-shaped events into `update()`; tool widgets change while I/O is still
+arriving. The worker subscription exists only while a turn is streaming:
+
 ```cpp
-RGB palette_color(int pal, float life) {
-    if (life > 0.85f) return lerp(bright, white, t);   // Flash
-    if (life > 0.45f) return lerp(mid, bright, t);      // Bright
-    return lerp(dim, mid, t);                             // Fade
+static Sub subscribe(const Model& m) {
+    // ...
+    const bool working = m.stream_phase > 0 && !m.perm_open
+                      && m.phase != Phase::Idle && m.phase != Phase::Done;
+    if (!working) return Sub::batch(std::move(keys), std::move(tick));
+    auto worker = Sub::stream(/* ... */);
+    // ...
 }
 ```
 
-**Glyph aging** — larger characters for young particles, smaller for old:
-```cpp
-char32_t kBurst[] = {U'✦', U'✦', U'●', U'•', U'·', U'·'};
-int ci = int((1.f - p.life) * kGlyphs);
-canvas.set(cx, cy, kBurst[ci], gradient_style);
-```
+It runs unattended through several scenarios and has a working composer for
+multi-turn input. `run<App>({.title = "agent session", .fps = 30, .mode = Mode::Inline})`.
 
-## 19. stopwatch.cpp — Stopwatch with Ticks
+## 7. motion_showcase.cpp — animation framework
 
-**Mode**: Fullscreen (`run<P>()`)
-**Demonstrates**: `Sub::every()` for periodic ticks, `Cmd::after()` for delayed effects, conditional subscriptions, `when()` DSL
+Widgets that animate read the frame clock while `view()` runs; the program
+never calls a clock itself. A one-screen tour of `Motion`, springs, timelines,
+staggers and the streaming typewriter. See [Animation](14-animation.md).
 
-A stopwatch app that ticks every frame while running and supports lap timing
-with a flash effect.
+## 8. terminal_fx.cpp — terminal effects
 
-**Key patterns**:
-- **Conditional subscriptions**: `Sub::every()` only active when the stopwatch
-  is running — tick messages stop when paused
-- **`Cmd::after()`** for flash timeout: triggers a message after a delay to
-  clear a visual flash indicator
-- **`when()` DSL** for conditional rendering based on model state
-
-## 20. breakout.cpp — Breakout / Arkanoid Clone
-
-**Mode**: Canvas (`canvas_run()`)
-**Demonstrates**: Game loop, half-block pixel rendering, comet trail, power-ups
-
-A Breakout/Arkanoid clone using canvas half-block rendering. Features multi-hit
-bricks, a comet trail on the ball, particles, power-ups, and level progression.
-Controls: left/right or h/l for paddle, space to launch/pause, r to restart.
-
-## 21. snake.cpp — Snake
-
-**Mode**: Canvas (`canvas_run()`)
-**Demonstrates**: Half-block pixels, gradient body, particle effects, ghost trails
-
-A Snake game using canvas half-block rendering with a gradient-colored body,
-particle effects on food collection, and ghost trails. Arrow keys / WASD / hjkl
-to move, space to pause, W to toggle wrap mode.
-
-## 22. agent_session.cpp — AI Agent Reference App
-
-**Mode**: Inline Program (`run<App>()`, `Mode::Inline`, `fps = 30`)
-**Demonstrates**: `Cmd::task` background worker, SSE-shaped streaming, live tool
-cards, the full status-bar family, zero scrollback corruption
-
-The flagship auto-piloted agent app (~2300 lines). A background `Cmd::task`
-worker feeds Anthropic-shaped stream events (`ThinkingDelta`, `ToolBegin/
-Delta/End`, `PlanCreated`, `PermissionAsk`, `AssistantDelta`) into a pure
-`update()` loop; tool widgets mutate while I/O is still arriving. It cycles
-four scenarios unattended and auto-grants permissions — the canonical stress
-test that streaming inline output never duplicates or corrupts native
-scrollback. Uses `WelcomeScreen`, `Composer`, `SystemBanner`, `PhaseChip`,
-`ContextGauge`, `TokenStreamSparkline`, and `ModelBadge`. Type at any time to
-drive it manually.
-
-## 23. messenger.cpp — Multi-Channel Chat
-
-**Mode**: Fullscreen Program (`run<Messenger>()`, `.mouse = true`, `fps = 30`)
-**Demonstrates**: Pure Elm architecture at scale, `Sub::every`/`on_key`/
-`on_resize`, full editing composer, `Overlay` modals
-
-A multi-channel terminal chat (~2300 lines) with no `Signal`/globals — all
-state flows through `update()`/`view()`/`subscribe()`. Simulated peers post
-across four channels via `Sub::every`; a catch-all `Sub::on_key` drives a full
-UTF-8 composer (word-delete, line-kill, cursor motion), slash commands (`/me`,
-`/clear`, `/help`), channel navigation, and scrollback. Channel-jumper and
-help views use the `Overlay` widget. The canonical large Program-architecture
-reference.
-
-## 24. space3d.cpp — Raymarched Terrain Flight
-
-**Mode**: Canvas (`canvas_run()`, `Mode::Fullscreen`, `fps = 30`,
-`auto_clear = false`)
-**Demonstrates**: Per-pixel raymarched heightmap, multi-threaded rendering,
-atmospheric scattering
-
-A 3D flight demo over raymarched terrain with water reflections, ambient
-occlusion, soft shadows, procedural erosion texturing, and a golden-hour
-scattering sky. Rendering is split across `std::thread`s — the heaviest 3D
-canvas example. WASD/arrows steer, space ascends, `c` descends, `b` boosts.
-
-## 25. motion_showcase.cpp — Animation Framework Tour
-
-**Mode**: Inline Program (`run<Showcase>()`, `Mode::Inline`)
-**Demonstrates**: `Motion<T>` self-driving values, `pulse()`, `Timeline`
-keyframes, `Stagger`, `text_reveal` — all with NO manual clock/dt
-
-A one-screen tour of `core/motion.hpp` + `anim/text_reveal.hpp`. Spring-driven
-sliders (`wobbly` preset), breathing `pulse()`, keyframe `Timeline`
-choreography, index-phased `Stagger` fan-out, and a typewriter `text_reveal`
-decorator. Widget authors declare intent and read a value while the framework
-owns time and cadence. SPACE toggles the spring, `1`–`7` fire the demos, `c`
-cycles the pulsing colour. See [Animation](14-animation.md).
-
-## 26–27. Additional Canvas Demos
-
-The remaining examples are all `canvas_run()` physics and visual demos:
-
-- **doom_fire.cpp** — Doom PSX fire effect with 3 palettes, ember particles,
-  wind, intensity control
-- **fluid.cpp** — 2D Navier-Stokes fluid/smoke simulation with half-block rendering
-- **fps.cpp** — Wolfenstein-style DDA raycaster with procedural textures,
-  lighting, and enemy sprites
-- **life.cpp** — Conway's Game of Life with heat-gradient aging and half-block
-  double vertical resolution
-- **mandelbrot.cpp** — Real-time Mandelbrot explorer with smooth coloring,
-  auto-zoom, and 6 palettes
-- **particles.cpp** — Particle physics system with 5 modes (fireworks, galaxy,
-  fountain, vortex, starfield)
-- **raymarch.cpp** — Real-time SDF raymarcher with reflective surfaces, sunset
-  sky, and colored lights
-- **sorts.cpp** — Four sorting algorithms racing side-by-side with animated
-  colored bars
-- **spectrum.cpp** — Simulated audio spectrum analyzer with 4 visualization
-  modes and beat detection
+A checklist program: each key fires one terminal effect (listed in the
+program's `Cmd` row, e.g. `jaal::Cmd<Msg, set_title>`) and the screen shows
+what came back. `--dracula` runs it with a theme that owns its background.
 
 ## The full example set
 
-All 35 examples, grouped by what they teach. Build target is `maya_<name>`;
-source is `examples/<name>.cpp`. (Modes drift as examples evolve — the source
-is authoritative; `grep -l canvas_run examples/*.cpp` etc. gives the current
-truth.)
+All 54, grouped by what they teach. Target: `maya_<name>`; source:
+`examples/<name>.cpp`.
 
-**Architecture & DSL** — the patterns to learn first:
+**Start here** — the program shape:
 
-- `counter` — the canonical Program app (Model/Msg/update/view/subscribe).
-- `stopwatch` — Program + `Sub::every` ticks, `Cmd::after`, conditional subs.
-- `widgets`, `markup` — feature tours of the widget library and markup.
-- `inline_progress` — inline-mode / `live()` rendering with animation.
+- `counter` — the smallest app; the README quickstart.
+- `basic` — the counter again, for side-by-side reading.
+- `stopwatch` — `Sub::every` ticks, `Cmd::after` delays, subscriptions that depend on the model.
+- `inline_progress` — an inline progress card that quits at 100% and prints a summary.
+- `navcheck` — a tiny list, used by the navigation-frame test (every row of a key-repeat burst is drawn).
+- `terminal_fx` — every terminal effect the host carries, one key each.
 
-**Agent / chat UIs** — streaming text, tool cards, markdown:
+**Widgets and markup:**
 
-- `agent`, `agent_session` — simulated AI coding-agent sessions (the
-  `agent_session` is the large reference app with zero scrollback corruption).
-- `chat`, `messenger` — chat interfaces with streaming markdown and tool widgets.
+- `widgets` — a tour of the widget library.
+- `markup` — the markdown engine and HTML widget; interactive viewer, or `--dump` for a one-shot coloured dump.
+- `motion_showcase` — `Motion`, springs, timelines, staggers, the streaming typewriter.
+- `floating` — caret-anchored floating overlays (a popup that follows a movable caret).
+- `stat_sheet_demo` — a `StatSheet` printed at three widths.
 
-**Dashboards & rich layout** — multi-panel flexbox, sparklines, gauges:
+**Responsive layout:**
 
-- `dashboard` — the most elaborate canvas demo (oscilloscope, radar, hex
-  waterfall, spirograph painted directly to the `Canvas`).
-- `deploy`, `hacker`, `ide`, `music`, `space`, `stocks`, `sysmon` — themed
-  full-screen / inline dashboards.
+- `adaptive` — `pick()` + `clamp()` + `fit_col()`: good at every size, on both axes.
+- `grid` — a rockbottom-shaped system dashboard in two lines (`row()` of stat cards).
+- `pretty` — the pretty + responsive toolkit (`gradient()`, `rainbow()`, width breakpoints, `fit_row()`); resize while it runs.
+- `viewport` — the `viewport()` layout widget with real widgets, scrollable.
+- `agent_stats` — a tabbed, animated agent-stats dashboard laid out with `viewport()`.
 
-**Scrolling** — clip- vs slice-based viewports + scrollbar styling:
+**Scrolling:**
 
-- `scroll_2d` — two-axis scroll over one `ScrollState`.
-- `scroll_clip` — overdraw-and-clip (paint all rows, renderer drops off-screen).
-- `scroll_slice` — emit only visible rows (how log_viewer/list/textarea work).
-- `scroll_styles` — scrollbar styling variants.
+- `scroll_2d` — two-axis scrolling over one `ScrollState`.
+- `scroll_clip` — one-axis scrolling: paint all rows, the renderer clips.
+- `scroll_slice` — emit only the visible rows (how log viewers and lists scroll).
+- `scroll_styles` — every built-in scrollbar style preset on one screen.
+- `proc_table` — a process list on `maya::Table`: selection, sorting, scrolling.
 
-**Animation framework:**
+**Agent and chat UIs:**
 
-- `motion_showcase` — a one-screen tour of `Motion`, springs, timelines,
-  staggers, and the streaming typewriter (see [Animation](14-animation.md)).
+- `agent` — a simulated coding-agent session: thinking, tool calls, streaming response (inline, 20 fps).
+- `agent_session` — the reference agent app: a background stream, live tool cards, a working composer (inline).
+- `chat` — a scripted AI agent session with streaming content and a live composer (inline).
+- `messenger` — multi-channel terminal chat with keyboard and mouse.
 
-**Canvas demos** — direct cell painting via `canvas_run()` (games, physics,
-fractals, visualisations):
+**Dashboards:**
 
-- `breakout`, `snake`, `life`, `sorts` — games & algorithm viz.
-- `matrix`, `doom_fire`, `fluid`, `particles`, `spectrum` — effects & sims.
-- `mandelbrot`, `fps`, `raymarch`, `space3d` — fractals & 3D rendering.
+- `dashboard` — NEXUS: oscilloscope, spectrum, radar, hex waterfall and gauges on a `Glyphs` grid.
+- `deploy` — a CI/CD deployment pipeline: waves, rollback, environments.
+- `hacker` — a movie-style hacking terminal: scrolling data, alerts, hex dumps.
+- `ide` — a VS Code / Zed-style IDE layout with a simulated build.
+- `music` — a music player with animated album art, a visualiser and a playlist.
+- `space` — NASA-style mission control tracking a journey to Mars.
+- `stocks` — a live stock ticker with charts and a news feed (inline).
+- `sysmon` — a system monitor / hacker console with fake telemetry (inline).
+
+**Editor widgets** (see [Editor widgets](editor-widgets.md)):
+
+- `editor_ide` — the editor widgets composed as a workspace: outline, code view with blame, panels.
+- `editor_live` — a real editable buffer (`TextEditor`) with highlighting and selection.
+- `editor_widgets` — widget showcase browser, one widget at a time.
+- `editor_widgets2` — second showcase: git, debug, panels, decorations.
+- `editor_widgets3` — third showcase: decorations, lenses, status readouts, doc rendering.
+- `editor_workbench` — a full IDE shell from `Workbench`, `ActivityBar`, `SplitView`.
+- `editor_widget_check` — lifetime + render smoke test: every widget as a temporary, rendered via `render_to_string`.
+
+**Pixels and glyphs** — games, simulations, fractals, 3D:
+
+- `doom_fire` — the PSX Doom fire: heat field in the model, palette into an Image, floating embers.
+- `doomfire2` — the Doom fire again, the minimal reference for how apps are written now.
+- `matrix` — Matrix digital rain on a `Glyphs` grid, with a "wake up" message.
+- `life` — Conway's Game of Life on a torus, cells coloured by age.
+- `fluid` — Stam's stable-fluids solver; stir it with the mouse.
+- `particles` — five particle systems: fireworks, galaxy, fountain, vortex, starfield.
+- `breakout` — Breakout: the board as an Image, power-ups and game-over card as elements over it (`zstack`).
+- `snake` — Snake with a gradient body, pulsing food, sparks and a ghost trail.
+- `sorts` — eight sorting algorithms racing side by side.
+- `spectrum` — a simulated audio spectrum analyser: five synthetic tracks, 64 bands, beat detection.
+- `mandelbrot` — an animated Mandelbrot zoom with `fill_rows` and six palettes.
+- `fps` — a Wolfenstein-style raycaster with textured walls, enemies and a minimap.
+- `raymarch` — a real-time SDF raymarcher: reflections, sunset sky, coloured lights, four scenes.
+- `space3d` — flight over raymarched terrain with water, shadows and gold rings to fly through.

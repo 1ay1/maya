@@ -4,7 +4,7 @@ Complete reference for all public types, functions, and constants in maya.
 
 ## Table of Contents
 
-- [App Framework](#app-framework) (run, Program, Cmd, Sub, key\_map)
+- [App Framework](#app-framework) (run, Options, Program, effects, event sources, keys, print)
 - [DSL Nodes](#dsl-nodes)
 - [DSL Style Tags](#dsl-style-tags)
 - [DSL Layout Tags](#dsl-layout-tags)
@@ -28,304 +28,168 @@ Complete reference for all public types, functions, and constants in maya.
 
 ## App Framework
 
+`#include <maya/app.hpp>` (it includes `<maya/maya.hpp>`), link `maya::app`.
+An app is a [jaal](../third_party/jaal/README.md) program whose `view()`
+returns an `Element`; maya is to jaal what Ink is to React. The rules are in
+[internals/design.md](internals/design.md).
+
 ### run\<P\>()
 
 ```cpp
 template <Program P>
-void run(RunConfig cfg = {});
+int run(Options cfg = {}, jaal::run_options opt = {});
 ```
 
-The primary entry point for interactive apps. `P` must satisfy the `Program`
-concept (see below). The runtime owns the event loop, calling `P::update` on
-each message and re-rendering via `P::view`.
+Takes the terminal (raw mode, alt screen or an inline region), runs `P` on
+jaal until it quits, gives the terminal back on every path, and returns the
+program's exit code (70 if the terminal couldn't be taken).
+
+### Options
+
+```cpp
+struct Options {
+    std::string_view title        = "";               // window title (OSC 0)
+    int              fps          = 0;                // >0: redraw continuously; 0: only on change
+    bool             mouse        = false;            // mouse reporting
+    bool             hover_motion = false;            // also bare motion (mode 1003)
+    Mode             mode         = Mode::Fullscreen; // or Mode::Inline (renders into scrollback)
+    RenderBackend    backend      = RenderBackend::Ansi;
+    Theme            theme        = theme::native;
+    bool             enhanced_keyboard = true;        // kitty keyboard protocol when available
+};
+```
+
+Prefer `Sub::every` in `subscribe()` over `fps`: a timer you can drop when
+nothing moves costs nothing while idle.
 
 ### Program concept
 
 ```cpp
-template <typename P>
-concept Program = requires {
-    typename P::Model;
-    typename P::Msg;
-} && (HasFullInit<P> || HasSimpleInit<P>)
-  && requires(P::Model m, P::Msg msg) {
-    { P::update(std::move(m), std::move(msg)) } -> std::convertible_to<std::pair<P::Model, Cmd<P::Msg>>>;
-} && requires(const P::Model& m) {
-    { P::view(m) } -> std::convertible_to<Element>;
+template <class P>
+concept Program = jaal::Program<P> && jaal::Viewable<P, Element>;
+```
+
+The shape:
+
+```cpp
+struct Counter {
+    struct Model { int count = 0; };                   // default-constructible, all state
+    struct Inc {}; struct Quit {};
+    using Msg = std::variant<Inc, Quit>;               // may nest variants (domain groups)
+
+    using Cmd = jaal::Cmd<Msg>;                        // + the terminal effects you use
+    using Sub = jaal::Sub<Msg, on_key>;                // + the event sources you use
+
+    static Cmd init(Model&);                           // optional
+    static Cmd update(Model& m, Inc);                  // exactly one per alternative
+    static Cmd update(Model& m, Quit);
+    static Element view(const Model& m);               // pure
+    static Sub subscribe(const Model& m);              // optional; diffed every step
+    static auto subs_key(const Model& m);              // optional: what subscribe() reads
 };
+static_assert(Program<Counter>);
 ```
 
-A Program is a struct with:
-- `Model` — the app state type (plain data)
-- `Msg` — a `std::variant` of all possible messages
-- `init()` — returns `Model` (simple) or `std::pair<Model, Cmd<Msg>>` (full)
-- `update(Model, Msg)` — returns `std::pair<Model, Cmd<Msg>>`
-- `view(const Model&)` — returns `Element`
-- `subscribe(const Model&)` (optional) — returns `Sub<Msg>`
+A message without a handler, an effect not in the `Cmd` row, or an event
+source not in the `Sub` row is a compile error. Optional hooks read by the
+host: `static std::uint64_t visual_hash(const Model&)` (skip the view when
+unchanged), `static bool needs_warmup(const Model&)`.
 
-### Cmd\<Msg\>
+### Effects: Cmd
+
+The core effects are jaal's: `Cmd::quit(code)`, `Cmd::after(dur, msg)`,
+`Cmd::task(fn, args..., mapper)` (a worker thread; the mapper turns its
+result into a message), `Cmd::send(msg)`, `Cmd::batch(...)`, `map`/`map_with`
+for composing child programs. See jaal's README.
+
+maya adds the terminal's own effects. List the ones a program uses in its
+`Cmd` row, e.g. `jaal::Cmd<Msg, set_title, write_clipboard>`, and return the
+payload as a `Cmd`: `return Cmd(SetTitle{"build: ok"});`
+
+| Effect | Payload | Does |
+|---|---|---|
+| `set_title` | `SetTitle{std::string}` | window title |
+| `write_clipboard` | `WriteClipboard{std::string}` | OSC 52 copy |
+| `query_clipboard` | `QueryClipboard{}` | OSC 52 paste request; the answer arrives as a `PasteEvent` |
+| `emit_host_sequence` | `EmitHostSequence{std::string}` (see `osc(code, payload)`) | raw sequence to the terminal, out of band |
+| `commit_scrollback` | `CommitScrollback{ScrollbackDebt}` — use `commit_from<Cmd>(ledger.harvest())` | inline: move finished rows into scrollback |
+| `commit_overflow` | `CommitOverflow{}` | inline: commit rows that overflowed the viewport |
+| `force_redraw` | `ForceRedraw{}` | repaint everything |
+| `reset_inline` | `ResetInline{}` | inline: start a fresh frame below |
+| `set_mouse` | `SetMouse{bool}` | mouse capture on/off at runtime |
+| `suspend` | `Suspend<Msg>{std::function<Msg()>}` | hand the tty to a child ($EDITOR, a pager); its return is the next message |
+
+`terminal_cmd<Msg>` is a `Cmd` with all of them.
+
+### Subscriptions: Sub
+
+The core sources are jaal's: `Sub::every(period, msg)`, `Sub::stream(...)`,
+`Sub::batch(...)`. maya adds the terminal's event sources:
+
+| Source | Event |
+|---|---|
+| `on_key` | `KeyEvent` |
+| `on_mouse` | `MouseEvent{button, kind (Press/Release/Move), x, y (1-based), mods}` — needs `.mouse = true` |
+| `on_paste` | `PasteEvent{content}` |
+| `on_focus` | `FocusEvent` |
+| `on_resize` | `ResizeEvent{width, height}` (cells); the first arrives at startup |
 
 ```cpp
-template <typename Msg>
-class Cmd {
-    static Cmd none();
-    static Cmd quit();
-    static Cmd batch(std::vector<Cmd> cmds);      // also variadic
-    static Cmd after(std::chrono::milliseconds delay, Msg msg);
-    static Cmd task(std::function<void(std::function<void(Msg)>)> fn);
-    static Cmd task_isolated(...);                // detached thread
-    static Cmd set_title(std::string title);
-    static Cmd write_clipboard(std::string text);
-    static Cmd query_clipboard();
-
-    // Interactive-child escape hatch (see below).
-    template <std::invocable F> static Cmd suspend(F&& run);
-
-    // Inline scrollback control (see docs/internals/witness-chain.md).
-    static Cmd commit_scrollback(ScrollbackDebt debt);
-    static Cmd commit_scrollback_overflow();
-    static Cmd force_redraw();
-    static Cmd reset_inline();
-};
+static Sub subscribe(const Model& m) {
+    auto k = Sub::on(on_key{}, [](const KeyEvent& e) -> std::optional<Msg> {
+        if (ctrl_is(e, 'c')) return Quit{};
+        return Key{e};                                 // let update() decide
+    });
+    if (m.paused) return k;                            // no clock while paused
+    return Sub::batch(Sub::every(16ms, Tick{}), std::move(k));
+}
 ```
 
-Commands represent side effects. `Cmd<Msg>{}` (or `Cmd::none()`) means no
-effect. `Cmd::quit()` exits the app. `Cmd::batch()` combines multiple commands.
-`Cmd::after()` sends a delayed message. `Cmd::task()` runs an async function
-that may produce a message.
+The lambda must be captureless (it runs on the loop; state reaches it only
+through messages).
 
-#### `Cmd::query_clipboard()` / `write_clipboard()` — clipboard I/O over the escape channel
+### keys\<Sub\>() and key predicates
 
 ```cpp
-static Cmd write_clipboard(std::string text);   // put text on the clipboard
-static Cmd query_clipboard();                    // read clipboard → PasteEvent
-```
-
-Both travel **in-band over the terminal escape channel**, so they work across
-SSH with no remote clipboard tool. `write_clipboard()` emits OSC 52.
-`query_clipboard()` asks the terminal to send its clipboard back; the reply
-arrives as a **`PasteEvent`** (matched by `pasted()` / `Sub::on_paste`).
-
-Maya picks the read protocol from the host: OSC 52 (text-only) by default, or
-kitty's **OSC 5522** multi-format read when a kitty host is detected
-(`KITTY_WINDOW_ID` set, or kitty-like `TERM` — both survive an sshd hop). Only
-OSC 5522 can carry **image** bytes, which is what enables **screenshot paste
-over SSH**: the decoded image is delivered as one `PasteEvent` whose `content`
-holds the raw bytes. See [Events → Clipboard reads and image paste over
-SSH](06-events.md#clipboard-reads-and-image-paste-over-ssh).
-
-#### `Cmd::suspend()` — hand the real terminal to an interactive child
-
-```cpp
-template <std::invocable F>
-    requires std::convertible_to<std::invoke_result_t<F>, Msg>
-static Cmd suspend(F&& run);
-```
-
-Suspends the TUI and hands the **real** terminal to `run` — the escape hatch
-for interactive children (sudo password prompts, `$EDITOR`, pagers). The
-runtime tears the TUI down to a clean, cooked (line-disciplined) tty, calls
-`run()` **synchronously** on the UI thread — the user is interacting with the
-child, so there is nothing else to do — then restores raw mode + the TUI
-escapes, re-anchors the renderer (inline: a fresh serialize below the child's
-output; fullscreen: a full repaint), and dispatches the `Msg` that `run`
-returned so `update()` can fold the child's result back into the model.
-
-`run` returning a `Msg` (rather than `void`) is what closes the loop: the
-callable typically spawns the child with inherited stdio, tees its output to a
-buffer, and returns a completion `Msg` carrying the exit code + captured bytes.
-
-```cpp
-return Cmd<Msg>::suspend([] {
-    int rc = std::system("sudo -v");           // child owns the tty here
-    return Msg{SudoDone{ .code = rc }};        // folded back after restore
-});
-```
-
-See the `Cmd::suspend` demo in `d726f07` and `App::suspend` in
-`maya/app/app.hpp`.
-
-### Sub\<Msg\>
-
-```cpp
-template <typename Msg>
-class Sub {
-    static Sub none();
-    static Sub batch(std::vector<Sub> subs);   // also variadic: batch(a, b, c)
-    static Sub on_key(std::function<std::optional<Msg>(const KeyEvent&)> fn);
-    static Sub on_mouse(std::function<std::optional<Msg>(const MouseEvent&)> fn);
-    static Sub on_resize(std::function<Msg(Size)> fn);
-    static Sub on_paste(std::function<Msg(std::string)> fn);
-    static Sub every(std::chrono::milliseconds interval, Msg msg);
-    static Sub on_animation_frame(Msg msg);    // sugar for every(16ms, msg)
-};
-```
-
-Subscriptions declare which external events the app listens to. Returned from
-the optional `subscribe(const Model&)` method. Subscriptions are re-evaluated
-when the model changes, enabling conditional subscriptions (e.g. only tick
-while a timer is running).
-
-`on_animation_frame()` is `every(16ms, msg)` under one shared timer engine —
-there is no separate animation pump. Drop the subscription from `subscribe()`
-and the ticks stop; the loop returns to idle wait with zero bytes per frame.
-
-### Animation-frame requests
-
-```cpp
-// maya/app/app.hpp
-void request_animation_frame() noexcept;
-```
-
-The redraw-only counterpart to `Sub::on_animation_frame`. A widget calls it
-from its `build()` each frame it wants to keep animating; the run loop folds
-these requests into the same wake schedule as `Sub::Every` timers. The
-distinction is **intent, not mechanism**: `Every` delivers a `Msg` (drives
-`update` → model), a frame request only asks for a **repaint** — pure visual
-layer (cursor blink, scramble caret, fade) that reads wall-clock in `build()`
-and mutates nothing. A widget that stops calling drops out of the next
-collection and the loop idles. Idempotent within a frame.
-
-### key\_map\<Msg\>() and key predicates
-
-```cpp
+template <class S>
+S keys(std::initializer_list<std::pair<KeySpec, typename S::msg_type>>);
 using KeySpec = std::variant<char, SpecialKey>;
 
-template <typename Msg>
-Sub<Msg> key_map(std::initializer_list<std::pair<KeySpec, Msg>> entries);
-
-// Pure predicates for use inside subscribe() / on_key filters:
-bool key_is(const KeyEvent& k, char c) noexcept;      // also char32_t / SpecialKey
-bool ctrl_is(const KeyEvent& k, char c) noexcept;     // Ctrl+c, not Ctrl+Alt+c
-bool alt_is(const KeyEvent& k, char c) noexcept;      // Alt+c, not Ctrl+Alt+c
+return keys<Sub>({{'q', Quit{}}, {SpecialKey::Up, Up{}}, {' ', Toggle{}}});
 ```
 
-`key_map()` builds a `Sub::on_key` from a declarative key→message table:
+Matches a plain key with no modifiers ('q' doesn't fire on Ctrl+Q).
+Predicates for `Sub::on` handlers: `key_is(k, 'c')`, `key_is(k, U'é')`,
+`key_is(k, SpecialKey::Up)`, `ctrl_is(k, 'c')`, `alt_is(k, 'x')`.
 
-```cpp
-return key_map<Msg>({
-    {'q', Quit{}}, {'+', Increment{}},
-    {SpecialKey::Up, Increment{}},
-});
-```
+### Scroll views
 
-The `*_is` predicates are the building blocks for hand-written `on_key`
-filters where a table isn't expressive enough (modifiers, ranges).
-
-### RunConfig
-
-```cpp
-struct RunConfig {
-    std::string_view title      = "";
-    int              fps        = 0;       // 0 = event-driven
-    bool             mouse      = false;
-    Mode             mode       = Mode::Fullscreen;
-    Theme            theme      = theme::dark;
-};
-```
-
-### run() — Simple Convenience API
-
-```cpp
-template <SimpleEventFn EventFn, SimpleRenderFn RenderFn>
-void run(RunConfig cfg, EventFn&& event_fn, RenderFn&& render_fn);
-
-template <SimpleEventFn EventFn, SimpleRenderFn RenderFn>
-void run(EventFn&& event_fn, RenderFn&& render_fn); // default RunConfig
-```
-
-A closure-based entry point that requires no boilerplate. Suitable for most
-interactive apps that don't need the full Elm-architecture of `run<P>()`.
-
-Event function: `(const Event&) -> bool` (returning `false` quits) or
-`(const Event&) -> void` (call `quit()` to exit).
-
-Render function: `() -> Element` or `(const Ctx&) -> Element`.
-
-### Global control — `quit()` / `set_mouse()`
-
-```cpp
-// maya/app/quit.hpp
-void quit() noexcept;            // request a clean exit from run() / live()
-void set_mouse(bool on) noexcept; // toggle mouse capture at runtime
-```
-
-`set_mouse()` flips terminal mouse reporting on/off while the app runs — off
-hands the scroll wheel back to the terminal (native scrollback), on recaptures
-clicks/drag/wheel. The request is applied on the next loop iteration and keeps
-the runtime's mouse state in sync for a clean terminal restore on exit. Works
-from `run()` event functions and from a `Program`'s `update()`/`subscribe()`.
-For Program apps `Cmd<Msg>::quit()` is preferred over `quit()`; there is no
-`Cmd` form of `set_mouse()` yet, so call the free function. See
-[Events → Mouse capture vs. native terminal scroll](06-events.md).
-
-### Ctx
-
-```cpp
-struct Ctx {
-    Size  size;   // Current terminal dimensions
-    Theme theme;  // Active color theme
-};
-```
-
-The `Ctx` overload of the render function is useful for adaptive layouts that
-need to inspect the terminal size or current theme at render time.
-
-### live()
-
-```cpp
-template <AnyLiveRenderFn RenderFn>
-void live(LiveConfig cfg, RenderFn&& render_fn);
-```
-
-### LiveConfig
-
-```cpp
-struct LiveConfig {
-    int   fps       = 30;
-    int   max_width = 0;     // 0 = auto-detect
-    bool  cursor    = false;
-};
-```
-
-### canvas_run()
-
-```cpp
-Status canvas_run(
-    CanvasConfig                                   cfg,
-    std::function<void(StylePool&, int w, int h)>  on_resize,
-    std::function<bool(const Event&)>              on_event,
-    std::function<void(Canvas&, int w, int h)>     on_paint);
-```
-
-### CanvasConfig
-
-```cpp
-struct CanvasConfig {
-    int         fps        = 60;
-    bool        mouse      = false;
-    Mode        mode       = Mode::Fullscreen;
-    std::string title;
-};
-```
+Keep a `mutable ScrollState` in the model and pipe content through
+`| scroll(state, h)`. The terminal forwards mouse wheel and scrollbar drags
+to scroll views painted last frame; keys are the program's own — route them
+with a message and `state.handle(key, viewport_h)` in `update`.
 
 ### print()
 
 ```cpp
-void print(const Element& root);
+#include <maya/print.hpp>                      // included by maya.hpp
+void print(const Element& root);               // at the terminal's width
 void print(const Element& root, int width);
+std::string render_to_string(const Element& root, int width = 80);
+std::string render_to_string_ansi(const Element& root, int width = 80);
 ```
 
-### quit()
+Static output with no runtime and no terminal mode changes: reports,
+tables, tests.
 
-```cpp
-void quit() noexcept;  // Schedule clean exit after current frame
-```
+### Screen and terminal_host
 
-> In Program apps, prefer `Cmd<Msg>::quit()` from `update()` instead of calling
-> `quit()` directly. The free function is still available for `live()` and
-> `canvas_run()` apps.
-
----
+`maya::Screen` (`<maya/screen.hpp>`) is the terminal device: `open(Options)`,
+`read()` (parsed events), `present(element)`, `set_title`, `set_mouse`,
+`commit_scrollback`, `suspend(fn)`, frame flow control (`ready()`,
+`round_trip()`). `maya::terminal_host<P>` adapts a `Screen` to jaal's host
+protocol; `run<P>()` is `Screen::open` + `terminal_host` + `jaal::run`. Use
+them directly only for a custom driver or a test.
 
 ## DSL Nodes
 

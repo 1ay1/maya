@@ -65,7 +65,7 @@ int main() { return maya::run<Counter>({.title = "counter"}); }
 |---|---|---|
 | `maya::run<P>(Options)` | `run_jaal<P>(RunConfig)` | there is one run; it needs no qualifier |
 | `maya::Options` | `RunConfig` | configures the terminal, not a loop |
-| `maya::App<P>` | `JaalView<P>` | says what it is, not how it's hosted |
+| `maya::Program<P>` | `JaalView<P>` | says what it is, not how it's hosted (not `App`: that's what programs are called) |
 | `maya::keys<Sub>({...})` | `jaal_key_map<Sub>` | reads as what it does |
 | `maya::on_key`, `on_mouse`, `on_paste`, `on_focus`, `on_resize` | same | the host's event sources |
 | `maya::set_title`, `commit_scrollback`, `write_clipboard`, ... | same | the host's effects |
@@ -83,8 +83,27 @@ in an Ink app. maya does not re-export or wrap them.
   the `Program` concept, `Ctx`, `CmdContext`: the old runtime's vocabulary.
 - `maya/jaal/canvas.hpp`: the adapter that ran canvas callbacks on jaal.
 - the `jaal_` prefix on examples: there is only one kind now.
+- the Screen forwarding KEYS to scroll views: keys are the program's
+  (a message and `ScrollState::handle` in update); the device still
+  forwards the mouse, because only it knows where each bar was painted.
+
+## What stays, and why
+
+- The `Event`-variant predicates in `app/events.hpp` (`key(ev, 'q')`,
+  `mouse_clicked(ev)`, ...) remain: widgets (`Input`, `List`, `Menu`, ...)
+  take an `Event` in their `handle()` so one widget API serves every
+  source. A program forwards `Key{k}` to a widget as `widget.handle(k)`.
+- `request_animation_frame()`: a widget asks for the next frame while it
+  animates (a spinner, a caret blink); the host schedules it. It is a
+  per-frame request, not a loop.
 
 ## Build
 
 C++26 is required (jaal needs structured-binding packs). `MAYA_WITH_JAAL`
-is gone: the app layer always builds.
+is gone: the app layer builds by default (`MAYA_BUILD_APP=ON`); with it
+off you get the view layer alone.
+
+## Checking
+
+`sh tests/smoke_all.sh build` runs every example in a real pty (54/54);
+`ctest` runs the library's unit tests.

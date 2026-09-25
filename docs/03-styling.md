@@ -470,7 +470,7 @@ maya::theme::light_ansi   // 16-color light
 
 ### Using Themes in Your App
 
-Pass a theme via `RunConfig`. In Program apps, access theme colors in `view()`:
+Pass a theme via `run<P>()`'s options (`.theme`). In Program apps, access theme colors in `view()`:
 
 ```cpp
 // Theme is accessible via the runtime — use it in view() for styling.
@@ -510,20 +510,15 @@ style gets a compact `uint16_t` ID. Canvas cells store this 16-bit ID instead
 of the full style object, reducing cell size from ~48 bytes to 8 bytes. This
 is critical for SIMD-accelerated frame diffing.
 
-You don't interact with the `StylePool` directly in element-based rendering —
-the framework handles it. In `canvas_run()` mode, you intern styles explicitly:
+You don't interact with the `StylePool` directly — the framework handles it,
+including for `pixels()` and `glyphs()`, which intern colour pairs through a
+small cache (see [Pixels and glyphs](08-canvas-api.md)). Just return elements
+from `view()`:
 
 ```cpp
-canvas_run(config,
-    [&](StylePool& pool, int w, int h) {
-        // Called on resize — pool is cleared, re-intern everything
-        my_style_id = pool.intern(Style{}.with_bold().with_fg(Color::green()));
-    },
-    [&](const Event& ev) { return true; },
-    [&](Canvas& canvas, int w, int h) {
-        canvas.set(0, 0, U'*', my_style_id);  // Use the interned ID
-    }
-);
+static Element view(const Model& m) {
+    return text("*") | Bold | Fg<80, 220, 120>;   // interned for you
+}
 ```
 
 ## Predefined Runtime Styles

@@ -8,26 +8,27 @@ headers are under `include/maya/widget/`.
 
 ## Using Widgets
 
-Widgets work in both API styles. In simple `run()`, use them directly in the render lambda:
+A widget is a value: keep it in the `Model`, render it in `view()`, and
+forward the events it handles from `update()`:
 
 ```cpp
-Input<> prompt;
-prompt.set_placeholder("Type here...");
+struct Model { Input<> prompt; };
+struct Key { KeyEvent k; };
 
-run({.title = "app"}, event_fn, [&] {
-    return v(prompt, t<"[Enter] submit"> | Dim) | pad<1>;
-});
-```
+static Cmd update(Model& m, Key e) { (void)m.prompt.handle(e.k); return {}; }
 
-In Program apps, widgets are typically stored in the Model or as globals, and rendered in `view()`:
-
-```cpp
 static Element view(const Model& m) {
     return v(m.prompt, t<"[Enter] submit"> | Dim) | pad<1>;
 }
+
+static Sub subscribe(const Model&) {
+    return Sub::on(on_key{}, [](const KeyEvent& k) -> std::optional<Msg> { return Key{k}; });
+}
 ```
 
-Interactive widgets need their `handle(KeyEvent)` method called from the event handler (simple run) or from `subscribe()`/`update()` (Program).
+A widget whose state must change as it renders (a scroll view learning its
+extent) is held `mutable` in the model; see `ScrollState` in
+[Events](06-events.md).
 
 ---
 

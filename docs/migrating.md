@@ -1,53 +1,40 @@
-# Moving a maya Program onto jaal
+# Migrating from maya's old runtime
 
-maya ships two loops for the same toolkit:
-
-- `maya::run<P>()` is maya's own event loop.
-- `maya::run_jaal<P>()` (in `<maya/jaal/host.hpp>`, built with
-  `-DMAYA_WITH_JAAL=ON`) keeps maya's terminal, input parser and renderer and
-  swaps only the loop underneath for jaal (the `third_party/jaal` submodule).
+maya used to ship its own event loops: `run<P>(RunConfig)` with
+`update(Model, Msg) -> pair<Model, Cmd<Msg>>`, a callback
+`run(event_fn, render_fn)`, `canvas_run` for animations and `live()` for
+inline output. They are gone. The runtime is now
+[jaal](../third_party/jaal/README.md), and there is one way to write an
+app; maya is to jaal what Ink is to React. The rules behind it are in
+[internals/design.md](internals/design.md).
 
 Your `view()`, widgets, DSL and themes don't change. The model, messages,
 `update`, effects and subscriptions change shape, because jaal checks at
-compile time what maya only checks at runtime, or never checks at all.
-Every `examples/jaal_*.cpp` is a port of the example with the same name, so
-you can read any original next to its port. This page covers the
-transformations those 21 ports needed.
+compile time what maya checked at runtime, or never. Every example in
+`examples/` is on the new API; `git log` shows each one's port next to
+the original.
 
-## 1. The program shape
+## At a glance
 
-| maya                                                  | jaal                                                    |
-|-------------------------------------------------------|---------------------------------------------------------|
-| `static Model init()`                                 | `Model{}` (default-constructed), plus an optional `static Cmd init(Model&)` |
-| `static auto update(Model, Msg) -> pair<Model, Cmd>`  | one `static Cmd update(Model&, Case)` **per alternative** |
-| `std::visit(overload{...}, msg)`                      | gone: jaal dispatches to the matching overload          |
-| `Cmd<Msg>`, `Sub<Msg>`                                | `using Cmd = jaal::Cmd<Msg, extra fx...>;` `using Sub = jaal::Sub<Msg, sources...>;` |
-| `static_assert(Program<P>)`                           | `static_assert(maya::JaalView<P>)`                      |
-| `run<P>(cfg)`                                         | `return run_jaal<P>(cfg);` (same `RunConfig`, returns the exit code) |
+| Old | New |
+|---|---|
+| `#include <maya/maya.hpp>`, link `maya::maya` | `#include <maya/app.hpp>`, link `maya::app` |
+| `run<P>(RunConfig{...})` | `run<P>(Options{...})` (same fields) |
+| `static Model init()` / `init() -> pair<Model, Cmd>` | `Model{}` (default-constructed) + optional `static Cmd init(Model&)` |
+| `update(Model, Msg) -> pair<Model, Cmd<Msg>>` + `std::visit(overload{...})` | one `static Cmd update(Model&, Case)` per alternative |
+| `Cmd<Msg>::none()` / `Cmd<Msg>::quit()` | `{}` / `Cmd::quit(0)` |
+| `Sub<Msg>`, `key_map<Msg>({...})` | `jaal::Sub<Msg, on_key, ...>`, `keys<Sub>({...})` |
+| `run(cfg, event_fn, render_fn)` | a Program: state in `Model`, keys as messages, `view()` |
+| `canvas_run(cfg, resize, event, paint)` | a Program whose view is `pixels(Image)` or `glyphs(Glyphs)` ([pixels](08-canvas-api.md)) |
+| `live({.fps}, render)` | a Program run with `.mode = Mode::Inline` |
+| `maya::quit()` | `return Cmd::quit(0);` |
+| `maya::set_mouse(b)` | the `set_mouse` effect: `return Cmd(SetMouse{b});` |
+| globals / function-local statics | fields of `Model` (the RNG too) |
+| RNG or mutation inside `view()` | done in `update`, stored in the model |
+| arrow keys auto-scrolling a `ScrollState` | route them: `Scroll{key}` → `state.handle(key, h)` in `update` (the wheel is still automatic) |
+| `MAYA_WITH_JAAL`, `<maya/jaal/host.hpp>`, `run_jaal`, `JaalView`, `jaal_key_map` | gone: `<maya/app.hpp>`, `run`, `Program`, `keys` |
 
-Before, from `examples/counter.cpp`:
-
-```cpp
-static auto update(Model m, Msg msg) -> std::pair<Model, Cmd<Msg>> {
-    return std::visit(overload{
-        [&](Increment) { return std::pair{Model{m.count + 1}, Cmd<Msg>{}}; },
-        [](Quit)       { return std::pair{Model{}, Cmd<Msg>::quit()}; },
-    }, msg);
-}
-```
-
-After:
-
-```cpp
-using Cmd = jaal::Cmd<Msg>;
-static Cmd update(Model& m, Increment) { ++m.count; return {}; }
-static Cmd update(Model&,   Quit)      { return Cmd::quit(0); }
-```
-
-If you leave out an overload, the program doesn't compile, because jaal's
-`Program` concept requires every message to have a handler. maya's
-`overload{}` catches the same mistake. The difference is that the jaal
-version also checks nested message groups (see §7).
+The sections below are the parts that need more than a rename.
 
 ## 2. The rows: say what you use
 
@@ -61,8 +48,9 @@ using Cmd = jaal::Cmd<Msg, commit_scrollback, set_title>;   // terminal effects
 using Sub = jaal::Sub<Msg, on_key, on_mouse, on_resize, jaal::fx::on_signal>;
 ```
 
-The maya host provides `on_key`, `on_mouse`, `on_paste`, `on_focus` and
-`on_resize` (sources) plus `commit_scrollback` and `set_title` (effects).
+maya provides `on_key`, `on_mouse`, `on_paste`, `on_focus` and
+`on_resize` (sources) and the terminal effects listed in the
+[API reference](11-api-reference.md#effects-cmd).
 A host that can't provide one (a test host, a GUI) rejects the program at
 compile time, where maya would fail at runtime.
 
@@ -70,7 +58,7 @@ compile time, where maya would fail at runtime.
 
 | maya                          | jaal                                                         |
 |-------------------------------|--------------------------------------------------------------|
-| `key_map<Msg>({{'q', Quit{}}})` | `jaal_key_map<Sub>({{'q', Quit{}}})` (same table, same `key_is` matching) |
+| `key_map<Msg>({{'q', Quit{}}})` | `keys<Sub>({{'q', Quit{}}})` (same table, same `key_is` matching) |
 | `on_key(fn)`                  | `Sub::on(on_key{}, fn)`, where `fn` returns `std::optional<Msg>` |
 | `on_mouse(fn)`, `on_resize(fn)` | `Sub::on(on_mouse{}, fn)`, `Sub::on(on_resize{}, fn)`        |
 | `Sub<Msg>::every(d, msg)`     | `Sub::every(d, msg)`                                         |
@@ -119,7 +107,7 @@ Every task gets a `std::stop_token`. When it can't finish on its own, it
 should check the token or the return value of `out.send(...)`, which comes
 back `false` once the loop is gone. At shutdown jaal gives tasks a grace
 period (`run_options::kernel.shutdown_grace`, 2 s by default: the second
-argument of `run_jaal`) and then detaches
+argument of `run`) and then detaches
 the ones still running. A task that ignores its
 token therefore can't hang quit.
 
@@ -142,7 +130,7 @@ Cmd<Msg>::task([gate](auto dispatch) {
 ```
 
 jaal rejects this, because `shared_ptr<PermSync>` is not Sendable. The
-port (`examples/jaal_agent_session.cpp`) splits the work **at the gate**:
+port (`examples/agent_session.cpp`) splits the work **at the gate**:
 
 1. Phase 1 streams until it reaches the permission point, sends
    `PermissionAsk` and returns.
@@ -164,7 +152,7 @@ the phase. Any "worker waits for the UI" flow maps onto this.
 
 ## 6. Timing: fps, animation frames, debounce
 
-- `RunConfig{.fps = N}` works the same way: jaal renders continuously at N
+- `Options{.fps = N}` works as before: jaal renders continuously at N
   frames per second, keeps phase and resyncs after a stall instead of
   firing catch-up frames.
 - Widgets that call `request_animation_frame()` during `view()` get
@@ -191,18 +179,18 @@ the phase. Any "worker waits for the UI" flow maps onto this.
 
 ```cpp
 using Cmd = jaal::Cmd<Msg, commit_scrollback, set_title>;
-return commit_from<Cmd>(m.frozen.harvest());   // maya: Cmd::commit_scrollback (none if empty)
-return Cmd(SetTitle{"build: ok"});             // maya: Cmd::set_title
+return commit_from<Cmd>(m.frozen.harvest());   // was Cmd::commit_scrollback (none if empty)
+return Cmd(SetTitle{"build: ok"});             // was Cmd::set_title
 ```
 
 ## Checking a port
 
-Build with `-DMAYA_WITH_JAAL=ON`, then:
-
 ```sh
-python3 tests/jaal_smoke.py build-jaal/jaal_<name>              # one program
-python3 tests/jaal_smoke.py build-jaal/jaal_<name> --animates=5  # ...that animates after key 5
-sh tests/jaal_smoke_all.sh build-jaal                            # all 21
+python3 tests/jaal_smoke.py build/maya_<name>               # one program
+python3 tests/jaal_smoke.py build/maya_<name> --animates=5  # ...that animates after key 5
+sh tests/smoke_all.sh build                                 # every example
+python3 tests/screen_after.py build/maya_<name> "<down><down>"   # special keys, prints the screen
+python3 tests/snapshot.py build/maya_<name> out.png         # a pixel demo, as a PNG
 ```
 
 The harness runs the binary in a real pty and checks that it draws a first

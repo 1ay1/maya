@@ -138,22 +138,24 @@ struct App {
     struct KeyMsg { KeyEvent ev; }; struct Quit {};
     using Msg = std::variant<KeyMsg, Quit>;
 
-    static Model init() { Model m; m.ed.set_text(src); return m; }
+    using Cmd = jaal::Cmd<Msg>;
+    using Sub = jaal::Sub<Msg, on_key>;
 
-    static std::pair<Model, Cmd<Msg>> update(Model m, Msg msg) {
-        if (std::holds_alternative<Quit>(msg)) return {std::move(m), Cmd<Msg>::quit()};
-        if (auto* k = std::get_if<KeyMsg>(&msg)) (void)m.ed.handle(k->ev);
-        return {std::move(m), Cmd<Msg>::none()};
-    }
+    static Cmd init(Model& m) { m.ed.set_text(src); return {}; }
+
+    static Cmd update(Model&, Quit) { return Cmd::quit(0); }
+    static Cmd update(Model& m, KeyMsg k) { (void)m.ed.handle(k.ev); return {}; }
 
     static Element view(const Model& m) { return m.ed | dsl::grow(); }
 
-    static Sub<Msg> subscribe(const Model&) {
-        return Sub<Msg>::on_key([](const KeyEvent& k) -> std::optional<Msg> {
+    static Sub subscribe(const Model&) {
+        return Sub::on(on_key{}, [](const KeyEvent& k) -> std::optional<Msg> {
             if (k.mods.ctrl && std::holds_alternative<CharKey>(k.key) &&
                 std::get<CharKey>(k.key).codepoint == 'q') return Quit{};
             return KeyMsg{k};
         });
     }
 };
+
+int main() { return run<App>({.title = "editor"}); }
 ```

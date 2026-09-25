@@ -78,6 +78,7 @@
 // green. Everything here follows from taking that seriously.
 
 #include <array>
+#include <memory>
 #include <cstdint>
 
 namespace maya::color {
@@ -622,12 +623,20 @@ template <std::uint8_t (*Scan)(int, int, int) noexcept>
 [[nodiscard]] inline std::uint8_t memo_nearest(int r, int g, int b) noexcept {
     // Entry = valid(1) | rgb(24) | index(8) = 33 bits: bit 32 marks it
     // filled, so black (rgb 0) can't be mistaken for an empty slot.
-    thread_local std::array<std::uint64_t, 4096> table{};
+    //
+    // 64K entries (512 KB per thread, allocated on first use). 4K was sized
+    // for a fire's palette; a program that computes colours continuously
+    // (a digital-rain trail at 30+ brightness levels x 64 rainbow hues, a
+    // gradient that drifts every frame) has a working set of tens of
+    // thousands of colours, and at 4K most lookups missed into the full
+    // CIEDE2000 scan: it was the top frame of such a program's profile.
+    constexpr int kBits = 16;
+    thread_local std::unique_ptr<std::uint64_t[]> table{new std::uint64_t[std::size_t{1} << kBits]{}};
     const std::uint32_t rgb = (static_cast<std::uint32_t>(r & 0xFF) << 16)
                             | (static_cast<std::uint32_t>(g & 0xFF) << 8)
                             |  static_cast<std::uint32_t>(b & 0xFF);
-    // Fibonacci hash -> 12-bit slot, so a gradient's neighbours spread out.
-    std::uint64_t& e = table[(rgb * 2654435769u) >> 20];
+    // Fibonacci hash -> slot, so a gradient's neighbours spread out.
+    std::uint64_t& e = table[(rgb * 2654435769u) >> (32 - kBits)];
     const std::uint64_t want = (std::uint64_t{1} << 32) | (std::uint64_t{rgb} << 8);
     if ((e & ~std::uint64_t{0xFF}) == want) return static_cast<std::uint8_t>(e);
     const std::uint8_t idx = Scan(r, g, b);

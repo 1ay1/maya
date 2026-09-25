@@ -86,14 +86,15 @@ namespace detail {
 // image a few thousand).
 class PixelStyles {
 public:
-    std::uint16_t get(StylePool& pool, Rgb top, Rgb bot) {
+    std::uint16_t get(StylePool& pool, Rgb top, Rgb bot, bool bold = false) {
         if (pool.pool_id() != pool_id_) { slots_.assign(kSlots, Slot{}); pool_id_ = pool.pool_id(); }
-        const std::uint64_t key = (std::uint64_t{top.packed()} << 24) | bot.packed();
+        const std::uint64_t key = (std::uint64_t{bold} << 48) | (std::uint64_t{top.packed()} << 24) | bot.packed();
         const std::size_t   i   = static_cast<std::size_t>((key * 0x9E3779B97F4A7C15ULL) >> (64 - kBits));
         Slot& s = slots_[i];
         if (s.live && s.key == key) return s.id;
-        s = {key, pool.intern(Style{}.with_fg(Color::rgb(top.r, top.g, top.b))
-                                     .with_bg(Color::rgb(bot.r, bot.g, bot.b))), true};
+        Style st = Style{}.with_fg(Color::rgb(top.r, top.g, top.b)).with_bg(Color::rgb(bot.r, bot.g, bot.b));
+        if (bold) st = st.with_bold();
+        s = {key, pool.intern(st), true};
         return s.id;
     }
 private:
@@ -139,6 +140,68 @@ inline void paint_pixels(Canvas& c, const Image& img, int x0, int y0, int w, int
 /// Convenience: copy an image into the element.
 [[nodiscard]] inline auto pixels(Image img) -> ComponentBuilder {
     return pixels(std::make_shared<const Image>(std::move(img)));
+}
+
+// ── Glyphs: a grid of coloured characters ───────────────────────────────────────────
+//
+// The text twin of Image. Character-art programs (digital rain, a starfield
+// of '.', '*' and '+', a spectrum of block glyphs) are a cols x rows grid of
+// (character, colour) cells, and each used to paint it with pre-interned
+// style ids. glyphs() is that grid as an element: set cells in the view,
+// return glyphs(std::move(grid)). Cells with ch == 0 are left untouched, so
+// a sparse grid can sit over something else in a zstack.
+
+struct Glyph {
+    char32_t ch   = U' ';
+    Rgb      fg   {200, 200, 200};
+    Rgb      bg   {0, 0, 0};
+    bool     bold = false;
+    constexpr bool operator==(const Glyph&) const = default;
+};
+
+class Glyphs {
+public:
+    Glyphs() = default;
+    Glyphs(int cols, int rows, Glyph fill = {}) : w_(std::max(0, cols)), h_(std::max(0, rows)),
+        g_(static_cast<std::size_t>(w_) * static_cast<std::size_t>(h_), fill) {}
+    [[nodiscard]] int width()  const noexcept { return w_; }
+    [[nodiscard]] int height() const noexcept { return h_; }
+    [[nodiscard]] Glyph&       operator()(int x, int y)       noexcept { return g_[idx(x, y)]; }
+    [[nodiscard]] const Glyph& operator()(int x, int y) const noexcept { return g_[idx(x, y)]; }
+    [[nodiscard]] bool in(int x, int y) const noexcept { return x >= 0 && y >= 0 && x < w_ && y < h_; }
+    /// Write a string starting at (x, y), clipped to the grid.
+    void text(int x, int y, std::u32string_view s, Rgb fg, Rgb bg = {0, 0, 0}, bool bold = false) {
+        for (std::size_t i = 0; i < s.size(); ++i)
+            if (in(x + static_cast<int>(i), y)) (*this)(x + static_cast<int>(i), y) = {s[i], fg, bg, bold};
+    }
+    bool operator==(const Glyphs&) const = default;
+private:
+    [[nodiscard]] std::size_t idx(int x, int y) const noexcept {
+        return static_cast<std::size_t>(y) * static_cast<std::size_t>(w_) + static_cast<std::size_t>(x);
+    }
+    int w_ = 0, h_ = 0;
+    std::vector<Glyph> g_;
+};
+
+namespace detail {
+inline void paint_glyphs(Canvas& c, const Glyphs& g, int x0, int y0, int w, int h) {
+    StylePool& pool = *c.style_pool();
+    auto& styles = pixel_styles();
+    const int cw = std::min(w, g.width()), ch = std::min(h, g.height());
+    for (int y = 0; y < ch; ++y)
+        for (int x = 0; x < cw; ++x) {
+            const Glyph& gl = g(x, y);
+            if (gl.ch == 0) continue;
+            c.set(x0 + x, y0 + y, gl.ch, styles.get(pool, gl.fg, gl.bg, gl.bold));
+        }
+}
+}  // namespace detail
+
+/// A character grid that fills its slot. The grid is drawn from the top
+/// left; size it to the slot in update() (a Resize message) like an Image.
+[[nodiscard]] inline auto glyphs(Glyphs grid) -> ComponentBuilder {
+    return detail::paint([g = std::make_shared<const Glyphs>(std::move(grid))]
+                         (Canvas& c, int x, int y, int w, int h) { detail::paint_glyphs(c, *g, x, y, w, h); });
 }
 
 }  // namespace maya

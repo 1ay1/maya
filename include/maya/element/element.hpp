@@ -32,6 +32,7 @@ namespace maya {
 // ============================================================================
 
 struct Element;
+class Canvas;
 struct ElementList;
 class ScrollbackLedger;
 
@@ -225,6 +226,17 @@ namespace detail {
 struct ComponentElement {
     /// Called during painting with the allocated width and height.
     std::function<Element(int width, int height)> render;
+
+    /// Direct paint: when set, the renderer skips `render`, the sub-tree
+    /// and the component cache, and calls this with the canvas clipped to
+    /// the allocated rectangle, whose top-left is (x, y).
+    ///
+    /// This is what a canvas animation (a fire, a fluid, a ray tracer) IS
+    /// in the view layer: a leaf that owns its cells. It used to need its
+    /// own event loop (canvas_run) because there was no element for it;
+    /// as an element it's drawn by whatever runtime draws the view, beside
+    /// ordinary widgets (a status bar, a border), with the same diff.
+    std::function<void(Canvas& canvas, int x, int y, int width, int height)> draw = nullptr;
 
     /// Optional custom measure function for layout. When provided, the
     /// layout engine calls this instead of the default {max_width, 1}.

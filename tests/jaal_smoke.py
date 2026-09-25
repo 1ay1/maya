@@ -69,7 +69,12 @@ def set_size(fd, rows, cols):
 
 pid, fd = pty.fork()
 if pid == 0:
-    os.execv(args.binary, [args.binary])
+    # The agent's shell (and some CI) exports NO_COLOR, which maya honours:
+    # a colour-only animation would then have nothing to animate. Pin a
+    # tier so the checks see what a real terminal sees.
+    env = {k: v for k, v in os.environ.items() if k not in ("NO_COLOR", "CLICOLOR")}
+    env.setdefault("MAYA_COLOR", "256")
+    os.execve(args.binary, [args.binary], env)
 
 ROWS, COLS = 24, 80
 set_size(fd, ROWS, COLS)
@@ -135,9 +140,18 @@ if args.animates:
     import hashlib
     os.write(fd, args.animates.encode())
     seen, end = set(), time.time() + 1.2
+    # Hash glyphs AND colours: a colour-only animation (a fire, a fluid, a
+    # gradient of half-blocks) never changes screen.display's text, and
+    # hashing text alone reported it as frozen - for maya's own loop too.
+    def look():
+        rows = []
+        for y in range(screen.lines):
+            row = screen.buffer[y]
+            rows.append("".join(f"{c.data}{c.fg}{c.bg}" for c in row.values()))
+        return "\n".join(rows)
     while time.time() < end:
         settle(0.02, 0.04)
-        seen.add(hashlib.md5(text().encode()).hexdigest())
+        seen.add(hashlib.md5(look().encode()).hexdigest())
     check(len(seen) >= 8,
           f"animates with no input ({len(seen)} distinct frames in 1.2s after {args.animates!r})")
 

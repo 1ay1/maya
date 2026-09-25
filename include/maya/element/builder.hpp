@@ -307,6 +307,12 @@ public:
         return *this;
     }
 
+    /// Paint cells directly instead of returning an Element (see paint()).
+    auto draw(std::function<void(Canvas&, int x, int y, int w, int h)> fn) -> ComponentBuilder& {
+        element_.draw = std::move(fn);
+        return *this;
+    }
+
     auto shrink(float s) -> ComponentBuilder& {
         element_.layout.shrink = s;
         return *this;
@@ -502,6 +508,25 @@ namespace detail {
         return {Columns{w}, Rows{min_h < 1 ? 1 : min_h}};
     });
     b.grow(1.0f);
+    return b;
+}
+
+/// A canvas that fills its slot and paints cells into it directly. The
+/// view-layer form of an animation: a fire, a fluid, a ray tracer is a
+/// `paint` element beside ordinary widgets, drawn by whatever runtime
+/// draws the view, through the same frame diff. No loop of its own.
+///
+///   v(paint([&](Canvas& c, int x, int y, int w, int h) { fire.draw(c, x, y, w, h); }),
+///     status_bar(model))
+///
+/// Sizing is fill()'s: it grows into the container's free space, so the
+/// container needs a definite size on that axis (the screen is one).
+[[nodiscard]] inline auto paint(std::function<void(Canvas&, int x, int y, int w, int h)> draw_fn,
+                                int min_w = 0, int min_h = 1)
+    -> ComponentBuilder
+{
+    ComponentBuilder b = fill([](int, int) { return Element{}; }, min_w, min_h);
+    b.draw(std::move(draw_fn));
     return b;
 }
 

@@ -789,3 +789,50 @@ TEST_CASE("layout: the relayout fast path changes nothing") {
     std::println("  {} random trees x 3 widths identical", trees);
     std::println("PASS\n");
 }
+
+// ── paint(): a canvas as an element ──────────────────────────────────────────
+TEST_CASE("paint: draws into its slot, clipped, beside ordinary widgets") {
+    std::println("--- test_paint_element ---");
+    StylePool pool;
+    Canvas canvas(20, 4, &pool);
+    int calls = 0, got_x = -1, got_y = -1, got_w = -1, got_h = -1;
+    // A 20x4 screen: a painted area that fills everything above a 1-row bar.
+    render_tree(
+        box().direction(Column).width(Dimension::fixed(20)).height(Dimension::fixed(4))(
+            paint([&](Canvas& c, int x, int y, int w, int h) {
+                ++calls; got_x = x; got_y = y; got_w = w; got_h = h;
+                // Try to paint the WHOLE screen: the clip must keep it inside.
+                for (int yy = 0; yy < 4; ++yy)
+                    for (int xx = 0; xx < 20; ++xx) c.set(xx, yy, U'#', 0);
+            }),
+            text("bar")
+        ), canvas, pool, theme::native);
+    dump(canvas);
+    assert(calls == 1);
+    assert(got_x == 0 && got_y == 0 && got_w == 20 && got_h == 3);   // grew into the slot
+    assert(get_row(canvas, 0) == std::string(20, '#'));
+    assert(get_row(canvas, 2) == std::string(20, '#'));
+    assert(get_row(canvas, 3) == "bar");                              // clip held
+    std::println("PASS\n");
+}
+
+TEST_CASE("paint: drawn every frame (never served from the component cache)") {
+    std::println("--- test_paint_every_frame ---");
+    StylePool pool;
+    int calls = 0;
+    const auto frame = [&](char32_t ch) {
+        Canvas canvas(6, 2, &pool);
+        render_tree(
+            box().direction(Column).width(Dimension::fixed(6)).height(Dimension::fixed(2))(
+                paint([&, ch](Canvas& c, int x, int y, int w, int) {
+                    ++calls;
+                    for (int xx = 0; xx < w; ++xx) c.set(x + xx, y, ch, 0);
+                })
+            ), canvas, pool, theme::native);
+        return get_row(canvas, 0);
+    };
+    assert(frame(U'a') == "aaaaaa");
+    assert(frame(U'b') == "bbbbbb");   // a cached draw would still show 'a'
+    assert(calls == 2);
+    std::println("PASS\n");
+}

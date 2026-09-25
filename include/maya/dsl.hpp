@@ -708,6 +708,7 @@ using maya::detail::center;
 using maya::detail::zstack;
 using maya::detail::component;
 using maya::detail::fill;
+using maya::detail::paint;
 using maya::detail::adapt;
 using maya::detail::fit_row;
 using maya::detail::fit_col;

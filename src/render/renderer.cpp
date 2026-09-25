@@ -1402,6 +1402,23 @@ void paint_element(
         },
 
         [&](const ComponentElement& node) {
+            // Direct paint (a canvas animation): the component owns its
+            // cells. No render(), no sub-tree, no cache: it's redrawn every
+            // frame by definition, and the frame diff is what keeps the
+            // wire small. Clipped to its rectangle so it can't paint over
+            // a neighbour.
+            if (node.draw) {
+                const int cx = ax + node.layout.padding.left;
+                const int cy = ay + node.layout.padding.top;
+                const int cw = std::max(0, aw - static_cast<int>(node.layout.padding.horizontal()));
+                const int ch = std::max(0, ah - static_cast<int>(node.layout.padding.vertical()));
+                if (cw > 0 && ch > 0) {
+                    Canvas::ClipScope clip{canvas, Rect{{Columns{cx}, Rows{cy}},
+                                                        {Columns{cw}, Rows{ch}}}};
+                    node.draw(canvas, cx, cy, cw, ch);
+                }
+                return;
+            }
             // Lazy component: call the render callback with the allocated size,
             // then render the resulting element tree into this region.
             if (!node.render) return;

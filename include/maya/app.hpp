@@ -47,6 +47,7 @@
 
 #include <jaal/jaal.hpp>
 
+#include "maya.hpp"            // an app needs the whole view layer: one include
 #include "element/element.hpp"
 #include "terminal/input.hpp"
 #include "app/app.hpp"

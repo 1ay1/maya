@@ -5,8 +5,8 @@
 <h1 align="center">maya</h1>
 
 <p align="center">
-  C++26 TUI framework with type-state compile-time DSL, Yoga flexbox,<br>
-  SIMD cell-diff renderer, and Elm-style runtime.
+  C++26 terminal UI: a type-state compile-time DSL, Yoga flexbox,<br>
+  a SIMD cell-diff renderer, and <a href="third_party/jaal">jaal</a> as its runtime.
 </p>
 
 <p align="center">
@@ -23,8 +23,8 @@
 - **A real data table.** `Table` does selection (▎ cursor + selected-row strip + ↑↓/j/k/PgUp/PgDn), height-aware windowing with a scrollbar (`tbl.build() | grow(1)` — the row count falls out of the layout), host-owned scroll (`window_top` for sticky scroll-margins), sort indicators, flexible columns that truncate with …, column shedding when narrow, per-row/header click rects via the hit registry — and RICH cells: styled spans inside one cell (tree rails, dim argv trails) that clip with the truncation, and `TableCell::dyn` cells painted at the column's solved width (inline meters). htop's working set, one widget — see `examples/proc_table.cpp`.
 - **Pretty by default.** `gradient("MAYA", a, b)` sweeps color across text, `rainbow()` does the full spectrum, `gradient_rule()` draws a divider that re-tiles to its pane — one `TextElement` under the hood, so it wraps and measures like plain text. See [Gradients](docs/03-styling.md#gradients).
 - **Two render modes.** Fullscreen (alternate screen) or **inline** (lives in your scrollback, doesn't take over the terminal).
-- **Two app APIs.** `run(event_fn, render_fn)` for quick tools; `run<Program>()` Elm-style for testable pure logic with algebraic effects.
-- **Header-mostly.** `#include <maya/maya.hpp>` is the public surface. Widgets opt-in individually.
+- **maya is to jaal what Ink is to React.** [jaal](third_party/jaal) is the runtime: a program's model, one `update` per message, effects (`Cmd`) and subscriptions (`Sub`), timers, threads, streams, shutdown, all checked at compile time. maya draws it. One way to write an app, and `view()` is a pure function of the model.
+- **Header-mostly.** `<maya/app.hpp>` for an app, `<maya/maya.hpp>` for the view layer alone (static output, tests). Widgets opt-in individually.
 
 ## Quickstart
 
@@ -46,54 +46,51 @@ int main() {
 }
 ```
 
-Interactive counter — quick-tool API:
+An app — the model, one `update` per message, a pure `view`, and the events it listens to:
 
 ```cpp
-Signal<int> count{0};
-run({.title = "counter"},
-    [&](const Event& ev) {
-        if (key(ev, '+')) count.update([](int& n) { ++n; });
-        if (key(ev, '-')) count.update([](int& n) { --n; });
-        return !key(ev, 'q');
-    },
-    [&] {
-        return v(
-            text("Count: " + std::to_string(count.get())) | Bold | Fg<100, 200, 255>,
-            t<"[+/-] change  [q] quit"> | Dim
-        ) | border_<Round> | bcol<50, 55, 70> | pad<1>;
-    }
-);
-```
+#include <maya/app.hpp>
+using namespace maya;
+using namespace maya::dsl;
 
-Same counter — Elm-style `Program` for testable pure logic:
-
-```cpp
 struct Counter {
     struct Model { int count = 0; };
+
     struct Inc {}; struct Dec {}; struct Quit {};
     using Msg = std::variant<Inc, Dec, Quit>;
 
-    static Model init() { return {}; }
-    static auto update(Model m, Msg msg) -> std::pair<Model, Cmd<Msg>> {
-        return std::visit(overload{
-            [&](Inc) { return std::pair{Model{m.count + 1}, Cmd<Msg>{}}; },
-            [&](Dec) { return std::pair{Model{m.count - 1}, Cmd<Msg>{}}; },
-            [](Quit) { return std::pair{Model{}, Cmd<Msg>::quit()}; },
-        }, msg);
-    }
+    using Cmd = jaal::Cmd<Msg>;
+    using Sub = jaal::Sub<Msg, on_key>;          // say which event sources you use
+
+    static Cmd update(Model& m, Inc)  { ++m.count; return {}; }
+    static Cmd update(Model& m, Dec)  { --m.count; return {}; }
+    static Cmd update(Model&,   Quit) { return Cmd::quit(0); }
+
     static Element view(const Model& m) {
-        return v(text(m.count) | Bold, t<"[+/-] q quit"> | Dim) | pad<1> | border_<Round>;
+        return v(
+            text("Count: " + std::to_string(m.count)) | Bold | Fg<100, 200, 255>,
+            t<"[+/-] change  [q] quit"> | Dim
+        ) | border_<Round> | bcol<50, 55, 70> | pad<1>;
     }
-    static auto subscribe(const Model&) -> Sub<Msg> {
-        return key_map<Msg>({{'+', Inc{}}, {'-', Dec{}}, {'q', Quit{}}});
+
+    static Sub subscribe(const Model&) {
+        return keys<Sub>({{'+', Inc{}}, {'-', Dec{}}, {'q', Quit{}}});
     }
 };
-int main() { run<Counter>({.title = "counter"}); }
+
+int main() { return run<Counter>({.title = "counter"}); }
 ```
+
+That's [`examples/counter.cpp`](examples/counter.cpp). Animation is a
+subscription (`Sub::every(16ms, Tick{})`) that you drop when nothing moves,
+background work is `Cmd::task`, and pixel art is a view like any other:
+`pixels(image)` draws an `Image` with half blocks. Pass
+`.mode = Mode::Inline` to render in the scrollback instead of taking the
+screen.
 
 ## Examples
 
-39 examples ship with the framework:
+54 examples ship with the framework, every one a jaal program:
 
 <table>
 <tr>
@@ -132,23 +129,25 @@ Plus FPS raycaster, raymarcher, fluid sim, mandelbrot zoom, matrix rain, particl
 
 ## Runtime
 
-- Elm-style `Program` concept: `Model` + `Msg` + `init` / `update` / `view` / `subscribe`.
-- Effects as data: `Cmd<Msg>` (`quit`, `batch`, `after`, `task`) and `Sub<Msg>` (keys, mouse, timers).
-- Signal / slot reactivity (SolidJS-inspired).
-- Type-state render pipeline: Idle → Cleared → Painted → Opened → Closed.
-- Keyboard, mouse, resize, focus/blur, and bracketed-paste events out of the box.
+- The runtime is [jaal](third_party/jaal): `Model` + one `update(Model&, Case)` per message + `view` + `subscribe`. A missing handler, an unused effect, or a subscription the host can't provide is a compile error.
+- Effects as data: `Cmd::quit`, `after`, `task`, `send`, batches, plus the terminal's own (`set_title`, `write_clipboard`, `commit_scrollback`, `suspend`, `set_mouse`, ...), listed in the program's `Cmd` type.
+- Subscriptions as data: `Sub::every`, `Sub::stream`, and maya's event sources `on_key`, `on_mouse`, `on_paste`, `on_focus`, `on_resize`. Diffed every step, so a timer that stops being subscribed stops.
+- Frame flow control: never more than one frame ahead of the terminal, so `q` is instant even over a slow link.
+- Signal / slot reactivity (SolidJS-inspired) for widgets that want it.
 
 ## Headers
 
 ```cpp
-#include <maya/maya.hpp>           // DSL, run<P>(), events, signals, styles — public API
+#include <maya/app.hpp>            // run<P>(), event sources, terminal effects + all of maya.hpp
+#include <maya/maya.hpp>           // the view layer: DSL, elements, styles, print()
 #include <maya/widget/input.hpp>   // widgets included individually
 #include <maya/internal.hpp>       // canvas, diff engine, SIMD, terminal I/O (unstable)
 ```
 
 | Header | Contains | Stability |
 |--------|----------|-----------|
-| `maya.hpp` | DSL, Program, Cmd, Sub, events, signals, styles, elements, themes | Stable |
+| `app.hpp` | `run`, `Program`, `keys`, event sources, terminal effects (link `maya::app`) | Stable |
+| `maya.hpp` | DSL, elements, events, signals, styles, themes, `print` (link `maya::maya`) | Stable |
 | `widget/*.hpp` | 90+ widgets | Stable |
 | `internal.hpp` | Canvas, diff, renderer, SIMD, terminal I/O, layout | Internal |
 
@@ -221,11 +220,11 @@ cmake --install build --prefix /usr/local
 
 ```cmake
 find_package(maya 0.1 REQUIRED)
-target_link_libraries(my_app PRIVATE maya::maya)
+target_link_libraries(my_app PRIVATE maya::app)    # or maya::maya for the view layer alone
 ```
 
 ```cpp
-#include <maya/maya.hpp>
+#include <maya/app.hpp>
 #include <maya/widget/markdown.hpp>
 ```
 

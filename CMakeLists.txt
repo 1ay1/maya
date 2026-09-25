@@ -427,6 +427,7 @@ if(MAYA_BUILD_APP)
     add_subdirectory(third_party/jaal EXCLUDE_FROM_ALL)
     add_library(maya_app INTERFACE)
     add_library(maya::app ALIAS maya_app)
+    set_target_properties(maya_app PROPERTIES EXPORT_NAME app)
     target_link_libraries(maya_app INTERFACE maya jaal::jaal)
     if(MAYA_APP_STD_FLAG)
         target_compile_options(maya_app INTERFACE ${MAYA_APP_STD_FLAG})
@@ -710,6 +711,11 @@ include(CMakePackageConfigHelpers)
 
 install(DIRECTORY include/maya DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 install(TARGETS maya EXPORT maya-targets)
+# maya::app ships with the jaal it was built against (the submodule), in
+# maya's own export set: find_package(maya) is enough for an app.
+if(TARGET maya_app)
+    install(TARGETS maya_app jaal EXPORT maya-targets FILE_SET HEADERS)
+endif()
 install(EXPORT maya-targets
     DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/maya
     NAMESPACE maya::

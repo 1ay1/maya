@@ -1,4 +1,4 @@
-// examples/doom_fire.cpp — the PSX Doom fire, as a jaal program.
+// examples/doomfire2.cpp — the PSX Doom fire, as a jaal program.
 //
 // The reference for how maya apps are written now. Everything the program
 // is lives in four places, and each has one job:

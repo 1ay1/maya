@@ -17,7 +17,6 @@ Testing/Temporary/CTestCostData.txt
 .DS_Store
 build_debug
 build-test/
-build-jaal/
 build-verify/
 build-md/
 build-gcc/

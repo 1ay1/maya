@@ -1,5 +1,5 @@
 #!/bin/sh
-# tests/smoke_all.sh — run jaal_smoke.py over every example.
+# tests/smoke_all.sh — run smoke.py over every example.
 #
 # One line per program, and a non-zero exit if any fails. Each entry names
 # the keys that visibly change that program's screen (--keys), whether it
@@ -34,7 +34,7 @@ run() {
         fail=$((fail + 1)); failed="$failed $name"
         return
     fi
-    if out=$($PY "$HERE/jaal_smoke.py" "$bin" "$@" 2>&1); then
+    if out=$($PY "$HERE/smoke.py" "$bin" "$@" 2>&1); then
         echo "  ok       $name"
         pass=$((pass + 1))
     else
@@ -52,10 +52,9 @@ run() {
     fi
 }
 
-echo "maya on jaal: smoke-testing every ported example"
+echo "smoke-testing every example"
 #   program                 keys that change the screen        quit
 run counter           --keys="+-"
-run basic             --keys="+-r"
 run adaptive          --no-input-change
 run grid              --no-input-change
 run pretty            --no-input-change
@@ -112,7 +111,7 @@ run scroll_styles          --keys="jj"
 
 # Deeper than the smoke checks: each terminal effect's bytes on the wire,
 # and suspend's answer folded back in (jaal D39).
-if $PY "$HERE/jaal_terminal_fx_test.py" "$BUILD/maya_terminal_fx" >/dev/null; then
+if $PY "$HERE/terminal_fx_test.py" "$BUILD/maya_terminal_fx" >/dev/null; then
     pass=$((pass + 1))
 else
     fail=$((fail + 1)); failed="$failed terminal_fx_test"
@@ -126,7 +125,7 @@ if $PY "$HERE/inline_progress_test.py" "$BUILD/maya_inline_progress" >/dev/null 
 else echo "  FAIL     inline_progress"; fail=$((fail + 1)); failed="$failed inline_progress"; fi
 
 # The navigation-frame contract: every Down in a key-repeat burst is drawn.
-if $PY "$HERE/jaal_nav_frames_test.py" "$BUILD/maya_navcheck" >/dev/null 2>&1; then
+if $PY "$HERE/nav_frames_test.py" "$BUILD/maya_navcheck" >/dev/null 2>&1; then
     echo "  ok       navcheck"; pass=$((pass + 1))
 else echo "  FAIL     navcheck"; fail=$((fail + 1)); failed="$failed navcheck"; fi
 

@@ -1,9 +1,4 @@
-// jaal_proc_table.cpp — maya's proc_table.cpp, on jaal.
-//
-// A faithful port of examples/proc_table.cpp to the jaal runtime: update()
-// is split per message case and Cmd/Sub are jaal's; view() is unchanged.
-//
-// The rockbottom-shaped process list on maya::Table.
+// examples/proc_table.cpp — the rockbottom-shaped process list on maya::Table.
 //
 // Everything a real proc list needs, all from ONE widget:
 //

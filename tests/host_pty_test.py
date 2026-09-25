@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""tests/jaal_host_pty_test.py — maya on jaal, driven in a REAL terminal.
+"""tests/host_pty_test.py — maya on jaal, driven in a REAL terminal.
 
 Unit tests can't catch what this catches. Every bug below was found by this
 harness and was invisible to the 67 unit tests jaal already had, because each
@@ -23,7 +23,7 @@ maya draws diffs with cursor moves, so the text on the wire is never the text
 on the screen. And it waits for output to go QUIET rather than sleeping a
 fixed time, so it tests behaviour instead of timing.
 
-    python3 tests/jaal_host_pty_test.py build-app/maya_counter
+    python3 tests/host_pty_test.py build-app/maya_counter
 
 Needs: pip install pyte. Exits non-zero on the first failure.
 """
@@ -147,5 +147,5 @@ check(rc == 0, f"'q' quits with exit 0 (got {rc})")
 if rc is None:
     os.kill(pid, signal.SIGKILL)
 
-print(f"\njaal_host_pty_test: {'ok' if failures == 0 else f'{failures} FAILED'}")
+print(f"\nhost_pty_test: {'ok' if failures == 0 else f'{failures} FAILED'}")
 sys.exit(1 if failures else 0)

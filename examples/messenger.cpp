@@ -1,12 +1,7 @@
-// jaal_messenger.cpp — maya's messenger.cpp (multi-channel terminal chat), on jaal.
+// examples/messenger.cpp — multi-channel terminal chat.
 //
-// A faithful port of examples/messenger.cpp to the jaal runtime. view() is
-// unchanged; only the program shape (init/update mutate the model in place,
-// one update per case, jaal Cmd/Sub with on_key/on_mouse/on_resize routers)
-// differs.
-//
-// Originally built on maya's Program (Elm-shape) architecture. Simulates a small group
-// of peers chatting across four channels. Demonstrates:
+// Simulates a small group of peers chatting across four channels.
+// Demonstrates:
 //
 //   - Pure update() / view() / subscribe() — no Signal, no mutable globals
 //   - Sub::every() driving deterministic peer simulation

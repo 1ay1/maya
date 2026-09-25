@@ -125,8 +125,16 @@ auto InputParser::feed(std::string_view bytes) -> std::vector<Event> {
                 // Mouse / focus / paste events are left untouched — the
                 // latch is a keyboard-modifier convention only.
                 const std::size_t before = events.size();
+                const int acks_before = acks_;
                 parse_csi(events);
-                if (pending_alt_) {
+                // ...unless the CSI was a REPORT (the per-frame ack,
+                // `CSI 0 n`). A report is the terminal talking, not a key,
+                // so the ESC before it was never a prefix: it was the
+                // Escape key, pressed while an ack was on its way. Every
+                // frame sends a DSR, so this race lost nearly every Escape.
+                if (pending_alt_ && acks_ != acks_before && events.size() == before) {
+                    events.emplace_back(KeyEvent{.key = SpecialKey::Escape, .raw_sequence = "\x1b"});
+                } else if (pending_alt_) {
                     for (std::size_t k = before; k < events.size(); ++k)
                         if (auto* ke = std::get_if<KeyEvent>(&events[k]))
                             ke->mods.alt = true;

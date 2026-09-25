@@ -6,7 +6,7 @@ Runs each binary in a pty (214x60, TERM=tmux-256color), holds a key for 3 s
 (MAYA_FRAME_PROF): build (element -> layout nodes), layout, paint, the
 rest of the frame (diff + serialize + write), and node count.
 
-    python3 tests/frame_phases.py build-jaal/maya_agent_session --key x
+    python3 tests/frame_phases.py build-app/maya_agent_session --key x
 """
 import argparse, fcntl, os, pty, re, select, signal, statistics, struct, termios, time
 

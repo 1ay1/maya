@@ -110,6 +110,11 @@ inline void emit_trace(const char* state, std::size_t bytes, bool empty) noexcep
 
 namespace maya {
 
+/// Install an emit trace sink (bytes shipped per composed frame, and which
+/// inline state composed it); nullptr disables. A host wires it to its own
+/// logger: maya carries none.
+inline void set_emit_trace(detail::EmitTraceFn fn) noexcept { detail::emit_trace_sink() = fn; }
+
 // ─────────────────────────────────────────────────────────────────────────
 // commit::Synced / commit::Stale — typed result arms of FrameBytes::commit_to
 // ─────────────────────────────────────────────────────────────────────────

@@ -1,7 +1,4 @@
-// jaal_stopwatch.cpp — maya's stopwatch.cpp, on jaal.
-//
-// A faithful port of examples/stopwatch.cpp to the jaal runtime. view() is
-// unchanged; only the program shape (update per case, jaal Cmd/Sub) differs.
+// examples/stopwatch.cpp — a stopwatch with laps.
 //
 // Demonstrates:
 //   - Sub::every() for periodic tick subscriptions

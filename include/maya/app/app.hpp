@@ -154,25 +154,10 @@ inline thread_local bool animation_requested_ = false;
 // to -1 each render alongside animation_requested_.
 inline thread_local std::int64_t next_frame_delay_ms_ = -1;
 
-// Opt-in loop-state probe (MAYA_IO_LOG=<path>). Appends to the same file the
-// app.cpp poll/render trace uses; entries are timestamp-ordered so the two
-// streams interleave correctly when sorted. Throttled per call site. No-op
-// (one getenv) unless the env var is set. Diagnostic scaffolding.
-inline void loop_dbg(std::string_view s) {
-    static const char* path = std::getenv("MAYA_IO_LOG");
-    if (!path) return;
-    static std::FILE* f = std::fopen(path, "a");
-    if (!f) return;
-    const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::steady_clock::now().time_since_epoch()).count();
-    std::fprintf(f, "[%9lld] %.*s\n", static_cast<long long>(now),
-                 static_cast<int>(s.size()), s.data());
-    std::fflush(f);
-}
 // ── Per-key frame fidelity ────────────────────────────────────────────
 //
 // A fast terminal delivers a whole key-repeat run in ONE read(), and the
-// loop below reduces every event but paints ONCE for the batch. For most
+// host folds every event but paints ONCE for the batch. For most
 // input that is exactly right: the intermediate states are not interesting
 // and painting them is wasted work.
 //
@@ -276,19 +261,7 @@ inline void request_animation_frame_after(std::int64_t delay_ms) noexcept {
     return detail::animation_requested_;
 }
 
-// Testing seam: clear a pending frame request.
-//
-// The run loop clears animation_requested_ when it actually renders, so a
-// test that calls request_animation_frame() to simulate a widget needs a way
-// to get back to "nothing pending" without running the loop. Not for
-// production use — clearing this outside the loop would strand an animation.
-inline void consume_animation_request_for_test() noexcept {
-    detail::animation_requested_ = false;
-    detail::next_frame_delay_ms_ = -1;
-}
-
-// Wire the decoupled motion-framework frame-request hook to the real run
-// loop. anim::Motion / Timeline / pulse (core/motion.hpp) wake the loop
+// Wire the decoupled motion-framework frame-request hook to the host. anim::Motion / Timeline / pulse (core/motion.hpp) wake the loop
 // WITHOUT depending on this 90 KB header by routing through
 // anim::detail::raf_hook, installed here at static-init so any TU that links
 // the app gets self-driving animations for free.
@@ -299,46 +272,7 @@ inline void raf_after_thunk_(std::int64_t delay_ms) noexcept {
 }
 inline const ::maya::anim::detail::RafInstaller raf_installer_{
     &raf_thunk_, &raf_after_thunk_};
-
-// ── Frame-gate tracing ───────────────────────────────────────────────────
-//
-// visual_hash() decides whether view() runs at all, so when something is
-// wrong there the symptom is "the model changed but the screen didn't" — and
-// that decision was previously invisible from a running binary. Diagnosing it
-// meant editing maya and rebuilding, which a host author cannot do.
-//
-// maya carries no logger, so the host installs the sink (agentty wires it to
-// logx's `ui` channel). Unset is a null check the optimiser removes.
-using FrameTraceFn = void (*)(std::uint64_t hash, bool skipped, bool needs_render);
-
-inline FrameTraceFn& frame_trace_sink() noexcept {
-    static FrameTraceFn fn = nullptr;
-    return fn;
-}
-
-[[nodiscard]] inline bool frame_trace_enabled() noexcept {
-    return frame_trace_sink() != nullptr;
-}
-
-inline void frame_trace(std::uint64_t hash, bool skipped, bool needs_render) noexcept {
-    if (auto fn = frame_trace_sink()) fn(hash, skipped, needs_render);
-}
 } // namespace detail
-
-/// Install a frame-gate trace sink; nullptr disables.
-///
-/// Fires once per event-loop iteration, so a host should gate it on its own
-/// verbosity setting before installing.
-inline void set_frame_trace(detail::FrameTraceFn fn) noexcept {
-    detail::frame_trace_sink() = fn;
-}
-
-/// Install an emit trace sink (bytes shipped per composed frame); nullptr
-/// disables. The sink itself lives in render/frame_bytes.hpp — the renderer
-/// cannot include the app layer — so this is just its public spelling.
-inline void set_emit_trace(detail::EmitTraceFn fn) noexcept {
-    detail::emit_trace_sink() = fn;
-}
 
 // ============================================================================
 // Key event predicates — pure functions for use inside subscribe() filters
@@ -498,7 +432,7 @@ public:
     /// Adoption used to be `theme_ = theme::live()` unconditionally, which
     /// honoured the first and silently threw the second away: live() is
     /// native when nobody set anything, so run<App>({.theme = dracula})
-    /// (the example API.md opens with) started in native on BOTH loops.
+    /// started in native.
     /// Whether anyone set a theme pre-runtime is exactly what live_epoch()
     /// counts, so that decides it, rather than comparing against native (a
     /// host may deliberately set native over a Options default).
@@ -646,12 +580,6 @@ public:
         startup_events_.insert(startup_events_.end(),
                                std::make_move_iterator(evs.begin()),
                                std::make_move_iterator(evs.end()));
-    }
-
-    // Are there events waiting from a batch that ended early? The host
-    // must not wait for input while it already holds undelivered events.
-    [[nodiscard]] bool has_deferred_events() const noexcept {
-        return !startup_events_.empty();
     }
 
     // Drop a duplicate clipboard-read PasteEvent (the tmux OSC 5522 + OSC 52

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""tests/jaal_terminal_fx_test.py: the jaal host's terminal effects on a real pty.
+"""tests/terminal_fx_test.py: the jaal host's terminal effects on a real pty.
 
 The smoke harness proves a program draws, reacts, quits. This proves each
 terminal EFFECT reaches the wire as the bytes maya's own loop would emit,
@@ -7,7 +7,7 @@ and that `suspend` hands the tty to a child and folds its exit back in as a
 message (jaal D39): the child's own output appears, then the program's
 "child exited 3" line.
 
-    python3 tests/jaal_terminal_fx_test.py build-app/maya_terminal_fx
+    python3 tests/terminal_fx_test.py build-app/maya_terminal_fx
 """
 import os, pty, select, signal, struct, fcntl, termios, sys, time
 

@@ -1,11 +1,9 @@
-// jaal_motion_showcase.cpp — motion_showcase.cpp, on jaal.
+// examples/motion_showcase.cpp — the maya animation framework in one screen.
 //
-// The port that proves maya's animation framework runs under jaal. Nothing
-// here reads a clock or calls request_animation_frame(); widgets do, during
-// view(). Under maya's own loop that request schedules the next frame. Under
-// jaal the HOST does the same (maya/jaal/host.hpp: next_frame_at_, owes_frame,
-// wait_hint), so a spring settles and a pulse breathes with no input at all.
-// It also runs in Mode::Inline, which run passes straight through.
+// Nothing here reads a clock or calls request_animation_frame(); widgets do,
+// during view(), and the host (<maya/app.hpp>: next_frame_at_, owes_frame,
+// wait_hint) schedules the next frame, so a spring settles and a pulse
+// breathes with no input at all. It also runs in Mode::Inline.
 //
 // ---- original header follows ----
 //

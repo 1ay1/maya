@@ -53,6 +53,8 @@ jobs:
             cxx: ""
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: true
 
       - name: Install toolchain (Linux)
         if: runner.os == 'Linux'
@@ -108,14 +110,12 @@ jobs:
         # tests (incl. the markdown watchdogs) still run.
         run: ctest --test-dir build --output-on-failure --timeout 120 -LE perf
 
-  # maya on jaal: the runtime maya is moving to. Build the adapter target and
-  # every jaal example on each OS (Windows included: jaal has a Windows
-  # reactor, and the host must compile against it), then drive the programs
-  # in a real pty on the POSIX legs: draw, react, animate, resize, no idle
-  # spin, quit cleanly, every navigation key drawn. These are the checks that
-  # caught the bugs this migration found.
-  jaal:
-    name: maya on jaal (${{ matrix.name }})
+  # Every example, built on each OS (Windows included: jaal has a Windows
+  # reactor, and the host must compile against it), then driven in a real
+  # pty on the POSIX legs: draw, react, animate, resize, no idle spin, quit
+  # cleanly, every navigation key drawn.
+  examples:
+    name: examples (${{ matrix.name }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -153,17 +153,16 @@ jobs:
         uses: ilammy/msvc-dev-cmd@v1
       - name: Configure
         run: >
-          cmake -B build-jaal -G Ninja -DCMAKE_BUILD_TYPE=Release
-          -DMAYA_WITH_JAAL=ON -DMAYA_BUILD_TESTS=OFF -DMAYA_BUILD_EXAMPLES=ON
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          -DMAYA_BUILD_TESTS=OFF -DMAYA_BUILD_EXAMPLES=ON
           -DMAYA_NATIVE_TUNING=OFF
       - name: Build
-        run: cmake --build build-jaal -j
-      - name: Drive every jaal program in a real pty
+        run: cmake --build build -j
+      - name: Drive every example in a real pty
         if: runner.os != 'Windows'
         run: |
-          sh tests/jaal_smoke_all.sh build-jaal
-          python3 tests/jaal_nav_frames_test.py build-jaal/maya_jaal_navcheck
-          python3 tests/jaal_smoke.py build-jaal/maya_jaal_doomfire2 --keys=12 --animates=1
+          sh tests/smoke_all.sh build
+          python3 tests/smoke.py build/maya_doomfire2 --keys=12 --animates=1
 
   sanitizers:
     name: sanitizers (${{ matrix.san }})
@@ -174,6 +173,8 @@ jobs:
         san: ["address,undefined", "thread"]
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: true
       - name: Install toolchain
         run: |
           sudo apt-get update
@@ -207,6 +208,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: true
       - name: Install clang
         run: |
           sudo apt-get update

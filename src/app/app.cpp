@@ -644,8 +644,11 @@ void Runtime::dedup_clipboard_pastes(std::vector<Event>& events) {
 
 auto Runtime::flush_timeouts() -> std::vector<Event> {
     std::vector<Event> result;
-    for (auto& ev : parser_.flush_timeout())
+    std::FILE* const lf = input_log();
+    for (auto& ev : parser_.flush_timeout()) {
+        if (lf) { std::fputs("            timeout resolved:\n", lf); log_input_event(lf, ev); std::fflush(lf); }
         result.push_back(std::move(ev));
+    }
     return result;
 }
 

@@ -186,8 +186,8 @@ return Cmd(SetTitle{"build: ok"});             // was Cmd::set_title
 ## Checking a port
 
 ```sh
-python3 tests/jaal_smoke.py build/maya_<name>               # one program
-python3 tests/jaal_smoke.py build/maya_<name> --animates=5  # ...that animates after key 5
+python3 tests/smoke.py build/maya_<name>               # one program
+python3 tests/smoke.py build/maya_<name> --animates=5  # ...that animates after key 5
 sh tests/smoke_all.sh build                                 # every example
 python3 tests/screen_after.py build/maya_<name> "<down><down>"   # special keys, prints the screen
 python3 tests/snapshot.py build/maya_<name> out.png         # a pixel demo, as a PNG

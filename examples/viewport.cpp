@@ -1,10 +1,5 @@
-// jaal_viewport.cpp — maya's viewport.cpp, on jaal.
-//
-// A faithful port of examples/viewport.cpp to the jaal runtime: update()
-// is split per message case and Cmd/Sub are jaal's; view() is unchanged.
-//
-// The viewport() layout widget, exercised with real widgets,
-// now SCROLLABLE.
+// examples/viewport.cpp — the viewport() layout widget, exercised with real widgets,
+// now scrollable.
 //
 // viewport(cells, max_width) is PURELY layout. It chooses a column count from
 // a width CEILING and then splits the cells EVENLY BY COUNT into that many

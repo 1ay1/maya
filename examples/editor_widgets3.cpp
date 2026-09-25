@@ -1,5 +1,3 @@
-// examples/editor_widgets3.cpp — jaal port of examples/editor_widgets3.cpp (view unchanged).
-//
 // examples/editor_widgets3.cpp — third showcase browser (decorations, lenses,
 // status readouts, doc rendering). Keeps the other browsers small.
 //

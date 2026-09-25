@@ -284,6 +284,12 @@ public:
         if (auto fresh = term_.read(); !fresh) { cx.stop(70); return; }
         else events.insert(events.end(), std::make_move_iterator(fresh->begin()),
                            std::make_move_iterator(fresh->end()));
+        // The read ended inside a sequence (a lone ESC so far): note when, so
+        // wait_hint() can wake us to resolve it if no more bytes come.
+        // Stamp only the START of a pending run: a later read (the frame ack,
+        // which also arrives as input) must not push the deadline back.
+        if (!term_.has_pending_input()) escape_since_.reset();
+        else if (!escape_since_) escape_since_ = clock::now();
         // A navigation key's frame is still owed (input is held): this read
         // may be just the terminal's frame ack arriving. Queue what came in
         // behind the held keys, and let present() resume them after the
@@ -302,6 +308,21 @@ public:
     // in between were computed and never shown, so the cursor visibly
     // jumped 2 -> 4 -> 6. The cursor IS the feedback for an arrow key, so
     // each one is drawn. (maya's old loop did this too; it's the same rule.)
+    // A partial sequence has waited out the escape timeout.
+    [[nodiscard]] bool escape_due() const noexcept {
+        return escape_since_ && clock::now() - *escape_since_ >= Screen::kEscapeTimeout;
+    }
+    // How long until it will have.
+    [[nodiscard]] std::optional<std::chrono::milliseconds> escape_wait() const noexcept {
+        if (!escape_since_) return std::nullopt;
+        const auto left = *escape_since_ + Screen::kEscapeTimeout - clock::now();
+        return std::max(std::chrono::milliseconds(0), std::chrono::ceil<std::chrono::milliseconds>(left));
+    }
+    static std::optional<std::chrono::milliseconds> earliest(std::optional<std::chrono::milliseconds> a,
+                                                              std::chrono::milliseconds b) noexcept {
+        return a && *a < b ? *a : b;
+    }
+
     void emit_until_navigation(jaal::host_context<terminal_host>& cx, std::vector<Event>& events) {
         // jaal folds an emitted event on the spot (route() runs update), so
         // "emit, then draw" needs the loop to turn between two navigation
@@ -335,6 +356,19 @@ public:
     // animation until a keypress).
     template <class K>
     void present(K& k) {
+        resolved_ = false;
+        // A lone ESC (or a truncated sequence) that nothing followed: the
+        // parser can only call it the Escape key once 50 ms have passed
+        // with no next byte, and no byte means no input wakeup. wait_hint()
+        // woke us for exactly this; resolve it and hand the key over.
+        if (escape_due() && cx_) {
+            escape_since_.reset();
+            auto flushed = term_.resolve_pending_input();
+            // Emitting folds the key now; returning with owes_frame() true
+            // turns the loop once more, so its effect (a quit, a redraw)
+            // is acted on in the next step rather than after the next input.
+            if (!flushed.empty()) { emit_until_navigation(*cx_, flushed); resolved_ = true; return; }
+        }
         const bool drew = present_frame(k);
         // A navigation key ended the last input batch so ITS frame could be
         // drawn. Only once that frame has actually gone out (not held back
@@ -418,6 +452,8 @@ public:
     // deadline that has arrived, a frame held back by pending output that
     // has now drained, or a coalesced frame the Screen still owes.
     [[nodiscard]] bool owes_frame() const noexcept {
+        if (escape_due()) return true;              // a lone ESC is ready to resolve
+        if (resolved_) return true;                 // ...and was: turn once more to act on it
         if (!held_.empty()) return true;            // held input resumes after a frame
         if (term_.pending_output()) return false;   // the output watch will wake us
         if (awaiting_ack()) return false;           // the ack (input) will wake us
@@ -429,21 +465,22 @@ public:
     // a frame is unacknowledged, until the ack (it arrives as input) or the
     // ack timeout, whichever is first.
     [[nodiscard]] std::optional<std::chrono::milliseconds> wait_hint() const noexcept {
-        if (!held_.empty()) return std::chrono::milliseconds(0);
+        if (!held_.empty() || resolved_) return std::chrono::milliseconds(0);
+        std::optional<std::chrono::milliseconds> esc = escape_wait();
         if (term_.pending_output()) return std::nullopt;
         if (awaiting_ack()) {
             const auto left = *term_.ready_deadline() - clock::now();
-            return std::max(std::chrono::milliseconds(0),
-                            std::chrono::ceil<std::chrono::milliseconds>(left));
+            return earliest(esc, std::max(std::chrono::milliseconds(0),
+                                          std::chrono::ceil<std::chrono::milliseconds>(left)));
         }
         if (dirty_ || owed_) return std::chrono::milliseconds(0);
-        if (term_.backpressured()) return std::chrono::milliseconds(4);   // a coalesced frame
+        if (term_.backpressured()) return earliest(esc, std::chrono::milliseconds(4));   // a coalesced frame
         if (next_frame_at_) {
             const auto left = *next_frame_at_ - clock::now();
             if (left <= clock::duration::zero()) return std::chrono::milliseconds(0);
-            return std::chrono::ceil<std::chrono::milliseconds>(left);
+            return earliest(esc, std::chrono::ceil<std::chrono::milliseconds>(left));
         }
-        return std::nullopt;
+        return esc;
     }
 
     // Screen effects: each one is a single Screen call.
@@ -512,6 +549,8 @@ private:
     static constexpr std::uint64_t                            kOutput = 2;
     bool                                                      dirty_ = true;
     std::vector<Event>                                        held_;   // input after a navigation key, awaiting its frame
+    std::optional<clock::time_point>                          escape_since_;   // input ended mid-sequence at
+    bool                                                      resolved_ = false;   // a timed-out sequence was just emitted
     bool                                                      owed_  = false;   // a frame held back by pending output
     bool                                                      last_warmup_ = false;
     std::optional<clock::time_point>                          next_frame_at_;

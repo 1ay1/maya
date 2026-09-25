@@ -1,9 +1,4 @@
-// jaal_agent_session.cpp — maya's agent_session.cpp, on jaal.
-//
-// A port of examples/agent_session.cpp to the jaal runtime. view() and every
-// widget-building helper are unchanged; the program shape is jaal's (one
-// static update overload per Msg case, jaal Cmd/Sub, run). The one real
-// design change is the permission gate — see "Permission gate" below.
+// examples/agent_session.cpp — an auto-piloted AI agent session, inline.
 //
 // A Claude-Code-style inline TUI driven by a real background "SSE" stream
 // (Sub::stream → worker thread → mailbox), with a fully functional
@@ -13,12 +8,11 @@
 // scenarios — useful for unattended demos and recordings.  Press q,
 // Esc, or Ctrl-C to exit; type any time to drive it manually instead.
 //
-// Permission gate (jaal port):
-//   The original's worker thread blocked on a shared_ptr<atomic<bool>> that
-//   the UI thread flipped on grant. jaal forbids that by design: a stream
-//   body is captureless and every argument must be Sendable, and a pointer
-//   to state two threads mutate is exactly what Sendable rejects. So the
-//   decision lives in the MODEL and no thread waits on another:
+// Permission gate:
+//   No worker thread blocks waiting for the user. A stream body is
+//   captureless and every argument must be Sendable, and a pointer to state
+//   two threads mutate is exactly what Sendable rejects. So the decision
+//   lives in the MODEL and no thread waits on another:
 //     * the worker is a Sub::stream keyed "turn/<n>/<phase>", subscribed
 //       only while a turn is in flight and NOT while awaiting permission;
 //     * gated scenarios (auth, theme) are split at the gate: phase 1 runs
@@ -60,7 +54,7 @@
 //   q / Esc    quit (only when not actively typing)
 //   Ctrl-C     force quit anytime
 //
-// Usage:  ./maya_jaal_agent_session
+// Usage:  ./maya_agent_session
 
 #include <maya/app.hpp>
 #include <maya/maya.hpp>
@@ -242,7 +236,7 @@ static Composer::State composer_state(Phase p) {
 }
 
 // ============================================================================
-// Worker↔UI permission gate — jaal port: no shared state. The grant is a
+// Worker↔UI permission gate — no shared state. The grant is a
 // message (GrantPerm) that bumps Model::stream_phase; subscribe() then starts
 // the post-gate half of the scenario as a new stream. See the top comment.
 // ============================================================================

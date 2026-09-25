@@ -1,14 +1,7 @@
-// jaal_widgets.cpp — maya's widgets.cpp, on jaal.
+// examples/widgets.cpp — a showcase of visualization widgets.
 //
-// A faithful port of examples/widgets.cpp to the jaal runtime: update() is
-// split per message case and Cmd/Sub are jaal's; view() is unchanged.
-//
-// The original ran with RunConfig{.fps = 20}. jaal has no continuous-render
-// mode, and this program doesn't need one: view() is a pure function of the
-// model (no widget reads the clock), and the always-on 50 ms Tick changes
-// the model 20 times a second, so every one of those frames is still drawn.
-//
-// Showcase of visualization widgets
+// view() is a pure function of the model (no widget reads the clock); a
+// 50 ms Tick changes the model, so it redraws 20 times a second.
 //
 // Demonstrates 7 data visualization widgets in a single dashboard:
 //   ContextWindow, FlameChart, GitGraph, InlineDiff,

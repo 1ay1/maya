@@ -2,7 +2,7 @@
 //
 // A small checklist program: each key fires one effect and the screen says
 // what came back. It exists so each effect agentty needs is exercised on a
-// real tty (tests/jaal_smoke.py drives it), not just compiled.
+// real tty (tests/smoke.py drives it), not just compiled.
 //
 //   t   set_title           c   write_clipboard (OSC 52)
 //   o   emit_host_sequence  r   force_redraw

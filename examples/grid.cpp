@@ -1,6 +1,4 @@
-// jaal_grid.cpp — jaal port of examples/grid.cpp (view unchanged).
-//
-// grid.cpp — a rockbottom-shaped system dashboard in two lines
+// examples/grid.cpp — a rockbottom-shaped system dashboard in two lines
 //
 // The whole responsive story:
 //

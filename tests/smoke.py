@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-"""tests/jaal_smoke.py — the checks EVERY maya-on-jaal program must pass.
+"""tests/smoke.py — the checks EVERY maya program must pass.
 
-jaal_host_pty_test.py is a deep test of one program. This is the wide one:
+host_pty_test.py is a deep test of one program. This is the wide one:
 it knows nothing about a program's model or keys, and checks only what any
-terminal app owes its user, so it runs unchanged against every example as it
-migrates:
+terminal app owes its user, so it runs unchanged against every example:
 
   1. it draws a first frame           (starts, takes the terminal, renders)
   2. input changes the screen         (a key reaches update() AND the screen)
@@ -19,7 +18,7 @@ there. Point 4 catches an idle loop that spins (a wait timeout of zero, a
 Sub that re-arms every step). Point 6 is maya's RAII terminal type-state,
 which must still run under jaal's teardown.
 
-    python3 tests/jaal_smoke.py <binary> [--keys "+-"] [--quit q]
+    python3 tests/smoke.py <binary> [--keys "+-"] [--quit q]
 
 Reads the SCREEN through a terminal emulator (pyte) and waits for output to
 go quiet rather than sleeping fixed times. Needs: pip install pyte.

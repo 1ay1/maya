@@ -4,7 +4,7 @@
 For every binary given: time to first frame, keypress -> screen latency
 (median / p90 over N presses), and idle CPU. Runs in a real pty, like a user.
 
-    python3 tests/latency_bench.py build-jaal/maya_* [--presses 20] [--key j]
+    python3 tests/latency_bench.py build-app/maya_* [--presses 20] [--key j]
 """
 import argparse, fcntl, os, pty, resource, select, signal, statistics, struct, sys, termios, time
 

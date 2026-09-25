@@ -409,7 +409,7 @@ if(MAYA_BUILD_APP)
     # CMake is the wrong test: probe the flag itself. jaal's own build does
     # the same (third_party/jaal/CMakeLists.txt, JAAL_STD_FLAG).
     set(MAYA_APP_STD_FLAG "")
-    if(NOT "cxx_std_26" IN_LIST CMAKE_CXX_COMPILE_FEATURES)
+    if(NOT MSVC AND NOT "cxx_std_26" IN_LIST CMAKE_CXX_COMPILE_FEATURES)
         include(CheckCXXCompilerFlag)
         check_cxx_compiler_flag("-std=c++2c" MAYA_HAS_CXX2C)
         if(NOT MAYA_HAS_CXX2C)
@@ -586,6 +586,12 @@ if(MAYA_BUILD_TESTS)
         MAYA_CXX_COMPILER="${CMAKE_CXX_COMPILER}")
     if(NOT MSVC)
         target_compile_definitions(maya_tests PRIVATE MAYA_CXX_GNULIKE=1)
+        # The probes run the compiler by hand: on macOS it needs the same
+        # SDK the build uses, or <cstddef> isn't found and every probe
+        # "refuses". Pass the sysroot through when there is one.
+        if(CMAKE_OSX_SYSROOT)
+            target_compile_definitions(maya_tests PRIVATE MAYA_CXX_SYSROOT="${CMAKE_OSX_SYSROOT}")
+        endif()
     endif()
     target_compile_options(maya_tests PRIVATE
         $<$<CXX_COMPILER_ID:GNU,Clang>:${MAYA_TEST_OPT}>)

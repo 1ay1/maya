@@ -1,6 +1,4 @@
-// jaal_pretty.cpp — jaal port of examples/pretty.cpp (view unchanged).
-//
-// pretty.cpp — the pretty + responsive toolkit, live
+// examples/pretty.cpp — the pretty + responsive toolkit, live
 //
 // Resize your terminal while this runs. Everything re-solves:
 //   - gradient() / rainbow()   multi-color text via per-codepoint StyledRuns

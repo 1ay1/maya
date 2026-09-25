@@ -320,7 +320,7 @@ struct IoVec {
 // ============================================================================
 // ensure_utf8 — one-shot UTF-8 console codepage setup (Win32)
 // ============================================================================
-// Call before any non-Terminal UTF-8 output (e.g. print(), live()).
+// Call before any non-Terminal UTF-8 output (e.g. print()).
 // No-op on POSIX. Safe to call multiple times.
 
 inline void ensure_utf8() noexcept {

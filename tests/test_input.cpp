@@ -937,3 +937,40 @@ TEST_CASE("input terminal reports are consumed, never typed") {
     }
     std::println("PASS\n");
 }
+
+TEST_CASE("input escape key racing a frame ack") {
+    std::println("--- test_input_escape_then_ack ---");
+    // Every frame sends a DSR (`CSI 5 n`) and the terminal answers `CSI 0 n`.
+    // Press Escape while an answer is in flight and the parser sees ESC,
+    // then ESC [ 0 n: the second ESC used to latch the first as an Alt
+    // prefix, the report produced no key, and the Escape vanished. Escape
+    // almost never reached an animating program (one frame, one DSR).
+    {
+        InputParser p;
+        auto events = p.feed("\x1b");
+        assert(events.empty() && p.has_pending());
+        events = p.feed("\x1b[0n");
+        assert(events.size() == 1 && "the Escape key must come out");
+        const auto& k = get_key(events[0]);
+        assert(std::get_if<SpecialKey>(&k.key) && *std::get_if<SpecialKey>(&k.key) == SpecialKey::Escape);
+        assert(!k.mods.alt && "a report is not an Alt prefix");
+        assert(p.take_acks() == 1 && "and the ack still counts");
+        assert(!p.has_pending());
+    }
+    // In one read, too.
+    {
+        InputParser p;
+        auto events = p.feed("\x1b\x1b[0n");
+        assert(events.size() == 1);
+        assert(*std::get_if<SpecialKey>(&get_key(events[0]).key) == SpecialKey::Escape);
+    }
+    // The neighbour that must not change: ESC ESC [ A is still Alt+Up.
+    {
+        InputParser p;
+        auto events = p.feed("\x1b\x1b[A");
+        assert(events.size() == 1);
+        const auto& k = get_key(events[0]);
+        assert(*std::get_if<SpecialKey>(&k.key) == SpecialKey::Up && k.mods.alt);
+    }
+    std::println("PASS\n");
+}

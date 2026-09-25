@@ -9,7 +9,7 @@ animation keeps the tty buffer full, the way it is for a real user. After
   bytes  bytes the terminal still had to swallow after the keypress
          (what the user watches scroll by before the screen clears)
 
-    python3 tests/quit_latency.py build-jaal/maya_doom_fire build-jaal/maya_jaal_doom_fire
+    python3 tests/quit_latency.py build-app/maya_doom_fire build-app/maya_doom_fire
 """
 import argparse, fcntl, os, pty, select, signal, struct, termios, time
 

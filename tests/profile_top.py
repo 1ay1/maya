@@ -36,7 +36,7 @@ def run(name, build, secs=3.0):
     return os.path.basename(b), rows
 
 if __name__ == "__main__":
-    build = os.environ.get("BUILD", "build-jaal")
+    build = os.environ.get("BUILD", "build-app")
     res = {}
     ths = [threading.Thread(target=lambda n=n: res.__setitem__(n, run(n, build))) for n in sys.argv[1:]]
     for t in ths: t.start()

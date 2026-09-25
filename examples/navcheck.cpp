@@ -1,6 +1,6 @@
 // examples/navcheck.cpp — a tiny list, for the navigation-frame test.
 //
-// Shows "row N" for the selected row. tests/jaal_nav_frames_test.py sends a
+// Shows "row N" for the selected row. tests/nav_frames_test.py sends a
 // whole burst of Down arrows in ONE write (what a fast terminal does with
 // key repeat) and requires every row to have been drawn, not just the last.
 #include <maya/app.hpp>

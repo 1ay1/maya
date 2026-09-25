@@ -653,7 +653,12 @@ Color runtime_colour();
 
         // -fsyntax-only: we are asking a question about the type system,
         // so there is no reason to pay for codegen.
-        const std::string cmd = "\"" + cxx.string() + "\" -std=c++26 "
+#if defined(MAYA_CXX_SYSROOT)
+        const std::string sysroot = std::string{" -isysroot \""} + MAYA_CXX_SYSROOT + "\" ";
+#else
+        const std::string sysroot = " ";
+#endif
+        const std::string cmd = "\"" + cxx.string() + "\"" + sysroot + "-std=c++26 "
                               + "-fsyntax-only -I \"" + inc.string() + "\" \""
                               + tu.string() + "\" 2>/dev/null";
         const bool compiled = std::system(cmd.c_str()) == 0;

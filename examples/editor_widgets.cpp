@@ -1,5 +1,3 @@
-// examples/editor_widgets.cpp — jaal port of examples/editor_widgets.cpp (view unchanged).
-//
 // examples/editor_widgets.cpp — independent widget showcase browser.
 //
 //   cmake --build build --target maya_editor_widgets && ./build/maya_editor_widgets

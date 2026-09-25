@@ -14,7 +14,7 @@ feels:
              received everything the program wrote (the backlog the user
              still has to watch)
 
-    python3 tests/slow_link.py build-jaal/maya_doom_fire build-jaal/maya_jaal_doom_fire --rate 300
+    python3 tests/slow_link.py build-app/maya_doom_fire build-app/maya_doom_fire --rate 300
 """
 import argparse, fcntl, os, pty, select, signal, struct, termios, time
 

@@ -1,5 +1,3 @@
-// examples/editor_widgets2.cpp — jaal port of examples/editor_widgets2.cpp (view unchanged).
-//
 // examples/editor_widgets2.cpp — second widget showcase browser (git / debug /
 // panels / decorations). Keeps the large editor_widgets.cpp untouched.
 //

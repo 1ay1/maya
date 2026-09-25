@@ -1,6 +1,4 @@
-// jaal_adaptive.cpp — jaal port of examples/adaptive.cpp (view unchanged).
-//
-// adaptive.cpp — pick() + clamp() + fit_col(): good at EVERY size, both axes
+// examples/adaptive.cpp — pick() + clamp() + fit_col(): good at EVERY size, both axes
 //
 // Three primitives, one idea — measure, don't estimate:
 //

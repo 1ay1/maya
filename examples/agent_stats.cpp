@@ -1,9 +1,5 @@
-// jaal_agent_stats.cpp — maya's agent_stats.cpp, on jaal.
-//
-// A faithful port of examples/agent_stats.cpp to the jaal runtime: update()
-// is split per message case and Cmd/Sub are jaal's; view() is unchanged.
-//
-// A tabbed, animated "AI agent stats" dashboard laid out with viewport().
+// examples/agent_stats.cpp — a tabbed, animated "AI agent stats" dashboard laid out
+// with viewport().
 //
 // The star of the show is maya::viewport(): a purely-layout responsive grid
 // that fans its cards into 1/2/3/… columns as the terminal widens, keeps

@@ -1,5 +1,3 @@
-// examples/editor_workbench.cpp — jaal port of examples/editor_workbench.cpp (view unchanged).
-//
 // examples/editor_workbench.cpp — a full IDE shell assembled from the layout
 // widgets (Workbench, ActivityBar, SplitView) + the content widgets.
 //

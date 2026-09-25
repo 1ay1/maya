@@ -1,5 +1,3 @@
-// examples/editor_ide.cpp — jaal port of examples/editor_ide.cpp (view unchanged).
-//
 // examples/editor_ide.cpp — the editor widgets composed as a real workspace.
 //
 //   cmake --build build --target maya_editor_ide && ./build/maya_editor_ide

@@ -23,7 +23,7 @@
 // maya's three loops forgot two of them. A struct returned by the call that
 // produces it can't be forgotten: using the frame means holding it.
 //
-// See docs/internals/runtime-free.md for the design.
+// See docs/internals/design.md for the design.
 
 #include <algorithm>
 #include <chrono>
@@ -126,6 +126,16 @@ public:
 
     /// Call after SIGWINCH: re-reads the size and invalidates the frame.
     void on_resize() { rt_->handle_resize(); }
+
+    /// A partial sequence is waiting for its next byte (a lone ESC could be
+    /// the Escape key or the start of an arrow key). Ask again after
+    /// kEscapeTimeout with resolve_pending_input(): if nothing came, it resolves.
+    [[nodiscard]] bool has_pending_input() const noexcept { return rt_->has_pending_input(); }
+    static constexpr std::chrono::milliseconds kEscapeTimeout{50};
+
+    /// What a stalled partial sequence resolves to (a bare Escape key, or
+    /// nothing for an abandoned CSI). Never blocks.
+    [[nodiscard]] std::vector<Event> resolve_pending_input() { return rt_->flush_timeouts(); }
     [[nodiscard]] Size size() const noexcept { return rt_->size(); }
 
     // ── output ───────────────────────────────────────────────────────────

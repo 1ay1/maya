@@ -1,7 +1,6 @@
 // examples/inline_progress.cpp — an inline progress card, as a jaal program.
 //
-// maya::live() was a small loop of its own: call a render function N times a
-// second until something calls quit(). On jaal that is just a program:
+// An animated inline widget is an ordinary program run with Mode::Inline:
 //
 //   Model      how far along the work is (and when it started)
 //   Tick       the clock, from Sub::every: advance, and finish at 100%
@@ -9,7 +8,7 @@
 //
 // Inline mode keeps it in the terminal's normal scrollback, so when the
 // program exits the final card stays on screen, and print() adds the
-// summary below it: the same output live() + print() produced.
+// summary below it.
 //
 #include <maya/app.hpp>
 #include <maya/maya.hpp>

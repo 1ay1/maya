@@ -1,5 +1,3 @@
-// examples/floating.cpp — jaal port of examples/floating.cpp (view unchanged).
-//
 // examples/floating.cpp — the caret-anchored floating overlay system.
 //
 //   cmake --build build --target maya_floating && ./build/maya_floating

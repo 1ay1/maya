@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""tests/jaal_nav_frames_test.py BIN : every navigation key is drawn.
+"""tests/nav_frames_test.py BIN : every navigation key is drawn.
 
 Sends 20 Down arrows in ONE write (a key-repeat burst, as a fast terminal
 delivers it) and records every "row N" the program drew. Navigation keys

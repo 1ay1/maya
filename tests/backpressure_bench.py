@@ -7,7 +7,7 @@ fills and the program's writes block (EAGAIN). This reads the pty at a fixed
 rate (like a terminal) and reports the PROGRAM's CPU, which is what the user
 sees as "100% and laggy".
 
-    python3 tests/backpressure_bench.py build-jaal/maya_doom_fire --rate 2000
+    python3 tests/backpressure_bench.py build-app/maya_doom_fire --rate 2000
 """
 import argparse, fcntl, os, pty, select, signal, struct, sys, termios, time
 

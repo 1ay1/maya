@@ -7,7 +7,7 @@ CPU microseconds per key, frames drawn, and bytes per key. The loop's
 per-event overhead is what this isolates: every example does the same work
 per key on both runtimes, so any difference is the runtime.
 
-    python3 tests/key_flood.py build-jaal/maya_widgets build-jaal/maya_jaal_widgets
+    python3 tests/key_flood.py build-app/maya_widgets build-app/maya_widgets
 """
 import argparse, fcntl, os, pty, select, signal, struct, subprocess, termios, time
 

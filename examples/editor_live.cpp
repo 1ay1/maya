@@ -1,8 +1,7 @@
-// examples/editor_live.cpp — maya's editor_live.cpp, on jaal.
+// examples/editor_live.cpp — a working interactive code editor.
 //
-//   cmake --build build-jaal --target maya_jaal_editor_live && ./build-jaal/maya_jaal_editor_live
+//   cmake --build build --target maya_editor_live && ./build/maya_editor_live
 //
-// A faithful port of examples/editor_live.cpp to the jaal runtime.
 // A real editable buffer (TextEditor) with syntax highlight, cursor, shift-
 // selection, undo/redo, and clipboard — wrapped in editor chrome (tab bar,
 // breadcrumb, status line). Type to edit; Ctrl-Q to quit.

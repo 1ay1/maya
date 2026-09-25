@@ -1,6 +1,6 @@
-# The new API, in one page (for doc writers)
+# The app API, in one page
 
-maya has ONE way to run a program: a jaal program run by `maya::run<P>()`.
+Every maya app is a jaal program run by `maya::run<P>()`.
 Include `<maya/app.hpp>` (which includes `<maya/maya.hpp>`), link `maya::app`.
 Everything below is verified against the code.
 
@@ -46,6 +46,6 @@ int main() { return run<Counter>({.title = "counter"}); }
 - Scroll views: keep `mutable ScrollState` in the Model; the Screen forwards mouse wheel/drag to painted ScrollStates automatically; keys are the program's: route with a message and `state.handle(key, viewport_h)` in update.
 - Pixel graphics: `#include <maya/element/pixels.hpp>`; `Image img(w, h)` (h = 2 x rows, half blocks), `img(x,y) = Rgb{r,g,b}`, `img.fill_rows([&](int x, int y) -> Rgb {...})` (parallel rows), `pixels(std::move(img))` is an element. `Glyphs` + `glyphs(grid)` for coloured character art. There is NO Canvas callback API any more (canvas_run is deleted).
 - Static output without a runtime: `#include <maya/print.hpp>` (in maya.hpp): `print(element)`, `print(element, width)`, `render_to_string(element, width)`.
-- DELETED (must not appear in docs except in a "what changed" note): `maya::run(cfg, event_fn, render_fn)`, `run(event_fn, render_fn)`, `canvas_run`, `CanvasConfig`, `live()`, `LiveConfig`, `maya::Cmd<Msg>`, `maya::Sub<Msg>`, `key_map<Msg>`, `maya::quit()`, `maya::set_mouse()`, `RunConfig` (now `Options`), `Ctx`, `init() -> pair<Model, Cmd>`, `update(Model, Msg) -> pair<Model, Cmd>`, `std::visit(overload{...})` dispatch, `MAYA_WITH_JAAL`, `maya/jaal/host.hpp`, `run_jaal`, `JaalView`, `jaal_key_map`, `jaal_` example prefix.
+- Removed with the old runtime (see migrating.md): `maya::run(cfg, event_fn, render_fn)`, `run(event_fn, render_fn)`, `canvas_run`, `CanvasConfig`, `live()`, `LiveConfig`, `maya::Cmd<Msg>`, `maya::Sub<Msg>`, `key_map<Msg>`, `maya::quit()`, `maya::set_mouse()`, `RunConfig` (now `Options`), `Ctx`, `init() -> pair<Model, Cmd>`, `update(Model, Msg) -> pair<Model, Cmd>`, `std::visit(overload{...})` dispatch, `MAYA_WITH_JAAL`, `maya/jaal/host.hpp`, `run_jaal`, `JaalView`, `jaal_key_map`, `jaal_` example prefix.
 - Examples (all in examples/, 54): counter (quickstart), stopwatch, agent_stats, viewport, messenger, particles, mandelbrot, doom_fire, fluid, breakout, snake, raymarch, fps, space3d, spectrum, dashboard, sysmon, stocks, chat, music, scroll_2d/clip/slice/styles, inline_progress (Mode::Inline), terminal_fx (terminal effects), ...
 - Design: docs/internals/design.md. maya is to jaal what Ink is to React.

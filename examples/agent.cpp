@@ -1,8 +1,4 @@
-// jaal_agent.cpp — maya's agent.cpp, on jaal.
-//
-// A faithful port of examples/agent.cpp (a simulated Claude Code agent
-// session) to the jaal runtime. view() is unchanged; only the program shape
-// (update per case, jaal Cmd/Sub) differs. Runs inline at 20 fps.
+// examples/agent.cpp — a simulated Claude-Code-style agent session, inline.
 //
 // Demonstrates all agent UX widgets in a realistic conversation flow:
 //   User prompt → thinking → tool calls → streaming response → summary

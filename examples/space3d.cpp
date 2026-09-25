@@ -1,31 +1,37 @@
-// examples/space3d.cpp — GENERATED from space3d.cpp by tools/port_canvas.py.
-// Do not edit: change space3d.cpp and re-run the tool.
-//
-// The same demo on jaal: its canvas_run() call becomes run_canvas()
-// (maya/jaal/canvas.hpp), which draws it as a `paint` element through
-// maya::Screen, so it gets the Screen's flow control (never more than one
-// frame ahead of the terminal: `q` is instant over a slow ssh link).
-//
-#include <maya/app.hpp>
-// maya — TERRAIN: 3D flight over raymarched terrain
+// examples/space3d.cpp — TERRAIN: flight over raymarched terrain.
 //
 // Per-pixel raymarched heightmap terrain with water reflections, ambient
-// occlusion, soft shadows, procedural erosion-like texturing, golden hour
-// sky with atmospheric scattering, and multi-threaded rendering.
+// occlusion, soft shadows, erosion-like texturing and a golden-hour sky.
+// Fly through the gold rings.
 //
-// Keys: WASD/arrows=steer  space=ascend  c=descend  b=boost  q/Esc=quit
+//   Model      the camera (position, yaw, pitch, speed, boost), distance,
+//              score, the rings, and when each steering key was last hit.
+//   update()   Tick flies the camera (a key counts as held for a few
+//              frames after its last repeat), spawns and collects rings.
+//   view()     each pixel a ray (Image::fill_rows, all cores), tone mapped;
+//              a status bar with altitude, speed, distance and score.
+//
+// Keys: wasd/arrows steer   space ascend   c descend   b boost   r reset   q quit
 
-#include <maya/internal.hpp>
+#include <maya/app.hpp>
+#include <maya/element/pixels.hpp>
+#include <maya/maya.hpp>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
-#include <cstdio>
-#include <cstring>
 #include <cstdint>
-#include <thread>
+#include <cstdio>
+#include <optional>
+#include <string>
+#include <variant>
 #include <vector>
 
 using namespace maya;
+using namespace maya::dsl;
+using namespace std::chrono_literals;
+
+namespace {
 
 // ── Math ────────────────────────────────────────────────────────────────────
 
@@ -148,8 +154,8 @@ static v3 terrain_normal(float x, float z) {
 // ── Sky model ───────────────────────────────────────────────────────────────
 
 // Golden hour sun — higher and warmer
-static v3 g_sun_dir = normalize(v3{0.5f, 0.28f, -0.7f});
-static Col3 g_sun_color = {1.6f, 1.15f, 0.7f};
+static const v3 g_sun_dir = normalize(v3{0.5f, 0.28f, -0.7f});
+static const Col3 g_sun_color = {1.6f, 1.15f, 0.7f};
 
 static Col3 sky_color(v3 rd) {
     float y = rd.y;
@@ -232,92 +238,9 @@ static Col3 apply_fog(Col3 color, float dist, v3 rd) {
 
 // ── Style interning ─────────────────────────────────────────────────────────
 
-static constexpr int Q = 6;
-static uint16_t g_styles[Q*Q*Q][Q*Q*Q];
-
-static int to_idx(uint8_t r, uint8_t g, uint8_t b) {
-    return (r*Q/256)*Q*Q + (g*Q/256)*Q + (b*Q/256);
-}
-static uint8_t to8(int level) { return static_cast<uint8_t>(level * 255 / (Q-1)); }
-
-static uint16_t g_bar_bg, g_bar_dim, g_bar_accent, g_bar_alt, g_bar_speed;
-
-// ── Pixel buffer ────────────────────────────────────────────────────────────
-
-static int g_w = 0, g_h = 0;
-struct Pixel { uint8_t r, g, b; };
-static std::vector<Pixel> g_pixels;
-static int g_pixel_w = 0, g_pixel_h = 0;
-
-static void px_set_col(int x, int y, Col3 c) {
-    if (x >= 0 && x < g_pixel_w && y >= 0 && y < g_pixel_h) {
-        c = col_clamp(c);
-        g_pixels[static_cast<size_t>(y * g_pixel_w + x)] = {
-            static_cast<uint8_t>(c.r*255.f),
-            static_cast<uint8_t>(c.g*255.f),
-            static_cast<uint8_t>(c.b*255.f)};
-    }
-}
-
-static Pixel px_get(int x, int y) {
-    if (x >= 0 && x < g_pixel_w && y >= 0 && y < g_pixel_h)
-        return g_pixels[static_cast<size_t>(y * g_pixel_w + x)];
-    return {0,0,0};
-}
-
-// ── Rebuild ─────────────────────────────────────────────────────────────────
-
-static void rebuild(StylePool& pool, int w, int h) {
-    g_w = w; g_h = h;
-    for (int fi = 0; fi < Q*Q*Q; ++fi) {
-        int fr = fi/(Q*Q), fg = (fi/Q)%Q, fb = fi%Q;
-        for (int bi = 0; bi < Q*Q*Q; ++bi) {
-            int br = bi/(Q*Q), bg = (bi/Q)%Q, bb = bi%Q;
-            g_styles[fi][bi] = pool.intern(
-                Style{}.with_fg(Color::rgb(to8(fr), to8(fg), to8(fb)))
-                       .with_bg(Color::rgb(to8(br), to8(bg), to8(bb))));
-        }
-    }
-    g_bar_bg    = pool.intern(Style{}.with_bg(Color::rgb(10,8,15)).with_fg(Color::rgb(100,90,110)));
-    g_bar_dim   = pool.intern(Style{}.with_bg(Color::rgb(10,8,15)).with_fg(Color::rgb(70,65,80)));
-    g_bar_accent= pool.intern(Style{}.with_bg(Color::rgb(10,8,15)).with_fg(Color::rgb(255,180,60)).with_bold());
-    g_bar_alt   = pool.intern(Style{}.with_bg(Color::rgb(10,8,15)).with_fg(Color::rgb(80,200,255)).with_bold());
-    g_bar_speed = pool.intern(Style{}.with_bg(Color::rgb(10,8,15)).with_fg(Color::rgb(120,255,120)).with_bold());
-
-    g_pixel_w = w;
-    g_pixel_h = (h - 1) * 2;
-    g_pixels.assign(static_cast<size_t>(g_pixel_w * g_pixel_h), Pixel{0,0,0});
-}
-
-// ── Composite ───────────────────────────────────────────────────────────────
-
-static void composite(Canvas& canvas, int canvas_h) {
-    for (int cy = 0; cy < canvas_h; ++cy) {
-        int y_top = cy*2, y_bot = cy*2+1;
-        for (int cx = 0; cx < g_pixel_w; ++cx) {
-            Pixel top = px_get(cx, y_top);
-            Pixel bot = px_get(cx, y_bot);
-            canvas.set(cx, cy, U'\u2580',
-                       g_styles[to_idx(top.r,top.g,top.b)][to_idx(bot.r,bot.g,bot.b)]);
-        }
-    }
-}
-
-// ── Camera / player state ───────────────────────────────────────────────────
-
 static constexpr float WATER_LEVEL = 0.0f;
 static constexpr float MIN_HEIGHT  = 4.f;
 static constexpr float CAM_PITCH_RANGE = 0.35f;
-
-static v3    g_cam_pos   = {0, 35, 0};
-static float g_cam_yaw   = 0.f;
-static float g_cam_pitch = -0.06f;
-static float g_speed     = 40.f;
-static float g_boost     = 0.f;
-static int   g_frame     = 0;
-static float g_time      = 0.f;
-static float g_dist      = 0.f;
-static int   g_score     = 0;
 
 static constexpr float BASE_SPEED  = 40.f;
 static constexpr float BOOST_SPEED = 120.f;
@@ -325,101 +248,81 @@ static constexpr float STEER_RATE  = 1.8f;
 static constexpr float PITCH_RATE  = 0.8f;
 static constexpr float VERT_RATE   = 18.f;
 
-// Input
-static constexpr int HOLD_FRAMES = 5;
+// ── model ──────────────────────────────────────────────────────────────────
+
+static constexpr int HOLD_FRAMES = 5;       // a key counts as held this many frames after its last repeat
 enum KeyAction { K_UP, K_DOWN, K_LEFT, K_RIGHT, K_ASCEND, K_DESCEND, K_BOOST, K_COUNT };
-static int g_key_last[K_COUNT] = {-100,-100,-100,-100,-100,-100,-100};
 
-// Rings
 struct Ring { v3 pos; float radius; bool collected; };
-static std::vector<Ring> g_rings;
 
-// ── Ring spawning ───────────────────────────────────────────────────────────
+struct Model {
+    int w = 0, h = 0;                        // the picture, in pixels
+    v3    cam_pos   = {0, 35, 0};
+    float cam_yaw   = 0.f;
+    float cam_pitch = -0.06f;
+    float speed     = BASE_SPEED;
+    float boost     = 0.f;
+    int   frame     = 0;
+    float time      = 0.f;
+    float dist      = 0.f;
+    int   score     = 0;
+    std::array<int, K_COUNT> key_last = {-100, -100, -100, -100, -100, -100, -100};
+    std::vector<Ring> rings;
+};
 
-static void spawn_rings_ahead() {
-    float ahead_z = g_cam_pos.z - 200.f;
+static void spawn_rings_ahead(Model& m) {
+    float ahead_z = m.cam_pos.z - 200.f;
     for (int i = 0; i < 5; ++i) {
         float rz = ahead_z - i * 60.f;
         bool exists = false;
-        for (auto& r : g_rings) {
+        for (auto& r : m.rings) {
             if (std::fabs(r.pos.z - rz) < 30.f) { exists = true; break; }
         }
         if (exists) continue;
-        float rx = g_cam_pos.x + (hash(rz * 0.1f, 0.f) - 0.5f) * 80.f;
+        float rx = m.cam_pos.x + (hash(rz * 0.1f, 0.f) - 0.5f) * 80.f;
         float th = terrain_height(rx, rz);
         float ry = std::fmax(th, WATER_LEVEL) + 12.f + hash(rz * 0.1f, 1.f) * 15.f;
-        g_rings.push_back({v3{rx, ry, rz}, 5.f, false});
+        m.rings.push_back({v3{rx, ry, rz}, 5.f, false});
     }
-    g_rings.erase(std::remove_if(g_rings.begin(), g_rings.end(),
-        [&](const Ring& r) { return r.pos.z > g_cam_pos.z + 50.f; }), g_rings.end());
+    m.rings.erase(std::remove_if(m.rings.begin(), m.rings.end(),
+        [&](const Ring& r) { return r.pos.z > m.cam_pos.z + 50.f; }), m.rings.end());
 }
 
-// ── Reset / tick ────────────────────────────────────────────────────────────
+static void game_tick(Model& m, float dt) {
+    m.frame++;
+    m.time += dt;
 
-static void reset_game() {
-    g_cam_pos = {0, 35, 0};
-    g_cam_yaw = 0.f; g_cam_pitch = -0.06f;
-    g_speed = BASE_SPEED; g_boost = 0.f;
-    g_frame = 0; g_time = 0.f; g_dist = 0.f; g_score = 0;
-    g_rings.clear();
-}
-
-static void game_tick(float dt) {
-    g_frame++;
-    g_time += dt;
-
-    auto held = [](KeyAction k) { return (g_frame - g_key_last[k]) < HOLD_FRAMES; };
+    auto held = [&m](KeyAction k) { return (m.frame - m.key_last[k]) < HOLD_FRAMES; };
     float turn  = (held(K_RIGHT) ? 1.f : 0.f) - (held(K_LEFT)  ? 1.f : 0.f);
     float pitch = (held(K_UP)    ? 1.f : 0.f) - (held(K_DOWN)  ? 1.f : 0.f);
     float vert  = (held(K_ASCEND)? 1.f : 0.f) - (held(K_DESCEND)? 1.f : 0.f);
     bool boosting = held(K_BOOST);
 
-    g_cam_yaw += turn * STEER_RATE * dt;
-    g_cam_pitch += pitch * PITCH_RATE * dt;
-    g_cam_pitch = clampf(g_cam_pitch, -CAM_PITCH_RANGE, CAM_PITCH_RANGE);
+    m.cam_yaw += turn * STEER_RATE * dt;
+    m.cam_pitch += pitch * PITCH_RATE * dt;
+    m.cam_pitch = clampf(m.cam_pitch, -CAM_PITCH_RANGE, CAM_PITCH_RANGE);
 
     float target_speed = boosting ? BOOST_SPEED : BASE_SPEED;
-    g_speed = lerp(g_speed, target_speed, 3.f * dt);
-    g_boost = lerp(g_boost, boosting ? 1.f : 0.f, 4.f * dt);
+    m.speed = lerp(m.speed, target_speed, 3.f * dt);
+    m.boost = lerp(m.boost, boosting ? 1.f : 0.f, 4.f * dt);
 
-    float fwd_x = std::sin(g_cam_yaw), fwd_z = -std::cos(g_cam_yaw);
-    g_cam_pos.x += fwd_x * g_speed * dt;
-    g_cam_pos.z += fwd_z * g_speed * dt;
-    g_cam_pos.y += vert * VERT_RATE * dt;
+    float fwd_x = std::sin(m.cam_yaw), fwd_z = -std::cos(m.cam_yaw);
+    m.cam_pos.x += fwd_x * m.speed * dt;
+    m.cam_pos.z += fwd_z * m.speed * dt;
+    m.cam_pos.y += vert * VERT_RATE * dt;
 
-    float ground = terrain_height(g_cam_pos.x, g_cam_pos.z);
+    float ground = terrain_height(m.cam_pos.x, m.cam_pos.z);
     float min_y = std::fmax(ground, WATER_LEVEL) + MIN_HEIGHT;
-    if (g_cam_pos.y < min_y) g_cam_pos.y = lerp(g_cam_pos.y, min_y, 8.f * dt);
-    g_cam_pos.y = clampf(g_cam_pos.y, min_y, 120.f);
+    if (m.cam_pos.y < min_y) m.cam_pos.y = lerp(m.cam_pos.y, min_y, 8.f * dt);
+    m.cam_pos.y = clampf(m.cam_pos.y, min_y, 120.f);
 
-    g_dist += g_speed * dt;
+    m.dist += m.speed * dt;
 
-    spawn_rings_ahead();
-    for (auto& r : g_rings) {
+    spawn_rings_ahead(m);
+    for (auto& r : m.rings) {
         if (r.collected) continue;
-        if (len(g_cam_pos - r.pos) < r.radius + 3.f) { r.collected = true; g_score += 100; }
+        if (len(m.cam_pos - r.pos) < r.radius + 3.f) { r.collected = true; m.score += 100; }
     }
-}
-
-// ── Events ──────────────────────────────────────────────────────────────────
-
-static bool handle(const Event& ev) {
-    if (key(ev, 'q') || key(ev, SpecialKey::Escape)) return false;
-    on(ev, 'r', [] { reset_game(); });
-
-    on(ev, 'w',                [] { g_key_last[K_UP]      = g_frame; g_key_last[K_DOWN]    = -100; });
-    on(ev, 's',                [] { g_key_last[K_DOWN]    = g_frame; g_key_last[K_UP]      = -100; });
-    on(ev, 'a',                [] { g_key_last[K_LEFT]    = g_frame; g_key_last[K_RIGHT]   = -100; });
-    on(ev, 'd',                [] { g_key_last[K_RIGHT]   = g_frame; g_key_last[K_LEFT]    = -100; });
-    on(ev, SpecialKey::Up,     [] { g_key_last[K_UP]      = g_frame; g_key_last[K_DOWN]    = -100; });
-    on(ev, SpecialKey::Down,   [] { g_key_last[K_DOWN]    = g_frame; g_key_last[K_UP]      = -100; });
-    on(ev, SpecialKey::Left,   [] { g_key_last[K_LEFT]    = g_frame; g_key_last[K_RIGHT]   = -100; });
-    on(ev, SpecialKey::Right,  [] { g_key_last[K_RIGHT]   = g_frame; g_key_last[K_LEFT]    = -100; });
-    on(ev, ' ',                [] { g_key_last[K_ASCEND]  = g_frame; });
-    on(ev, 'c',                [] { g_key_last[K_DESCEND] = g_frame; });
-    on(ev, 'b',                [] { g_key_last[K_BOOST]   = g_frame; });
-
-    return true;
 }
 
 // ── Soft shadow ─────────────────────────────────────────────────────────────
@@ -555,9 +458,9 @@ static Col3 terrain_shade(v3 pos, v3 normal, v3 rd) {
 
 // ── Water shading ───────────────────────────────────────────────────────────
 
-static Col3 water_shade(v3 pos, v3 rd, float dist) {
+static Col3 water_shade(float time, v3 pos, v3 rd, float dist) {
     // Multi-octave animated waves
-    float t = g_time;
+    float t = time;
     float w1 = std::sin(pos.x * 0.25f + t * 1.0f) * std::cos(pos.z * 0.18f + t * 0.7f);
     float w2 = std::sin(pos.x * 0.6f - t * 0.5f + 1.f) * std::cos(pos.z * 0.45f + t * 1.3f);
     float w3 = std::sin(pos.x * 1.1f + t * 0.8f + 3.f) * std::cos(pos.z * 0.9f - t * 0.4f);
@@ -604,15 +507,13 @@ static Col3 water_shade(v3 pos, v3 rd, float dist) {
     return col_clamp(water);
 }
 
-// ── Render one pixel ────────────────────────────────────────────────────────
-
-static void render_pixel(int px, int py, int pw, int ph) {
+static Col3 trace(const Model& m, int px, int py, int pw, int ph) {
     float u = (2.f * px - pw) / static_cast<float>(ph);
     float v_coord = (ph - 2.f * py) / static_cast<float>(ph);
 
     // Camera basis
-    float cy = std::cos(g_cam_yaw), sy = std::sin(g_cam_yaw);
-    float cp = std::cos(g_cam_pitch), sp = std::sin(g_cam_pitch);
+    float cy = std::cos(m.cam_yaw), sy = std::sin(m.cam_yaw);
+    float cp = std::cos(m.cam_pitch), sp = std::sin(m.cam_pitch);
     v3 fwd   = {sy * cp, sp, -cy * cp};
     v3 right = {cy, 0, sy};
     v3 up    = {-sy * sp, cp, cy * sp};
@@ -633,7 +534,7 @@ static void render_pixel(int px, int py, int pw, int ph) {
     // Analytic water plane
     float water_t = max_dist;
     if (rd.y < -0.001f) {
-        water_t = (g_cam_pos.y - WATER_LEVEL) / (-rd.y);
+        water_t = (m.cam_pos.y - WATER_LEVEL) / (-rd.y);
         if (water_t < 0) water_t = max_dist;
     }
 
@@ -644,7 +545,7 @@ static void render_pixel(int px, int py, int pw, int ph) {
     // on nothing. Same image, and water covers a lot of this terrain.
     const float march_end = std::fmin(max_dist, water_t);
     for (int step = 0; step < 200 && t < march_end; ++step) {
-        v3 p = g_cam_pos + rd * t;
+        v3 p = m.cam_pos + rd * t;
         float h = terrain_height(p.x, p.z);
 
         if (p.y < h) {
@@ -652,12 +553,12 @@ static void render_pixel(int px, int py, int pw, int ph) {
             float lo = t - dt_step, hi = t;
             for (int r = 0; r < 8; ++r) {
                 float mid = (lo + hi) * 0.5f;
-                v3 mp = g_cam_pos + rd * mid;
+                v3 mp = m.cam_pos + rd * mid;
                 if (mp.y < terrain_height(mp.x, mp.z)) hi = mid;
                 else lo = mid;
             }
             hit_t = (lo + hi) * 0.5f;
-            hit_pos = g_cam_pos + rd * hit_t;
+            hit_pos = m.cam_pos + rd * hit_t;
             hit_terrain = true;
             break;
         }
@@ -683,17 +584,17 @@ static void render_pixel(int px, int py, int pw, int ph) {
         color = terrain_shade(hit_pos, n, rd);
         color = apply_fog(color, hit_t, rd);
     } else if (water_t < max_dist && water_t < hit_t) {
-        v3 wp = g_cam_pos + rd * water_t;
-        color = water_shade(wp, rd, water_t);
+        v3 wp = m.cam_pos + rd * water_t;
+        color = water_shade(m.time, wp, rd, water_t);
         color = apply_fog(color, water_t, rd);
     } else {
         color = sky_color(rd);
     }
 
     // ── Rings ──
-    for (auto& ring : g_rings) {
+    for (auto& ring : m.rings) {
         if (ring.collected) continue;
-        v3 to_ring = ring.pos - g_cam_pos;
+        v3 to_ring = ring.pos - m.cam_pos;
         float along = dot(to_ring, fwd);
         if (along < 2.f || along > 300.f) continue;
 
@@ -711,7 +612,7 @@ static void render_pixel(int px, int py, int pw, int ph) {
         if (ring_edge < thickness) {
             float t_ring = 1.f - ring_edge / thickness;
             t_ring = t_ring * t_ring;
-            float pulse = 0.7f + 0.3f * std::sin(g_time * 4.f);
+            float pulse = 0.7f + 0.3f * std::sin(m.time * 4.f);
             Col3 ring_col = {1.f * pulse, 0.8f * pulse, 0.2f * pulse};
             color = col_lerp(color, ring_col, t_ring * 0.9f);
         } else if (ring_edge < thickness * 3.f) {
@@ -720,127 +621,96 @@ static void render_pixel(int px, int py, int pw, int ph) {
         }
     }
 
-    px_set_col(px, py, color);
+    return color;
 }
 
-// ── Post-processing ─────────────────────────────────────────────────────────
-
-static void post_process(int pw, int ph) {
-    float cx = pw * 0.5f, cy = ph * 0.5f;
-    for (int y = 0; y < ph; ++y) {
-        for (int x = 0; x < pw; ++x) {
-            auto& px = g_pixels[static_cast<size_t>(y * pw + x)];
-            float r = px.r/255.f, g = px.g/255.f, b = px.b/255.f;
-
-            // ACES-like filmic tone mapping (preserves contrast better than Reinhard)
-            auto tonemap = [](float x) {
-                float a = x * (x * 2.51f + 0.03f);
-                float d = x * (x * 2.43f + 0.59f) + 0.14f;
-                return clampf(a / d, 0.f, 1.f);
-            };
-            r = tonemap(r); g = tonemap(g); b = tonemap(b);
-
-            // Subtle vignette
-            float dx = (x - cx)/cx, dy = (y - cy)/cy;
-            float vig = 1.f - (dx*dx + dy*dy) * 0.12f;
-            vig = clampf(vig, 0.6f, 1.f);
-            r *= vig; g *= vig; b *= vig;
-
-            px.r = static_cast<uint8_t>(clampf(r,0,1)*255.f);
-            px.g = static_cast<uint8_t>(clampf(g,0,1)*255.f);
-            px.b = static_cast<uint8_t>(clampf(b,0,1)*255.f);
-        }
-    }
-}
-
-// ── Paint ───────────────────────────────────────────────────────────────────
-
-static void paint(Canvas& canvas, int w, int h) {
-    if (w != g_w || h != g_h) return;
-    game_tick(1.f / 30.f);
-
-    int canvas_h = h - 1;
-    int ph = canvas_h * 2;
-
-    // Multi-threaded rendering. Rows are INTERLEAVED (thread t takes t,
-    // t+n, t+2n...), not split into contiguous bands: sky rows at the top
-    // cost almost nothing and terrain rows near the horizon march 200 steps,
-    // so with bands every thread but one finished early and waited
-    // (__ulock_wait was the #3 frame in a profile). Interleaved, each thread
-    // gets the same mix and they finish together.
-    static const int n_threads = std::max(1, static_cast<int>(std::thread::hardware_concurrency()));
-    auto render_rows = [&](int first, int stride) {
-        for (int y = first; y < ph; y += stride)
-            for (int x = 0; x < g_pixel_w; ++x)
-                render_pixel(x, y, g_pixel_w, ph);
+// ACES-ish tone map, then a soft vignette.
+static Rgb finish(Col3 c, int x, int y, int pw, int ph) {
+    auto tonemap = [](float v) {
+        const float a = v * (v * 2.51f + 0.03f);
+        const float d = v * (v * 2.43f + 0.59f) + 0.14f;
+        return clampf(a / d, 0.f, 1.f);
     };
+    const float cx = pw * 0.5f, cy = ph * 0.5f;
+    const float dx = (x - cx) / cx, dy = (y - cy) / cy;
+    const float vig = clampf(1.f - (dx * dx + dy * dy) * 0.12f, 0.6f, 1.f);
+    // 5 bits a channel keeps the renderer's style cache hot.
+    auto q = [vig](float v) { return static_cast<std::uint8_t>(static_cast<int>(clampf(v * vig, 0, 1) * 255.f) & 0xF8); };
+    return {q(tonemap(clampf(c.r, 0, 1))), q(tonemap(clampf(c.g, 0, 1))), q(tonemap(clampf(c.b, 0, 1)))};
+}
 
-    if (n_threads <= 1 || ph < 8) {
-        render_rows(0, 1);
-    } else {
-        std::vector<std::jthread> threads;
-        threads.reserve(static_cast<size_t>(n_threads - 1));
-        for (int t = 1; t < n_threads; ++t)
-            threads.emplace_back([=] { render_rows(t, n_threads); });
-        render_rows(0, n_threads);   // this thread works too, instead of only waiting
-    }
+// ── program ────────────────────────────────────────────────────────────────
 
-    post_process(g_pixel_w, ph);
-    composite(canvas, canvas_h);
+struct Tick {};
+struct Resize { int cols, rows; };
+struct Press  { KeyAction k; };
+struct Reset {};
+struct Quit {};
+using Msg = std::variant<Tick, Resize, Press, Reset, Quit>;
 
-    // ── HUD ──
-    {
-        auto* pool = canvas.style_pool();
-        float ground_h = terrain_height(g_cam_pos.x, g_cam_pos.z);
-        float alt = g_cam_pos.y - std::fmax(ground_h, WATER_LEVEL);
+struct Terrain {
+    using Model = ::Model;
+    using Msg   = ::Msg;
+    using Cmd   = jaal::Cmd<Msg>;
+    using Sub   = jaal::Sub<Msg, on_key, on_resize>;
 
-        // Altimeter
-        int bar_h = std::min(canvas_h - 2, 12);
-        int bar_x = 1, bar_y0 = canvas_h - bar_h - 1;
-        float alt_pct = clampf(alt / 80.f, 0, 1);
-        int filled = static_cast<int>(alt_pct * bar_h);
-
-        uint16_t s_frame = pool->intern(Style{}.with_fg(Color::rgb(50,50,70)).with_bg(Color::rgb(0,0,0)));
-        uint16_t s_fill  = pool->intern(Style{}.with_fg(Color::rgb(50,180,240)).with_bg(Color::rgb(15,30,50)));
-        for (int i = 0; i < bar_h; ++i) {
-            int y = bar_y0 + bar_h - 1 - i;
-            canvas.set(bar_x, y, i < filled ? U'\u2588' : U'\u2591', i < filled ? s_fill : s_frame);
+    static Cmd update(Model& m, Tick)     { game_tick(m, 1.f / 30.f); return {}; }
+    static Cmd update(Model& m, Resize r) { m.w = std::max(1, r.cols); m.h = std::max(2, (r.rows - 1) * 2); return {}; }
+    static Cmd update(Model& m, Reset)    { m = Model{.w = m.w, .h = m.h}; return {}; }
+    static Cmd update(Model&, Quit)       { return Cmd::quit(0); }
+    static Cmd update(Model& m, Press p) {
+        m.key_last[p.k] = m.frame;
+        switch (p.k) {                        // opposite directions cancel
+            case K_UP:    m.key_last[K_DOWN]  = -100; break;
+            case K_DOWN:  m.key_last[K_UP]    = -100; break;
+            case K_LEFT:  m.key_last[K_RIGHT] = -100; break;
+            case K_RIGHT: m.key_last[K_LEFT]  = -100; break;
+            default: break;
         }
-
-        char alt_buf[16]; std::snprintf(alt_buf, sizeof(alt_buf), "%dm", static_cast<int>(alt));
-        uint16_t s_text = pool->intern(Style{}.with_fg(Color::rgb(100,160,220)).with_bg(Color::rgb(0,0,0)));
-        canvas.write_text(0, bar_y0 - 1, alt_buf, s_text);
-
-        // Speed
-        char spd_buf[16]; std::snprintf(spd_buf, sizeof(spd_buf), "%dkm/h", static_cast<int>(g_speed * 3.6f));
-        int slen = static_cast<int>(std::strlen(spd_buf));
-        uint16_t s_spd = pool->intern(Style{}.with_fg(
-            g_boost > 0.5f ? Color::rgb(255,150,50) : Color::rgb(100,220,100))
-            .with_bg(Color::rgb(0,0,0)));
-        canvas.write_text(w - slen - 1, canvas_h - 2, spd_buf, s_spd);
+        return {};
     }
 
-    // Status bar
-    int bar_y = h - 1;
-    for (int x = 0; x < w; ++x) canvas.set(x, bar_y, U' ', g_bar_bg);
-    const char* help = "TERRAIN \xe2\x94\x82 [wasd] steer \xe2\x94\x82 [space] ascend \xe2\x94\x82 [c] descend \xe2\x94\x82 [b] boost \xe2\x94\x82 [q] quit";
-    canvas.write_text(1, bar_y, help, g_bar_dim);
-    canvas.write_text(1, bar_y, "TERRAIN", g_bar_accent);
+    static Element status_bar(const Model& m) {
+        const float ground = terrain_height(m.cam_pos.x, m.cam_pos.z);
+        const int alt = static_cast<int>(m.cam_pos.y - std::fmax(ground, WATER_LEVEL));
+        char right[96];
+        std::snprintf(right, sizeof right, " alt %dm │ %dkm/h │ %.1fkm │ ★%d ",
+                      alt, static_cast<int>(m.speed * 3.6f), m.dist / 1000.f, m.score);
+        const auto accent = Color::rgb(255, 200, 60);
+        return h(text(" TERRAIN") | fgc(accent) | Bold,
+                 text(" │ [wasd] steer │ [space] ascend │ [c] descend │ [b] boost │ [r] reset │ [q] quit")
+                     | fgc(Color::rgb(90, 90, 110)),
+                 spacer(),
+                 text(right) | fgc(m.boost > 0.5f ? Color::rgb(255, 150, 50) : accent) | Bold)
+               | bgc(Color::rgb(10, 10, 15));
+    }
 
-    char dbuf[32]; std::snprintf(dbuf, sizeof(dbuf), "%.1fkm", g_dist / 1000.f);
-    canvas.write_text(w/2 - static_cast<int>(std::strlen(dbuf))/2, bar_y, dbuf, g_bar_alt);
+    static Element view(const Model& m) {
+        if (m.w < 4 || m.h < 4) return text("");
+        Image img(m.w, m.h);
+        img.fill_rows([&](int x, int y) { return finish(trace(m, x, y, m.w, m.h), x, y, m.w, m.h); });
+        return v(pixels(std::move(img)), status_bar(m));
+    }
 
-    char sbuf[32]; std::snprintf(sbuf, sizeof(sbuf), "\xe2\x98\x85%d", g_score);
-    int sblen = static_cast<int>(std::strlen(sbuf));
-    if (w > sblen + 2) canvas.write_text(w - sblen - 1, bar_y, sbuf, g_bar_accent);
-}
+    static Sub subscribe(const Model&) {
+        return Sub::batch(
+            Sub::every(33ms, Tick{}),
+            Sub::on(on_resize{}, [](const ResizeEvent& r) -> std::optional<Msg> {
+                return Resize{r.width.value, r.height.value};
+            }),
+            keys<Sub>({
+                {'w', Press{K_UP}}, {'s', Press{K_DOWN}}, {'a', Press{K_LEFT}}, {'d', Press{K_RIGHT}},
+                {SpecialKey::Up, Press{K_UP}}, {SpecialKey::Down, Press{K_DOWN}},
+                {SpecialKey::Left, Press{K_LEFT}}, {SpecialKey::Right, Press{K_RIGHT}},
+                {' ', Press{K_ASCEND}}, {'c', Press{K_DESCEND}}, {'b', Press{K_BOOST}},
+                {'r', Reset{}}, {'q', Quit{}}, {SpecialKey::Escape, Quit{}},
+            }));
+    }
+    static bool subs_key(const Model&) { return true; }
+};
 
-// ── Main ────────────────────────────────────────────────────────────────────
+static_assert(Program<Terrain>);
 
-int main() {
-    reset_game();
-    return run_canvas(
-        CanvasConfig{.fps = 30, .mouse = false, .mode = Mode::Fullscreen, .auto_clear = false, .title = "terrain"},
-        rebuild, handle, paint
-    );
-}
+}  // namespace
+
+int main() { return run<Terrain>({.title = "terrain"}); }

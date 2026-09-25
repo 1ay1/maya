@@ -836,3 +836,28 @@ TEST_CASE("paint: drawn every frame (never served from the component cache)") {
     assert(calls == 2);
     std::println("PASS\n");
 }
+
+TEST_CASE("zstack: a growing base keeps growing with an overlay on it") {
+    std::println("--- test_zstack_grows_with_base ---");
+    // v(zstack({canvas, card}), bar) in a 5-row screen: the canvas grows to
+    // 4 rows whether or not a card is layered over it. It used to collapse
+    // to the canvas's 1-row minimum as soon as the card was there.
+    StylePool pool;
+    auto frame = [&](bool with_card) {
+        Canvas c(20, 5, &pool);
+        Element canvas = paint([](Canvas& cv, int x, int y, int w, int h) {
+            for (int yy = 0; yy < h; ++yy)
+                for (int xx = 0; xx < w; ++xx) cv.set(x + xx, y + yy, U'#', 0);
+        });
+        Element layer = with_card ? zstack({canvas, center()(text("HI"))}) : canvas;
+        render_tree(box().direction(Column).width(Dimension::fixed(20)).height(Dimension::fixed(5))(
+                        std::move(layer), text("bar")),
+                    c, pool, theme::native);
+        int rows = 0;
+        for (int y = 0; y < 5; ++y) if (get_row(c, y).starts_with("###")) ++rows;
+        return rows;
+    };
+    assert(frame(false) == 4);
+    assert(frame(true) == 4);      // the card covers 1 row's middle, not the canvas
+    std::println("PASS\n");
+}

@@ -229,10 +229,24 @@ namespace detail {
 
 /// Create a z-stack: children layer on top of each other. The first child
 /// determines the size; subsequent children paint on top, clipped to that size.
+///
+/// The stack takes its base layer's FLEX sizing too: a base that grows to
+/// fill its slot (a paint()/pixels() canvas, a fill()) makes the stack grow.
+/// Without that, `v(zstack({canvas, card}), status)` laid the stack out at
+/// the base's minimum (one row): the canvas that filled the screen alone
+/// collapsed to a single line the moment a card was layered over it.
 [[nodiscard]] inline Element zstack(std::vector<Element> layers) {
     BoxElement box;
     box.layout.direction = FlexDirection::Column;
     box.is_stack = true;
+    if (!layers.empty()) {
+        const auto grow_of = [](const Element& e) -> float {
+            if (const auto* c = std::get_if<ComponentElement>(&e.inner)) return c->layout.grow;
+            if (const auto* b = std::get_if<BoxElement>(&e.inner))       return b->layout.grow;
+            return 0.f;
+        };
+        box.layout.grow = grow_of(layers.front());
+    }
     box.children = std::move(layers);
     return Element{std::move(box)};
 }

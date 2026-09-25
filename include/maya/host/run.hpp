@@ -49,7 +49,7 @@
 
 #include <jaal/jaal.hpp>
 
-#include "../app/options.hpp"
+#include "../device/options.hpp"
 #include "../screen.hpp"
 #include "interop.hpp"
 #include "effects.hpp"

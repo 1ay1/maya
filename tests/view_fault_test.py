@@ -36,7 +36,12 @@ def run(keys, env_extra=None, wait=3.0):
                 try:
                     b = os.read(fd, 1 << 20)
                 except OSError:
-                    return "eof"
+                    # The child closed the pty: it is exiting, or already has.
+                    # Wait for its real status rather than inventing one —
+                    # returning a sentinel here made "q quits with 0" fail
+                    # against the string "eof", which is not an exit status.
+                    _, st = os.waitpid(pid, 0)
+                    return st
                 out.extend(b)
                 for _ in range(b.count(b"\x1b[5n")):
                     os.write(fd, b"\x1b[0n")

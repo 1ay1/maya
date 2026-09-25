@@ -20,7 +20,7 @@
 
 #include "../element/element.hpp"
 #include "../terminal/input.hpp"
-#include "../app/keys.hpp"     // key_is, SpecialKey
+#include "../device/keys.hpp"     // key_is, SpecialKey
 
 namespace maya {
 

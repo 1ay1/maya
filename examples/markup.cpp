@@ -247,6 +247,12 @@ struct Model {
     int offset = 0;               // top visible line
     int viewport_h = 1;           // rows available for the document
 
+    // The scrollbar BORROWS this for the whole frame: the renderer writes the
+    // painted bar's hit-rects back into it after view() has returned. So it
+    // lives here, not in view(). `mutable` because view() is const and only
+    // mirrors the offset into it — the scroll position of record is `offset`.
+    mutable ScrollState bar;
+
     int max_offset() const { return std::max(0, static_cast<int>(lines.size()) - viewport_h); }
 };
 
@@ -294,12 +300,11 @@ struct Markup {
         std::vector<Element> visible(m.lines.begin() + start,
                                      m.lines.begin() + start + count);
 
-        // Mirror the offset into a ScrollState so scrollbar_y can draw the
-        // thumb. auto_dispatch = false: update() drives scrolling.
-        ScrollState bar;
-        bar.y = start;
-        bar.max_y = m.max_offset();
-        bar.auto_dispatch = false;
+        // Mirror the offset into the Model's ScrollState so scrollbar_y can
+        // draw the thumb. auto_dispatch = false: update() drives scrolling.
+        m.bar.y = start;
+        m.bar.max_y = m.max_offset();
+        m.bar.auto_dispatch = false;
 
         std::string status = "lines " + std::to_string(start + 1) + "–" +
                              std::to_string(start + count) + " / " +
@@ -311,7 +316,7 @@ struct Markup {
             t<"↑/↓ PgUp/PgDn Home/End scroll · q quit"> | Dim,
             h(
                 v(std::move(visible)) | grow_<1>,
-                scrollbar_y(bar, m.viewport_h)
+                scrollbar_y(m.bar, m.viewport_h)
             ),
             text(status) | Fg<224, 175, 104>
         );

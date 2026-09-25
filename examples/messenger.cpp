@@ -2346,7 +2346,6 @@ static_assert(Program<Messenger>);
 int main() {
     return run<Messenger>({
         .title = "maya/chat",
-        .fps   = 30,
         .mouse = true,
         .mode  = Mode::Fullscreen,
     });

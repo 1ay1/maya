@@ -247,6 +247,12 @@ struct ScrollbarStyle {
 // to viewport / content, position is proportional to current offset.
 // When state.max_y == 0 the content fits and a full-height thumb is drawn
 // (consistent layout, no jump when content grows past the viewport).
+//
+// `s` is BORROWED: the returned Element stores &s so the renderer can write
+// the painted bar's geometry back (hit-rects for wheel/drag). It must
+// outlive the frame, so it belongs in the Model, never in view(). Passing a
+// temporary or a view()-local is a dangling write during paint — so the
+// rvalue overload is deleted and that mistake won't compile.
 
 [[nodiscard]] inline Element scrollbar_y(const ScrollState& s,
                                          int viewport_h,
@@ -307,6 +313,11 @@ struct ScrollbarStyle {
     return bar;
 }
 
+/// A scrollbar borrows its state for the life of the frame; a temporary or a
+/// view()-local would leave the renderer writing into freed stack during
+/// paint. Keep the ScrollState in your Model and pass it by reference.
+Element scrollbar_y(ScrollState&&, int, ScrollbarStyle = {}) = delete;
+
 // ============================================================================
 // scrollbar_x — horizontal scrollbar driven by ScrollState
 // ============================================================================
@@ -364,5 +375,9 @@ struct ScrollbarStyle {
     }
     return bar;
 }
+
+/// See scrollbar_y: the state is borrowed for the frame, so it can't be a
+/// temporary.
+Element scrollbar_x(ScrollState&&, int, ScrollbarStyle = {}) = delete;
 
 } // namespace maya

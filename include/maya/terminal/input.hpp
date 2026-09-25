@@ -184,6 +184,7 @@ public:
     /// only once it has PARSED everything before it, so a reply means "that
     /// frame is on the glass". Consumed here, never turned into input.
     [[nodiscard]] int take_acks() noexcept { return std::exchange(acks_, 0); }
+    [[nodiscard]] int peek_acks() const noexcept { return acks_; }
 
 private:
     using clock = std::chrono::steady_clock;

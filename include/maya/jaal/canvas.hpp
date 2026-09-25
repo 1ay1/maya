@@ -31,6 +31,8 @@
 #endif
 
 #include <chrono>
+#include <cstdio>
+#include <cstdlib>
 #include <functional>
 #include <string>
 #include <variant>
@@ -53,6 +55,19 @@ struct Callbacks {
 };
 inline Callbacks& callbacks() { static Callbacks c; return c; }
 
+// The program's side of MAYA_INPUT_LOG (maya logs the bytes and parsed
+// events; this logs what the demo's own handler received and decided), so
+// one file shows a key's whole path: wire -> parser -> program -> quit.
+inline void trace(const char* what) {
+    static std::FILE* const f = [] () -> std::FILE* {
+        const char* p = std::getenv("MAYA_INPUT_LOG");
+        return (p && *p) ? std::fopen(p, "a") : nullptr;
+    }();
+    if (!f) return;
+    std::fprintf(f, "            %s\n", what);
+    std::fflush(f);
+}
+
 }  // namespace detail::canvas_prog
 
 // The program. Its model is the frame counter: a Tick changes it, so the
@@ -72,7 +87,9 @@ struct CanvasProgram {
         // event may change what the next frame shows, so it counts as a
         // model change and is drawn on the next tick (or right now, for a
         // demo paced slower than input).
-        if (!detail::canvas_prog::callbacks().on_event(i.ev)) return Cmd::quit(0);
+        const bool keep = detail::canvas_prog::callbacks().on_event(i.ev);
+        detail::canvas_prog::trace(keep ? "handler: keep running" : "handler: QUIT -> Cmd::quit(0)");
+        if (!keep) return Cmd::quit(0);
         ++m.frame;
         return {};
     }

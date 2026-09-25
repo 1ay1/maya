@@ -48,6 +48,67 @@ inline void io_log(const char* fmt, ...) {
 }
 } // namespace
 
+namespace {
+// MAYA_INPUT_LOG=<path>: every byte the terminal sends, and what the parser
+// made of it. One line per read(), then one per event, so a key that
+// "didn't work" can be followed from the wire to the program: did it arrive,
+// was it parsed as that key, or was it taken for a terminal reply. Costs one
+// getenv when off.
+//
+//   [   1234] in  7B  "\x1b[0nq"
+//   [   1234]   ack (DSR reply)
+//   [   1234]   key char 'q' (U+0071) mods=0
+std::FILE* input_log() {
+    static std::FILE* f = [] () -> std::FILE* {
+        const char* p = std::getenv("MAYA_INPUT_LOG");
+        return (p && *p) ? std::fopen(p, "a") : nullptr;
+    }();
+    return f;
+}
+std::string escaped(std::string_view data) {
+    std::string o;
+    for (unsigned char c : data) {
+        char b[8];
+        if (c == 0x1b)                  o += "\\x1b";
+        else if (c < 0x20 || c >= 0x7f) { std::snprintf(b, sizeof b, "\\x%02x", c); o += b; }
+        else if (c == '"' || c == '\\') { o += '\\'; o += char(c); }
+        else                            o += char(c);
+    }
+    return o;
+}
+void log_input_bytes(std::FILE* f, std::string_view data) {
+    const auto t = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    std::fprintf(f, "[%9lld] in %3zuB  \"%s\"\n", static_cast<long long>(t), data.size(),
+                 escaped(data).c_str());
+}
+void log_input_event(std::FILE* f, const Event& ev) {
+    std::visit([&](const auto& e) {
+        using E = std::decay_t<decltype(e)>;
+        if constexpr (std::is_same_v<E, KeyEvent>) {
+            std::visit([&](const auto& k) {
+                using K = std::decay_t<decltype(k)>;
+                if constexpr (std::is_same_v<K, CharKey>)
+                    std::fprintf(f, "            key char U+%04X '%c'%s%s%s%s  (from \"%s\")\n",
+                                 static_cast<unsigned>(k.codepoint),
+                                 k.codepoint >= 0x20 && k.codepoint < 0x7f ? static_cast<char>(k.codepoint) : '?',
+                                 e.mods.ctrl ? " ctrl" : "", e.mods.alt ? " alt" : "",
+                                 e.mods.shift ? " shift" : "", e.mods.super_ ? " super" : "",
+                                 escaped(e.raw_sequence).c_str());
+                else
+                    std::fprintf(f, "            key special %d%s%s%s  (from \"%s\")\n",
+                                 static_cast<int>(k), e.mods.ctrl ? " ctrl" : "",
+                                 e.mods.alt ? " alt" : "", e.mods.shift ? " shift" : "",
+                                 escaped(e.raw_sequence).c_str());
+            }, e.key);
+        } else if constexpr (std::is_same_v<E, MouseEvent>)  std::fputs("            mouse\n", f);
+        else if constexpr (std::is_same_v<E, PasteEvent>)    std::fprintf(f, "            paste %zuB\n", e.content.size());
+        else if constexpr (std::is_same_v<E, FocusEvent>)    std::fprintf(f, "            focus %d\n", e.focused ? 1 : 0);
+        else if constexpr (std::is_same_v<E, ResizeEvent>)   std::fputs("            resize\n", f);
+    }, ev);
+}
+} // namespace
+
 // ============================================================================
 // Runtime::create — initialize terminal, event source, canvases
 // ============================================================================
@@ -520,16 +581,34 @@ auto Runtime::read_events() -> Result<std::vector<Event>> {
     if (alt_terminal_) {
         MAYA_TRY_DECL(auto data, alt_terminal_->read_raw());
         if (!data.empty()) {
-            for (auto& event : parser_.feed(data))
+            std::FILE* const lf = input_log();
+            if (lf) log_input_bytes(lf, data);
+            for (auto& event : parser_.feed(data)) {
+                if (lf) log_input_event(lf, event);
                 result.push_back(std::move(event));
+            }
+            if (lf) {
+                if (const int acks = parser_.peek_acks(); acks) std::fprintf(lf, "            acks pending %d\n", acks);
+                if (parser_.has_pending()) std::fputs("            (partial sequence held)\n", lf);
+                std::fflush(lf);
+            }
         }
     } else if (inline_terminal_) {
         io_log("read_raw begin");
         MAYA_TRY_DECL(auto data, inline_terminal_->read_raw());
         io_log("read_raw end bytes=%zu", data.size());
         if (!data.empty()) {
-            for (auto& event : parser_.feed(data))
+            std::FILE* const lf = input_log();
+            if (lf) log_input_bytes(lf, data);
+            for (auto& event : parser_.feed(data)) {
+                if (lf) log_input_event(lf, event);
                 result.push_back(std::move(event));
+            }
+            if (lf) {
+                if (const int acks = parser_.peek_acks(); acks) std::fprintf(lf, "            acks pending %d\n", acks);
+                if (parser_.has_pending()) std::fputs("            (partial sequence held)\n", lf);
+                std::fflush(lf);
+            }
         }
     }
     dedup_clipboard_pastes(result);

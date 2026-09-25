@@ -48,6 +48,10 @@ ap.add_argument("--keys", default="+-jk ",
 ap.add_argument("--quit", default="q", help="the program's quit key")
 ap.add_argument("--no-input-change", action="store_true",
                 help="the program doesn't react to keys (display-only)")
+ap.add_argument("--idle-cpu", type=float, default=0.10,
+                help="max share of a core while idle (default 0.10). An animation that "
+                     "renders every frame by design (a ray tracer) costs more than that "
+                     "without spinning; a spin is ~1.0")
 ap.add_argument("--animates", metavar="KEY", default=None,
                 help="press KEY, then send NOTHING: the screen must keep "
                      "changing (an animation must run without input)")
@@ -183,7 +187,7 @@ settle(0.1, 0.2)
 c1, w1 = child_cpu(), time.time()
 if c0 is not None and c1 is not None:
     share = (c1 - c0) / (w1 - w0)
-    check(share < 0.10,
+    check(share < args.idle_cpu,
           f"idle, it doesn't spin ({share*100:.1f}% of a core over {w1-w0:.1f}s)")
 else:
     print("  skip  idle CPU (couldn't read it)")

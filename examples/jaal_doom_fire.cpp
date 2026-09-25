@@ -1,8 +1,10 @@
-// examples/jaal_doom_fire.cpp — doom_fire.cpp on jaal, unchanged but for main().
+// examples/jaal_doom_fire.cpp — GENERATED from doom_fire.cpp by tools/port_canvas.py.
+// Do not edit: change doom_fire.cpp and re-run the tool.
 //
-// The demo is a canvas animation: it used maya's canvas_run loop. On jaal it
-// is a `paint` element driven by a timer (maya/jaal/canvas.hpp), so the same
-// three callbacks run unmodified and only the entry point changes.
+// The same demo on jaal: its canvas_run() call becomes run_canvas()
+// (maya/jaal/canvas.hpp), which draws it as a `paint` element through
+// maya::Screen, so it gets the Screen's flow control (never more than one
+// frame ahead of the terminal: `q` is instant over a slow ssh link).
 //
 // Built only with -DMAYA_WITH_JAAL=ON.
 #include <maya/jaal/canvas.hpp>

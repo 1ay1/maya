@@ -533,6 +533,16 @@ void InputParser::parse_csi(std::vector<Event>& events) {
         return;
     }
 
+    // `CSI 0 n`: the terminal's answer to our per-frame DSR (`CSI 5 n`),
+    // i.e. a frame acknowledgement. Counted for the screen's flow control,
+    // and consumed: it's a report, not a key. (`CSI 3 n` would mean the
+    // terminal is malfunctioning; it still proves the frame was parsed.)
+    if (final_byte == 'n' && (params_str == "0" || params_str == "3")) {
+        ++acks_;
+        buf_.clear();
+        return;
+    }
+
     // Check for bracketed paste start
     if (final_byte == '~') {
         auto params = parse_params(params_str);

@@ -11,12 +11,12 @@
 //     auto term = maya::Screen::open({.mode = Mode::Inline});
 //     watch(term->input_handle());                 // the runtime's reactor
 //     ...on readable:   for (auto& ev : *term->read()) route(ev);
-//     ...on a change:   Frame f = term->present(view(model));
+//     ...on a change:   Presented f = term->present(view(model));
 //                       schedule(f.redraw_at);     // an animation wants more
 //                       if (f.backpressured) watch_writable();
 //     ...on writable:   term->flush();
 //
-// Why `Frame` is a return value: drawing has outputs a scheduler must act
+// Why `Presented` is a return value: drawing has outputs a scheduler must act
 // on (a widget asked to be drawn again; a scroll view learned its size and
 // the frame used stale zeros; the tty refused bytes). They used to be
 // thread-local globals every loop had to remember to read, and one of
@@ -25,6 +25,7 @@
 //
 // See docs/internals/runtime-free.md for the design.
 
+#include <algorithm>
 #include <chrono>
 #include <cstddef>
 #include <optional>
@@ -37,7 +38,7 @@
 namespace maya {
 
 /// What one draw needs from whoever schedules draws.
-struct Frame {
+struct Presented {
     using clock = std::chrono::steady_clock;
 
     /// A widget asked to be drawn again (a spinner, a caret, a tween): call
@@ -73,7 +74,7 @@ struct TermConfig {
 
 class Screen {
 public:
-    using clock = Frame::clock;
+    using clock = Presented::clock;
 
     /// Take the terminal: raw mode, alt screen or inline region, capability
     /// probes. The destructor gives it back, on every path.
@@ -105,8 +106,13 @@ public:
     /// The handle a runtime watches for readability.
     [[nodiscard]] platform::NativeHandle input_handle() const noexcept { return rt_->input_handle(); }
 
-    /// Everything the terminal has sent, parsed. Never blocks.
-    [[nodiscard]] Result<std::vector<Event>> read() { return rt_->read_events(); }
+    /// Everything the terminal has sent, parsed. Never blocks. Frame
+    /// acknowledgements are consumed here (see ready()), never returned.
+    [[nodiscard]] Result<std::vector<Event>> read() {
+        auto evs = rt_->read_events();
+        if (const int acks = rt_->take_acks(); acks > 0) on_acks(acks);
+        return evs;
+    }
 
     /// Call after SIGWINCH: re-reads the size and invalidates the frame.
     void on_resize() { rt_->handle_resize(); }
@@ -121,9 +127,10 @@ public:
     /// Takes the tree already built. Widgets ask for animation frames while
     /// they are BUILT, so a tree built before this call has already made
     /// its requests; to keep them, build through present(build) instead.
-    Frame present(const Element& root) {
+    Presented present(const Element& root) {
         Element framed = detail::apply_theme_canvas(root, rt_->theme(), rt_->size().width.value);
         (void)rt_->render(framed);
+        send_probe();
         return collect();
     }
 
@@ -133,7 +140,7 @@ public:
     /// after throws away every request, and animations freeze on their
     /// first frame (the jaal smoke run's `--animates` check catches that).
     template <std::invocable Build>
-    Frame present(Build&& build) {
+    Presented present(Build&& build) {
         detail::animation_requested_ = false;
         detail::next_frame_delay_ms_ = -1;
         return present(Element{std::forward<Build>(build)()});
@@ -146,10 +153,10 @@ public:
     /// the animation request is cleared, so the widgets it constructs can
     /// re-request.
     template <std::invocable Build>
-    Frame present_if(std::uint64_t visual_hash, Build&& build, bool force = false) {
+    Presented present_if(std::uint64_t visual_hash, Build&& build, bool force = false) {
         if (!force && last_hash_ && *last_hash_ == visual_hash && !pending_redraw_
             && !rt_->has_deferred_frame() && !rt_->has_pending_writes()) {
-            Frame f; f.skipped = true; return f;
+            Presented f; f.skipped = true; return f;
         }
         last_hash_ = visual_hash;
         detail::animation_requested_ = false;
@@ -158,6 +165,7 @@ public:
         Element framed = detail::apply_theme_canvas(std::move(built), rt_->theme(),
                                                     rt_->size().width.value);
         (void)rt_->render(framed);
+        send_probe();
         return collect();
     }
 
@@ -165,11 +173,17 @@ public:
     /// heavy model loads, so the first visible frame takes the blit path).
     void warm(const Element& root) { rt_->warmup_render(root); }
 
-    /// Push bytes the tty refused earlier. False while it's still full.
-    bool flush() {
-        if (!rt_->has_pending_writes() && !rt_->has_deferred_frame()) return true;
-        return !rt_->has_pending_writes();
-    }
+    /// Push bytes the tty refused earlier. True when nothing is left; while
+    /// false, watch output_handle() for writability and call again.
+    bool flush() { return rt_->drain_residue(); }
+
+    /// The handle to watch for writability while backpressured().
+    [[nodiscard]] platform::NativeHandle output_handle() const noexcept { return rt_->output_handle(); }
+
+    /// Bytes are waiting for the tty (flush() when it's writable).
+    [[nodiscard]] bool pending_output() const noexcept { return rt_->has_pending_writes(); }
+
+    /// A frame is owed: bytes are waiting, or a frame was deferred.
     [[nodiscard]] bool backpressured() const noexcept {
         return rt_->has_pending_writes() || rt_->has_deferred_frame();
     }
@@ -206,6 +220,55 @@ public:
     [[nodiscard]] bool is_inline() const noexcept { return rt_->is_inline(); }
     [[nodiscard]] const Theme& theme() const noexcept { return rt_->theme(); }
 
+    // ── flow control: never more than a frame ahead of the glass ─────────
+    //
+    // A terminal is not the other end of the pty. Over ssh the pty drains
+    // into sshd instantly and the real bottleneck (the network, the remote
+    // terminal's parser) is far downstream, behind buffers that can hold
+    // megabytes. A program that draws as fast as the pty accepts fills them,
+    // and every keypress (including `q`) then waits behind seconds of frames
+    // the user will never see: measured, doom_fire exits 1 ms after `q` but
+    // the screen keeps playing old fire for as long as the backlog lasts.
+    //
+    // So each frame ends with a Device Status Report query (`CSI 5 n`). The
+    // terminal answers `CSI 0 n` once it has parsed everything before it,
+    // which makes the answer an acknowledgement that the frame reached the
+    // glass. At most `kWindow` frames are in flight; while the window is
+    // full the caller keeps updating its model and simply doesn't draw. The
+    // next frame drawn is the LATEST state, so a burst of input costs one
+    // frame, not a queue of them, and the frame rate settles at exactly
+    // what the link sustains. Locally the ack returns in well under a
+    // millisecond, so nothing is throttled.
+    //
+    // A terminal that never answers (a dumb pipe, a very old emulator) must
+    // not freeze the program: if no ack ever arrives the first frames are
+    // released by a timeout and, after kProbeStrikes misses, flow control
+    // switches off for the session.
+
+    /// May a frame be drawn now? False while the window is full.
+    [[nodiscard]] bool ready() noexcept {
+        if (!flow_on_ || in_flight_ < kWindow) return true;
+        if (clock::now() - oldest_sent_ > ack_timeout()) {    // an ack went missing
+            if (++strikes_ >= kProbeStrikes && acks_seen_ == 0) flow_on_ = false;
+            in_flight_ = 0;
+            return true;
+        }
+        return false;
+    }
+
+    /// When a blocked frame could next be allowed without an ack arriving
+    /// (the timeout), so a scheduler can bound its sleep.
+    [[nodiscard]] std::optional<clock::time_point> ready_deadline() const noexcept {
+        if (!flow_on_ || in_flight_ < kWindow) return std::nullopt;
+        return oldest_sent_ + ack_timeout();
+    }
+
+    /// Smoothed time from sending a frame to its ack: how far away the
+    /// glass is. Zero until the first ack.
+    [[nodiscard]] clock::duration round_trip() const noexcept { return srtt_; }
+    [[nodiscard]] int frames_in_flight() const noexcept { return in_flight_; }
+    [[nodiscard]] bool flow_control() const noexcept { return flow_on_; }
+
     /// The underlying implementation, for the runtimes being migrated off
     /// it. Not part of the device API.
     [[nodiscard]] detail::Runtime& impl() noexcept { return *rt_; }
@@ -218,10 +281,57 @@ private:
     // Anything that repaints from scratch must defeat the hash gate.
     void invalidate() noexcept { last_hash_.reset(); }
 
+    // One frame in flight is the design: the terminal parses frame N while
+    // frame N+1 is being computed, and nothing queues behind it. (A window
+    // of 2 would let one stale frame sit in the buffers; the latency a user
+    // feels after a keypress is the depth of that queue.)
+    static constexpr int kWindow       = 1;
+    static constexpr int kProbeStrikes = 3;
+
+    // Generous: an ack is late only when it is far later than the link has
+    // ever been. Before the first ack there is no estimate, so 250 ms.
+    [[nodiscard]] clock::duration ack_timeout() const noexcept {
+        using namespace std::chrono_literals;
+        if (acks_seen_ == 0) return 250ms;
+        return std::clamp<clock::duration>(srtt_ * 8, 100ms, 2s);
+    }
+
+    void send_probe() {
+        if (!flow_on_) return;
+        // Only when this render actually put bytes on the wire (or queued
+        // them). A frame the hash gate or the coalescer skipped has nothing
+        // to acknowledge.
+        if (rt_->has_deferred_frame()) return;
+        rt_->emit_host_sequence("\x1b[5n");
+        if (in_flight_ == 0) oldest_sent_ = clock::now();
+        ++in_flight_;
+    }
+
+    void on_acks(int n) {
+        const auto now = clock::now();
+        for (int i = 0; i < n && in_flight_ > 0; ++i) {
+            // Acks arrive in order: this one is for the oldest frame out.
+            // Sample its round trip into a smoothed estimate (RFC 6298).
+            const auto rtt = now - oldest_sent_;
+            srtt_ = acks_seen_ == 0 ? rtt : (srtt_ * 7 + rtt) / 8;
+            ++acks_seen_;
+            --in_flight_;
+            oldest_sent_ = now;   // window of 1: nothing older is left
+        }
+        strikes_ = 0;
+    }
+
+    clock::time_point oldest_sent_{};
+    clock::duration   srtt_{};
+    int               in_flight_ = 0;
+    int               acks_seen_ = 0;
+    int               strikes_   = 0;
+    bool              flow_on_   = true;
+
     // Gather the draw's outputs from where the view layer leaves them. This
     // is the ONE place those globals are read, so no runtime has to.
-    Frame collect() {
-        Frame f;
+    Presented collect() {
+        Presented f;
         if (detail::animation_requested_) {
             const auto delay = detail::next_frame_delay_ms_ > 0
                 ? std::chrono::milliseconds(detail::next_frame_delay_ms_)

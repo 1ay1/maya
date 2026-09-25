@@ -15,8 +15,8 @@
 //                    program re-subscribes between them (jaal D13: maya's
 //                    "^T m o" bug, fixed by construction)
 //   on_signal(resize) screen.on_resize(); emit a ResizeEvent
-//   present(k)       screen.present(build view(model)) -> Frame; schedule
-//                    Frame::redraw_at, honour redraw_now / backpressured
+//   present(k)       screen.present(build view(model)) -> Presented; schedule
+//                    Presented::redraw_at, honour redraw_now / backpressured
 //   owes_frame()     an animation deadline arrived, a redraw is owed, or
 //   wait_hint()      the tty is backed up: jaal wakes for those, and sleeps
 //                    otherwise (an idle app costs nothing)
@@ -238,7 +238,7 @@ template <class S>
 // jaal's side of maya::Screen. The host owns no terminal logic: it watches
 // the Screen's input handle, routes what read() parses, and turns jaal's
 // "the model changed" into Screen::present(). Everything a draw needs from
-// the scheduler comes back in the Frame (an animation deadline, a redraw
+// the scheduler comes back in Presented (an animation deadline, a redraw
 // the frame asked for, a backed-up tty): the host reads no globals.
 template <JaalView P>
 class jaal_host {
@@ -246,7 +246,7 @@ public:
     // Everything the terminal produces. signal_event is added by jaal's
     // run() (kernel_event_t), which is how SIGWINCH arrives.
     using event_type = std::variant<KeyEvent, MouseEvent, PasteEvent, FocusEvent, ResizeEvent>;
-    using clock      = Frame::clock;
+    using clock      = Presented::clock;
 
     /// `fps` > 0 redraws continuously at that rate (RunConfig::fps), for a
     /// program whose view() reads the wall clock itself: a clock, a
@@ -266,15 +266,20 @@ public:
         auto reg = cx.watch(term_.input_handle(), jaal::interest::read, kInput);
         if (!reg) { cx.stop(70); return; }        // no input: nothing to drive us
         input_reg_.emplace(std::move(*reg));
+        cx_ = &cx;
         const auto sz = term_.size();
         cx.emit(ResizeEvent{sz.width, sz.height});
     }
 
-    // Input is ready: parse it and emit each event on its own. ONE event per
-    // emit: jaal folds it and re-subscribes before the next, so a key that
-    // opens a picker routes the NEXT key to the picker (maya's "^T m o" bug,
-    // fixed by construction).
     void on_ready(jaal::host_context<jaal_host>& cx, const jaal::readiness& r) {
+        if (r.token == kOutput) {
+            // The tty took bytes again: push the rest of the backed-up frame.
+            // Only when ALL of it has gone is the next frame composed (a
+            // frame diffed against a front that isn't on screen yet would be
+            // wrong); then stop watching for writability.
+            if (term_.flush()) watch_output(false);
+            return;
+        }
         if (r.token != kInput) return;
         if (r.hangup) { cx.stop(0); return; }     // the terminal went away
         auto events = term_.read();
@@ -301,13 +306,29 @@ public:
     // animation until a keypress).
     template <class K>
     void present(K& k) {
+        // A frame is still going out: don't compose another on top of it.
+        // (The Screen diffs against what it believes is on the terminal;
+        // composing now would diff against bytes the tty hasn't taken yet.)
+        // The output watch drains it, and the frame is owed afterwards.
+        if (term_.pending_output()) {
+            if (term_.flush()) watch_output(false);
+            else { watch_output(true); owed_ = true; return; }
+        }
+        // The last frame hasn't reached the glass yet (no ack): hold this one.
+        // The model keeps changing meanwhile; when the ack arrives (it comes
+        // in as input, which wakes us) the frame drawn is the latest state,
+        // so input never queues behind stale frames. On a local terminal the
+        // ack is back before the next frame is due, and this never blocks.
+        if (!term_.ready()) { owed_ = true; return; }
+        owed_ = false;
+
         const bool force = std::exchange(dirty_, false) || frame_due();
         auto build = [&] {
             // view() may call app_set_theme(); the Screen reads the theme
             // after build() returns, so a theme set here paints this frame.
             return P::view(k.model());
         };
-        Frame f;
+        Presented f;
         if constexpr (jaal::HasVisualHash<P>) {
             f = term_.present_if(P::visual_hash(k.model()), build, force);
         } else {
@@ -318,12 +339,16 @@ public:
             });
         }
         if (f.redraw_now) dirty_ = true;          // drawn from stale scroll sizes
+        // The tty took only part of it: watch for writability and push the
+        // rest from on_ready, instead of re-rendering on a timer (which is
+        // what throttled a 2.5 MB/s animation to 7 fps).
+        if (term_.pending_output()) watch_output(true);
         schedule(f);
     }
 
     // One deadline for the next frame: the EARLIER of a widget's animation
     // request and the fixed-rate tick. owes_frame() and wait_hint() read it.
-    void schedule(const Frame& f) {
+    void schedule(const Presented& f) {
         const auto now = clock::now();
         std::optional<clock::time_point> next = f.redraw_at;
         if (frame_period_ > std::chrono::nanoseconds::zero()) {
@@ -343,16 +368,28 @@ public:
     }
 
     // jaal asks after every step whether we owe a frame even though the
-    // model didn't change: a backed-up tty, a redraw the last frame asked
-    // for, or an animation deadline that has arrived.
+    // model didn't change: a redraw the last frame asked for, an animation
+    // deadline that has arrived, a frame held back by pending output that
+    // has now drained, or a coalesced frame the Screen still owes.
     [[nodiscard]] bool owes_frame() const noexcept {
-        return dirty_ || term_.backpressured() || frame_due();
+        if (term_.pending_output()) return false;   // the output watch will wake us
+        if (awaiting_ack()) return false;           // the ack (input) will wake us
+        return dirty_ || owed_ || term_.backpressured() || frame_due();
     }
 
-    // ...and how long it may sleep before asking again.
+    // ...and how long it may sleep before asking again. While output is
+    // pending, as long as it likes: writability wakes it, not a timer. While
+    // a frame is unacknowledged, until the ack (it arrives as input) or the
+    // ack timeout, whichever is first.
     [[nodiscard]] std::optional<std::chrono::milliseconds> wait_hint() const noexcept {
-        if (dirty_) return std::chrono::milliseconds(0);
-        if (term_.backpressured()) return std::chrono::milliseconds(4);
+        if (term_.pending_output()) return std::nullopt;
+        if (awaiting_ack()) {
+            const auto left = *term_.ready_deadline() - clock::now();
+            return std::max(std::chrono::milliseconds(0),
+                            std::chrono::ceil<std::chrono::milliseconds>(left));
+        }
+        if (dirty_ || owed_) return std::chrono::milliseconds(0);
+        if (term_.backpressured()) return std::chrono::milliseconds(4);   // a coalesced frame
         if (next_frame_at_) {
             const auto left = *next_frame_at_ - clock::now();
             if (left <= clock::duration::zero()) return std::chrono::milliseconds(0);
@@ -381,13 +418,33 @@ public:
         return out;
     }
 
-    void release() {}
+    void release() { output_reg_.reset(); input_reg_.reset(); cx_ = nullptr; }
 
 private:
     static constexpr std::uint64_t kInput = 1;
 
     [[nodiscard]] bool frame_due() const noexcept {
         return next_frame_at_ && clock::now() >= *next_frame_at_;
+    }
+
+    // A frame is owed but the last one hasn't been acknowledged (and its ack
+    // timeout hasn't passed): the host waits for the terminal.
+    [[nodiscard]] bool awaiting_ack() const noexcept {
+        const auto d = term_.ready_deadline();
+        return (owed_ || dirty_ || frame_due()) && d && clock::now() < *d;
+    }
+
+    // Watch the output for writability only while bytes are waiting: an
+    // idle tty is ALWAYS writable, so a permanent watch would wake the loop
+    // continuously (the rule jaal's hosts guide spells out for sockets).
+    // The output is its own fd (stdout; the input is stdin), so it gets its
+    // own registration and token, and the registration is dropped the
+    // moment the frame is out.
+    void watch_output(bool on) {
+        if (on == output_reg_.has_value() || !cx_) return;
+        if (!on) { output_reg_.reset(); return; }
+        if (auto reg = cx_->watch(term_.output_handle(), jaal::interest::write, kOutput))
+            output_reg_.emplace(std::move(*reg));
     }
 
     // One-shot cache warmup on the RISING edge of needs_warmup (a heavy
@@ -400,8 +457,12 @@ private:
     }
 
     Screen&                                                 term_;
+    jaal::host_context<jaal_host>*                          cx_ = nullptr;
     std::optional<jaal::platform::native_reactor::registration> input_reg_;
+    std::optional<jaal::platform::native_reactor::registration> output_reg_;   // only while output is pending
+    static constexpr std::uint64_t                            kOutput = 2;
     bool                                                      dirty_ = true;
+    bool                                                      owed_  = false;   // a frame held back by pending output
     bool                                                      last_warmup_ = false;
     std::optional<clock::time_point>                          next_frame_at_;
     std::chrono::nanoseconds                                  frame_period_;   // 0 = event-driven

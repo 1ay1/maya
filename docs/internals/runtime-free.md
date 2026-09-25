@@ -76,7 +76,7 @@ public:
     Size size() const noexcept;
 
     // output: one frame
-    Frame present(const Element& root);                // layout + paint + diff + write-or-buffer
+    Presented present(const Element& root);                // layout + paint + diff + write-or-buffer
     bool flush();                                      // push what the tty refused; false = still full
 
     // device effects, one call each
@@ -91,7 +91,7 @@ public:
 };
 ```
 
-### `Frame`: what a draw needs from the runtime
+### `Presented`: what a draw needs from the runtime
 
 The view layer used to talk to the loop through thread-local globals
 that each loop had to remember to read (`animation_requested_`,
@@ -100,7 +100,7 @@ two of them. They become the return value of the one call that
 produces them:
 
 ```cpp
-struct Frame {
+struct Presented {
     std::optional<Clock::time_point> redraw_at;   // a widget asked to be drawn again (animation)
     bool redraw_now    = false;                   // scroll write-back: this frame used stale sizes
     bool backpressured = false;                   // bytes left over: call flush() when writable
@@ -108,11 +108,40 @@ struct Frame {
 };
 ```
 
-A runtime that ignores `Frame` compiles and draws, but a scheduler
+A runtime that ignores `Presented` compiles and draws, but a scheduler
 cannot *forget* a field it has to destructure to use. The widgets still
 say "draw me again" the same way (`request_animation_frame()`), and the
 collection point moves from "whichever loop reads the global" to
 `present()`'s return value.
+
+### Flow control: never more than one frame ahead of the glass
+
+A terminal is not the other end of the pty. Over ssh the pty drains into
+sshd instantly; the real bottleneck (the network, the remote terminal's
+parser) sits downstream, behind buffers that hold megabytes. A program
+that draws as fast as the pty accepts fills them, and every keypress, `q`
+included, then waits behind frames the user will never see.
+
+The Screen ends every frame with a Device Status Report query (`CSI 5 n`).
+The terminal answers `CSI 0 n` only after it has parsed everything before
+it, so the answer is an acknowledgement that the frame reached the glass.
+One frame may be in flight. While it is, the model keeps changing and the
+runtime simply doesn't draw; when the ack arrives (as input, which wakes
+the loop) the frame drawn is the latest state. It's TCP's window applied
+to frames: the frame rate settles at what the link sustains, and input
+latency is one frame, never a queue.
+
+| doom_fire, 300 KB/s link (sshd modelled) | backlog when `q` pressed | `q` to screen stops |
+|---|---|---|
+| without acks (maya's canvas_run) | 2572 KB | 8582 ms |
+| with acks (Screen) | 50 KB | 174 ms |
+
+Same 7.3 fps on the screen either way (that's the link), and on a local
+terminal the ack is back in well under a millisecond: 60 fps, same CPU.
+A terminal that never answers is detected (three missed acks with none
+ever seen) and flow control switches off, so nothing freezes.
+`tests/slow_link.py` measures it; `Screen::ready()`, `ready_deadline()`
+and `round_trip()` are the API.
 
 ### What moves out of maya
 
@@ -148,7 +177,7 @@ frames, backpressure).
 
 ## Order of work
 
-1. `Frame` replaces the loop-facing globals; `Terminal` is the public
+1. `Presented` replaces the loop-facing globals; `Terminal` is the public
    device. Existing loops keep working on top of it (no behaviour
    change, measured).
 2. `maya-jaal` becomes its own target over `Terminal`.

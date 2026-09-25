@@ -178,8 +178,16 @@ public:
     /// Reset the parser to ground state, discarding any partial sequence.
     void reset() noexcept;
 
+    /// Frame acknowledgements received: each `CSI 0 n` (the terminal's reply
+    /// to a Device Status Report query, `CSI 5 n`) seen since the last call.
+    /// The screen appends that query after every frame; the terminal answers
+    /// only once it has PARSED everything before it, so a reply means "that
+    /// frame is on the glass". Consumed here, never turned into input.
+    [[nodiscard]] int take_acks() noexcept { return std::exchange(acks_, 0); }
+
 private:
     using clock = std::chrono::steady_clock;
+    int acks_ = 0;
     // Inactivity deadlines per pending state — see flush_timeout() docs.
     static constexpr auto escape_timeout_ = std::chrono::milliseconds(50);
     static constexpr auto kOscTimeout     = std::chrono::milliseconds(1000);

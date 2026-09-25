@@ -1419,6 +1419,28 @@ public:
     /// Runtime keeps ownership, and the handle is valid while it lives.
     [[nodiscard]] platform::NativeHandle input_handle() const noexcept { return input_handle_; }
 
+    /// The tty's output handle: a runtime watches it for WRITABILITY
+    /// while a frame is backed up, instead of polling on a timer.
+    [[nodiscard]] platform::NativeHandle output_handle() const noexcept { return output_handle_; }
+
+    /// Frame acknowledgements the parser saw since the last call (see
+    /// InputParser::take_acks and maya::Screen's flow control).
+    [[nodiscard]] int take_acks() noexcept { return parser_.take_acks(); }
+
+    /// Push bytes the tty refused earlier (the tail of a frame too big for
+    /// the pty buffer). True when nothing is left.
+    bool drain_residue() {
+        if (!writer_ || !writer_->has_residue()) return true;
+        if (auto d = writer_->try_drain_residue(); !d) {
+            if (d.error().kind != ErrorKind::WouldBlock) {
+                writer_->discard_residue();          // hard error: repaint from scratch
+                fs_coherence_ = coherent::Divergent{};
+                return true;
+            }
+        }
+        return !writer_->has_residue();
+    }
+
 private:
     // -- State ----------------------------------------------------------------
     InputParser parser_;

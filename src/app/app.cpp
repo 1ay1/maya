@@ -1642,6 +1642,26 @@ auto Runtime::render(const Element& root) -> Status {
             return coherent::FullscreenSynced{std::move(new_front)};
         },
     }, fs_coherence_);
+
+    // MAYA_FRAME_PROF for fullscreen frames, in the inline line's format
+    // (the fields fullscreen has: total, nodes, w/h, bytes, and the build /
+    // layout / paint phases), so tests/frame_phases.py can measure every
+    // Program example. Fullscreen frames used to be invisible to it: most
+    // of maya's examples run fullscreen, and couldn't be profiled at all.
+    if (prof) {
+        static std::uint64_t prev_b = 0, prev_l = 0, prev_p = 0;
+        const std::uint64_t now_b = render_detail::rt_build_ns();
+        const std::uint64_t now_l = render_detail::rt_layout_ns();
+        const std::uint64_t now_p = render_detail::rt_paint_ns();
+        std::fprintf(prof_out,
+            "maya-frame: rt=%.2f cf=%.2f total=%.2f nodes=%zu rows=%d w=%d "
+            "bytes=%zu fullscreen ph[b=%.2f l=%.2f p=%.2f]\n",
+            since(t_frame_start), 0.0, since(t_frame_start),
+            layout_nodes_.size(), canvas_.height(), canvas_.width(), out_.size(),
+            (now_b - prev_b) / 1e6, (now_l - prev_l) / 1e6, (now_p - prev_p) / 1e6);
+        prev_b = now_b; prev_l = now_l; prev_p = now_p;
+        std::fflush(prof_out);
+    }
     return write_status;
 }
 

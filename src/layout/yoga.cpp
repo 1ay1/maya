@@ -519,8 +519,19 @@ void compute_node(
                     // nested container — the dominant render cost for
                     // table/list/card UIs. Inputs equal ⇒ outputs equal:
                     // this is exact, not an approximation.
+                    //
+                    // Only the WIDTH is compared. compute_node never reads
+                    // its available_height (an auto-height node sizes to
+                    // content from 0 — see section 1), and the parent sizes
+                    // passed at both call sites are the same content_w/h.
+                    // Requiring equal available heights too made the fast
+                    // path miss for every stretched child of a row: widgets
+                    // at 214x60 re-laid-out 728 of 801 such subtrees (each
+                    // miss re-lays the whole subtree, so it compounds with
+                    // depth: 45 nodes at depth 5 took 1344 calls).
                     if (item.laid_out && !main_changed && !force_w && !force_h
-                            && child_w == item.avail_w && child_h == item.avail_h) {
+                            && child_w == item.avail_w
+                            && !g_disable_relayout_fast_path) {
                         child_w = child.computed.size.width.value;
                         child_h = child.computed.size.height.value;
                         item.main  = row ? child_w : child_h;

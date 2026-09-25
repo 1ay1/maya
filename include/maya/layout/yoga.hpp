@@ -241,6 +241,12 @@ void compute_node(
     int parent_width,
     int parent_height);
 
+/// Test hook: when true, compute_node always re-lays a child out in the
+/// final pass instead of reusing its first-pass result. The layout must be
+/// identical either way (the fast path is exact); tests/test_layout.cpp
+/// renders the same trees both ways and compares every node.
+inline bool g_disable_relayout_fast_path = false;
+
 /// Resolve a node's definite main/cross sizes given the parent context.
 /// Returns (resolved_width, resolved_height), with -1 meaning "not yet determined".
 [[nodiscard]] std::pair<int, int> resolve_definite_size(

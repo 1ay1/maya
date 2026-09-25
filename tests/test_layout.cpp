@@ -5,6 +5,7 @@
 #undef NDEBUG
 #include "agtest.hpp"
 #include <print>
+#include <random>
 
 using namespace maya;
 using namespace maya::detail;
@@ -718,3 +719,73 @@ TEST_CASE("column child height recomputes") {
     std::println("PASS\n");
 }
 
+
+// ── The relayout fast path is exact ──────────────────────────────────────────
+//
+// compute_node lays each child out twice at most: once to find its natural
+// size (3a), again after flex grow/shrink and stretch (3d). 3d reuses the 3a
+// result when its inputs are the same. That reuse is only correct if the
+// output is a function of exactly the inputs it compares, so this renders
+// random trees (rows and columns, grow, gaps, padding, borders, fixed and
+// auto sizes, wrapping text, every alignment) with the fast path on and off,
+// and requires every cell of every frame to be identical.
+namespace {
+struct TreeGen {
+    std::mt19937 rng;
+    int budget;
+    int pick(int n) { return static_cast<int>(rng() % static_cast<unsigned>(n)); }
+    Element leaf() {
+        static const char* words[] = {"a", "hello", "wrap me at a narrow width please",
+                                      "ok", "some longer text that will wrap", "x y z"};
+        return text(words[pick(6)]);
+    }
+    Element node(int depth) {
+        if (depth > 5 || --budget <= 0 || pick(4) == 0) return leaf();
+        auto b = box().direction(pick(2) ? Row : Column);
+        if (pick(3) == 0) b = std::move(b).grow(1.0f + float(pick(3)));
+        if (pick(3) == 0) b = std::move(b).gap(pick(3));
+        if (pick(3) == 0) b = std::move(b).padding(pick(2));
+        if (pick(4) == 0) b = std::move(b).border(BorderStyle::Single);
+        if (pick(5) == 0) b = std::move(b).width(Dimension::fixed(8 + pick(20)));
+        if (pick(6) == 0) b = std::move(b).height(Dimension::fixed(2 + pick(6)));
+        static const Align aligns[] = {Align::Stretch, Align::Start, Align::Center, Align::End};
+        if (pick(3) == 0) b = std::move(b).align_items(aligns[pick(4)]);
+        std::vector<Element> kids;
+        const int n = 1 + pick(4);
+        for (int i = 0; i < n; ++i) kids.push_back(node(depth + 1));
+        return std::move(b)(std::move(kids));
+    }
+};
+std::vector<uint64_t> render_cells(const Element& e, int w, int h) {
+    StylePool pool;
+    Canvas c(w, h, &pool);
+    render_tree(e, c, pool, theme::native);
+    std::vector<uint64_t> out;
+    for (int y = 0; y < h; ++y)
+        for (int x = 0; x < w; ++x) out.push_back(c.get(x, y).pack());
+    return out;
+}
+}  // namespace
+
+TEST_CASE("layout: the relayout fast path changes nothing") {
+    std::println("--- test_relayout_fast_path_exact ---");
+    int trees = 0;
+    for (std::uint32_t seed = 1; seed <= 400; ++seed) {
+        TreeGen g{std::mt19937(seed), 40};
+        const Element e = g.node(0);
+        for (int w : {17, 40, 83}) {
+            const int h = 30;
+            layout::detail::g_disable_relayout_fast_path = true;
+            const auto slow = render_cells(e, w, h);
+            layout::detail::g_disable_relayout_fast_path = false;
+            const auto fast = render_cells(e, w, h);
+            if (slow != fast) {
+                std::println("  MISMATCH seed={} width={}", seed, w);
+                assert(false);
+            }
+        }
+        ++trees;
+    }
+    std::println("  {} random trees x 3 widths identical", trees);
+    std::println("PASS\n");
+}

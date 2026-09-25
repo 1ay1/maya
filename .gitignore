@@ -24,3 +24,4 @@ build-gcc/
 testbuild/
 .agentty/
 __pycache__/
+build-app/

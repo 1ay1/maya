@@ -14,7 +14,7 @@
 //   r          restart simulation
 //   q/Esc      quit
 
-#include <maya/app/jaal_host.hpp>
+#include <maya/jaal/host.hpp>
 #include <maya/maya.hpp>
 
 // Agent UX widgets

@@ -9,7 +9,7 @@
 //
 // Built only with -DMAYA_WITH_JAAL=ON.
 
-#include <maya/app/jaal_host.hpp>
+#include <maya/jaal/host.hpp>
 #include <maya/maya.hpp>
 
 #include <chrono>

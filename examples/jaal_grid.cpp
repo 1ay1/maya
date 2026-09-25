@@ -21,7 +21,7 @@
 //
 // Zero width arithmetic, zero tier switches, zero breakpoints. q quits.
 
-#include <maya/app/jaal_host.hpp>
+#include <maya/jaal/host.hpp>
 #include <maya/maya.hpp>
 
 #include <string>

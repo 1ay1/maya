@@ -48,7 +48,7 @@
 //     /who                        list members as a system message
 //     /quit                       exit
 
-#include <maya/app/jaal_host.hpp>
+#include <maya/jaal/host.hpp>
 #include <maya/maya.hpp>
 #include <maya/widget/overlay.hpp>
 #include <maya/widget/scrollbar.hpp>

@@ -11,7 +11,7 @@
 //
 // Not one hand-computed breakpoint or byte count in the file.
 
-#include <maya/app/jaal_host.hpp>
+#include <maya/jaal/host.hpp>
 #include <maya/maya.hpp>
 
 using namespace maya;

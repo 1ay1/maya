@@ -7,7 +7,7 @@
 //
 //   ← / → (h/l)  switch widget      ↑ / ↓ (k/j)  interact      q  quit
 
-#include <maya/app/jaal_host.hpp>
+#include <maya/jaal/host.hpp>
 #include <maya/maya.hpp>
 #include <maya/widget/key_caps.hpp>
 #include <maya/widget/color_swatch.hpp>

@@ -32,7 +32,7 @@
 #include <string>
 #include <vector>
 
-#include <maya/app/jaal_host.hpp>
+#include <maya/jaal/host.hpp>
 #include <maya/maya.hpp>
 #include <maya/element/grid.hpp>          // viewport(), columns(), grid()
 #include <maya/widget/bar_chart.hpp>

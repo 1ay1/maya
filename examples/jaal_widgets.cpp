@@ -20,7 +20,7 @@
 //   r          reset to initial state
 //   q/Esc      quit
 
-#include <maya/app/jaal_host.hpp>
+#include <maya/jaal/host.hpp>
 #include <maya/maya.hpp>
 #include <maya/widget/context_window.hpp>
 #include <maya/widget/flame_chart.hpp>

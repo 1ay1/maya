@@ -7,7 +7,7 @@
 //
 //   ← / → (h/l)  switch      ↑ / ↓ (k/j)  interact      q  quit
 
-#include <maya/app/jaal_host.hpp>
+#include <maya/jaal/host.hpp>
 #include <maya/maya.hpp>
 #include <maya/widget/code_lens.hpp>
 #include <maya/widget/snippet_preview.hpp>

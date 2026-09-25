@@ -3,7 +3,7 @@
 maya ships two loops for the same toolkit:
 
 - `maya::run<P>()` is maya's own event loop.
-- `maya::run_jaal<P>()` (in `<maya/app/jaal_host.hpp>`, built with
+- `maya::run_jaal<P>()` (in `<maya/jaal/host.hpp>`, built with
   `-DMAYA_WITH_JAAL=ON`) keeps maya's terminal, input parser and renderer and
   swaps only the loop underneath for jaal (the `third_party/jaal` submodule).
 

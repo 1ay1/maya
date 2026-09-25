@@ -3,7 +3,7 @@
 // The port that proves maya's animation framework runs under jaal. Nothing
 // here reads a clock or calls request_animation_frame(); widgets do, during
 // view(). Under maya's own loop that request schedules the next frame. Under
-// jaal the HOST does the same (app/jaal_host.hpp: next_frame_at_, owes_frame,
+// jaal the HOST does the same (maya/jaal/host.hpp: next_frame_at_, owes_frame,
 // wait_hint), so a spring settles and a pulse breathes with no input at all.
 // It also runs in Mode::Inline, which run_jaal passes straight through.
 //
@@ -30,7 +30,7 @@
 //   cmake --build build-test --target maya_motion_showcase
 //   ./build-test/maya_motion_showcase
 
-#include <maya/app/jaal_host.hpp>
+#include <maya/jaal/host.hpp>
 #include <maya/maya.hpp>
 #include <maya/anim/text_reveal.hpp>
 

@@ -10,7 +10,7 @@
 //   - Rich DSL composition with dynamic content
 //   - jaal_key_map() for declarative key bindings
 
-#include <maya/app/jaal_host.hpp>
+#include <maya/jaal/host.hpp>
 #include <maya/maya.hpp>
 #include <chrono>
 

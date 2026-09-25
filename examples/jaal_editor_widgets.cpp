@@ -9,7 +9,7 @@
 //   ↑ / ↓  (or k/j)   interact with the current widget
 //   q                 quit
 
-#include <maya/app/jaal_host.hpp>
+#include <maya/jaal/host.hpp>
 #include <maya/maya.hpp>
 #include <maya/widget/code_view.hpp>
 #include <maya/widget/minimap.hpp>

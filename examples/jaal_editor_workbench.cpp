@@ -8,7 +8,7 @@
 // Keys: Tab switches the focused split pane, p toggles the bottom panel,
 //       b toggles the sidebar, ↑/↓ move the file-tree selection, q quits.
 
-#include <maya/app/jaal_host.hpp>
+#include <maya/jaal/host.hpp>
 #include <maya/maya.hpp>
 #include <maya/widget/workbench.hpp>
 #include <maya/widget/activity_rail.hpp>

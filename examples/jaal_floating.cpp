@@ -8,7 +8,7 @@
 // it, flipping above when near the bottom and clamping at the screen edges.
 // Space cycles the side (Below/Above/Right/Left). q quits.
 
-#include <maya/app/jaal_host.hpp>
+#include <maya/jaal/host.hpp>
 #include <maya/maya.hpp>
 #include <maya/app/floating.hpp>
 

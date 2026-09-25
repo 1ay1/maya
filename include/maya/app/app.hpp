@@ -1414,7 +1414,7 @@ public:
 
     /// The terminal's input handle, for a loop that owns its own reactor.
     /// maya's own run<P>() multiplexes this through event_source_; the jaal
-    /// host (app/jaal_host.hpp) watches it with jaal's reactor instead, and
+    /// host (maya/jaal/host.hpp) watches it with jaal's reactor instead, and
     /// then calls read_events() exactly as run<P>() does. Borrowed: the
     /// Runtime keeps ownership, and the handle is valid while it lives.
     [[nodiscard]] platform::NativeHandle input_handle() const noexcept { return input_handle_; }

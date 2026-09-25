@@ -13,7 +13,7 @@
 //
 // view() is unchanged: the toolkit is the same toolkit.
 
-#include <maya/app/jaal_host.hpp>
+#include <maya/jaal/host.hpp>
 #include <maya/maya.hpp>
 
 using namespace maya;

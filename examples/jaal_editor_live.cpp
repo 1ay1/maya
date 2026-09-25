@@ -11,7 +11,7 @@
 //        Home/End · Ctrl-Z undo · Ctrl-Y redo · Ctrl-A all · Ctrl-C/X/V ·
 //        Ctrl-Q quit.
 
-#include <maya/app/jaal_host.hpp>
+#include <maya/jaal/host.hpp>
 #include <maya/maya.hpp>
 #include <maya/widget/text_editor.hpp>
 #include <maya/widget/editor_tab_bar.hpp>

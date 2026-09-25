@@ -62,7 +62,7 @@
 //
 // Usage:  ./maya_jaal_agent_session
 
-#include <maya/app/jaal_host.hpp>
+#include <maya/jaal/host.hpp>
 #include <maya/maya.hpp>
 
 #include <maya/widget/agent_timeline.hpp>

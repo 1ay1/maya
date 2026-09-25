@@ -34,7 +34,7 @@
 // Resize the terminal — width resheds columns, height rewindows rows.
 // q quits.
 
-#include <maya/app/jaal_host.hpp>
+#include <maya/jaal/host.hpp>
 #include <maya/maya.hpp>
 #include <maya/widget/table.hpp>
 

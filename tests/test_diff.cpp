@@ -23,6 +23,55 @@ TEST_CASE("diff identical canvases empty output") {
     std::println("PASS\n");
 }
 
+TEST_CASE("diff: a cell that looks the same is not re-sent") {
+    std::println("--- test_diff_same_look_not_resent ---");
+    // Two DIFFERENT style ids that paint identically on any terminal: the
+    // same fg, one with an explicit Default bg ("no bg SGR") and one with
+    // no bg. On a native theme both emit only the fg. A diff that
+    // compared ids re-sent every such cell; the look key must not.
+    StylePool pool;
+    const uint16_t a = pool.intern(Style{}.with_fg(Color::rgb(200, 30, 30)));
+    const uint16_t b = pool.intern(Style{}.with_fg(Color::rgb(200, 30, 30))
+                                          .with_bg(Color::default_color()));
+    assert(a != b);
+    assert(pool.same_look(a, b));
+
+    Canvas old_c(8, 1, &pool);
+    Canvas new_c(8, 1, &pool);
+    for (int x = 0; x < 8; ++x) {
+        old_c.set(x, 0, U'\u2580', a);
+        new_c.set(x, 0, U'\u2580', b);
+    }
+    std::string result;
+    diff(old_c, new_c, pool, result);
+    assert(result.find("\xe2\x96\x80") == std::string::npos);   // no glyph re-sent
+    std::println("PASS\n");
+}
+
+TEST_CASE("diff: a cell that looks different IS re-sent") {
+    std::println("--- test_diff_different_look_resent ---");
+    // Red and blue stay distinct at every colour depth (16, 256, truecolor)
+    // except monochrome, where nothing coloured reaches the wire.
+    StylePool pool;
+    const uint16_t red  = pool.intern(Style{}.with_fg(Color::rgb(220, 20, 20)));
+    const uint16_t blue = pool.intern(Style{}.with_fg(Color::rgb(20, 20, 220)));
+    Canvas old_c(4, 1, &pool);
+    Canvas new_c(4, 1, &pool);
+    for (int x = 0; x < 4; ++x) {
+        old_c.set(x, 0, U'x', red);
+        new_c.set(x, 0, U'x', blue);
+    }
+    std::string result;
+    diff(old_c, new_c, pool, result);
+    if (terminal_color_level() > 0) {
+        assert(!pool.same_look(red, blue));
+        assert(result.find('x') != std::string::npos);
+    } else {
+        assert(pool.same_look(red, blue));        // monochrome: same pixels
+    }
+    std::println("PASS\n");
+}
+
 TEST_CASE("diff no damage empty output") {
     std::println("--- test_diff_no_damage_empty_output ---");
     StylePool pool;

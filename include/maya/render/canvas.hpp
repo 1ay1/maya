@@ -253,6 +253,7 @@ public:
                 auto id = static_cast<uint16_t>(styles_.size());
                 styles_.push_back(s);
                 sgr_cache_.push_back(build_sgr(s));
+                looks_.push_back(look_of(s));
                 if (s.caret_anchor) [[unlikely]] caret_ids_.push_back(id);
                 slot = {h, id};
                 ++size_;
@@ -346,6 +347,20 @@ public:
         return !caret_ids_.empty();
     }
 
+    /// Do two style ids paint the same pixels on THIS terminal?
+    ///
+    /// True when their colours, resolved against the live theme and
+    /// degraded to the terminal's depth, and their wire-visible attributes
+    /// are equal. A 256-colour link folds many truecolor shades onto one
+    /// palette entry, so a diff that compares ids re-sends cells whose
+    /// look didn't change. Out-of-range ids compare as id 0, like
+    /// write_transition_sgr treats them.
+    [[nodiscard]] bool same_look(uint16_t a, uint16_t b) const noexcept {
+        if (a == b) return true;
+        const auto n = looks_.size();
+        return looks_[a < n ? a : 0] == looks_[b < n ? b : 0];
+    }
+
     /// Reset the pool back to only the default style.
     void clear();
 
@@ -383,6 +398,15 @@ private:
 
     std::vector<Style>       styles_;
     std::vector<std::string> sgr_cache_;  // sgr_cache_[id] = pre-built "\x1b[0;...m"
+    // looks_[id]: what the style paints as, on this terminal (see same_look).
+    // Rebuilt with sgr_cache_ on retheme, because it bakes the theme in.
+    struct Look {
+        std::optional<LitColor> fg, bg;
+        std::uint8_t attrs = 0;   // bold italic underline inverse strike conceal
+        bool operator==(const Look&) const = default;
+    };
+    std::vector<Look>        looks_;
+    static Look look_of(const Style& s) noexcept;
     // The theme the cached SGR strings were built under, held BY VALUE and
     // compared BY VALUE.
     //

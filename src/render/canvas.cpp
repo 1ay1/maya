@@ -156,8 +156,10 @@ StylePool::StylePool() {
     pool_id_ = g_next_pool_id.fetch_add(1, std::memory_order_relaxed);
     styles_.reserve(64);
     sgr_cache_.reserve(64);
+    looks_.reserve(64);
     styles_.emplace_back();  // ID 0 = default (empty) style
     sgr_cache_.push_back(build_sgr(styles_[0]));
+    looks_.push_back(look_of(styles_[0]));
     grow(64);
     // Insert the default style into the map.
     insert_slot(hash_style(styles_[0]), 0);
@@ -184,8 +186,10 @@ bool StylePool::retheme() {
     if (sgr_theme_valid_ && sgr_theme_ == now) return false;
     sgr_theme_ = now;
     sgr_theme_valid_ = true;
-    for (std::size_t i = 0; i < styles_.size(); ++i)
+    for (std::size_t i = 0; i < styles_.size(); ++i) {
         sgr_cache_[i] = build_sgr(styles_[i]);
+        looks_[i]     = look_of(styles_[i]);
+    }
     // Bump pool_id_ so thread_local intern_const slots re-resolve.
     //
     // intern_const caches a style id per call site, keyed on pool_id_, and
@@ -206,6 +210,7 @@ void StylePool::clear() {
     pool_id_ = g_next_pool_id.fetch_add(1, std::memory_order_relaxed);
     styles_.resize(1);
     sgr_cache_.resize(1);
+    looks_.resize(1);
     caret_ids_.clear();
     size_ = 1;
     overflow_ = false;
@@ -435,6 +440,30 @@ void StylePool::write_transition_sgr(uint16_t prev_id, uint16_t new_id,
 
     *p++ = 'm';
     out.append(buf, static_cast<std::size_t>(p - buf));
+}
+
+// What a style paints as on this terminal: exactly the inputs build_sgr
+// turns into bytes (so two styles with equal looks emit equivalent SGR),
+// with colours resolved against the live theme and degraded to the
+// terminal's depth. build_sgr never emits dim or conceal, so they're not
+// part of the look either. Kept beside build_sgr so the two can't drift.
+StylePool::Look StylePool::look_of(const Style& s) noexcept {
+    const int level = active_color_level();
+    const Theme& th = theme::live();
+    Look l;
+    l.attrs = static_cast<std::uint8_t>(
+          (s.bold ? 1 : 0) | (s.italic ? 2 : 0) | (s.underline ? 4 : 0)
+        | (s.inverse ? 8 : 0) | (s.strikethrough ? 16 : 0));
+    if (level <= 0) return l;                 // monochrome: colours never reach the wire
+    if (s.fg.has_value() && s.fg->kind() != Color::Kind::Default)
+        l.fg = th.resolve(*s.fg).degrade(level);
+    if (s.bg.has_value()) {
+        if (s.bg->kind() != Color::Kind::Default)
+            l.bg = th.resolve(*s.bg).degrade(level);
+    } else if (theme::owns_canvas(th)) {
+        l.bg = th.background.degrade(level);
+    }
+    return l;
 }
 
 std::string StylePool::build_sgr(const Style& s) {

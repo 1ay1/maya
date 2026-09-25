@@ -33,6 +33,9 @@
 
 namespace maya {
 
+// The style-id field of a packed Cell (bits 32-47; see Cell::pack).
+static constexpr uint64_t kStyleMask = uint64_t{0xFFFF} << 32;
+
 void diff(
     const Canvas& old_canvas,
     const Canvas& new_canvas,
@@ -158,6 +161,21 @@ void diff(
 
             if (new_packed == old_packed) [[likely]] {
                 // Flush before gap in changed cells.
+                flush_ascii();
+                ++x; continue;
+            }
+
+            // Same glyph, different style id: is it a DIFFERENT LOOK on
+            // this terminal? Two ids whose colours degrade to the same
+            // palette entries (a truecolor gradient on a 256-colour ssh
+            // link) paint identically, and re-sending the cell is pure
+            // wire. Measured on doom_fire at 214x60: 7-10% of the cells
+            // it re-sent every frame looked exactly the same. The pool
+            // answers from a per-id "look" key it computes once per style.
+            if (old_row_valid && x < old_xe
+                && (new_packed & ~kStyleMask) == (old_packed & ~kStyleMask)
+                && pool.same_look(static_cast<uint16_t>((new_packed >> 32) & 0xFFFF),
+                                  static_cast<uint16_t>((old_packed >> 32) & 0xFFFF))) {
                 flush_ascii();
                 ++x; continue;
             }

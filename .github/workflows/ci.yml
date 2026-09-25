@@ -108,6 +108,63 @@ jobs:
         # tests (incl. the markdown watchdogs) still run.
         run: ctest --test-dir build --output-on-failure --timeout 120 -LE perf
 
+  # maya on jaal: the runtime maya is moving to. Build the adapter target and
+  # every jaal example on each OS (Windows included: jaal has a Windows
+  # reactor, and the host must compile against it), then drive the programs
+  # in a real pty on the POSIX legs: draw, react, animate, resize, no idle
+  # spin, quit cleanly, every navigation key drawn. These are the checks that
+  # caught the bugs this migration found.
+  jaal:
+    name: maya on jaal (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-clang19
+            os: ubuntu-latest
+          - name: macos
+            os: macos-14
+          - name: windows-msvc
+            os: windows-2025
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - name: Install toolchain (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
+          chmod +x /tmp/llvm.sh
+          sudo /tmp/llvm.sh 19
+          sudo apt-get install -y libstdc++-14-dev ninja-build
+          pip3 install --break-system-packages pyte
+          echo "CC=clang-19"   >> "$GITHUB_ENV"
+          echo "CXX=clang++-19" >> "$GITHUB_ENV"
+      - name: Install toolchain (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ninja && pip3 install --break-system-packages pyte
+      - name: Install Ninja (Windows)
+        if: runner.os == 'Windows'
+        uses: seanmiddleditch/gha-setup-ninja@v6
+      - name: Setup MSVC (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+      - name: Configure
+        run: >
+          cmake -B build-jaal -G Ninja -DCMAKE_BUILD_TYPE=Release
+          -DMAYA_WITH_JAAL=ON -DMAYA_BUILD_TESTS=OFF -DMAYA_BUILD_EXAMPLES=ON
+          -DMAYA_NATIVE_TUNING=OFF
+      - name: Build
+        run: cmake --build build-jaal -j
+      - name: Drive every jaal program in a real pty
+        if: runner.os != 'Windows'
+        run: |
+          sh tests/jaal_smoke_all.sh build-jaal
+          python3 tests/jaal_nav_frames_test.py build-jaal/maya_jaal_navcheck
+          python3 tests/jaal_smoke.py build-jaal/maya_jaal_doomfire2 --keys=12 --animates=1
+
   sanitizers:
     name: sanitizers (${{ matrix.san }})
     runs-on: ubuntu-latest

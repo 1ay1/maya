@@ -15,10 +15,13 @@
 //   Mouse wheel: vertical · Shift+wheel: horizontal
 //   q quit
 
+#include <maya/app.hpp>
 #include <maya/maya.hpp>
 #include <maya/widget/scrollbar.hpp>
 
 #include <string>
+#include <variant>
+#include <optional>
 
 using namespace maya;
 using namespace maya::dsl;
@@ -47,76 +50,101 @@ static std::vector<Element> build_grid(int rows, int cols) {
     return out;
 }
 
-int main() {
-    constexpr int kViewportW = 40;
-    constexpr int kViewportH = 10;
-    constexpr int kGridRows  = 40;
-    constexpr int kGridCols  = 20;
+constexpr int kViewportW = 40;
+constexpr int kViewportH = 10;
+constexpr int kGridRows  = 40;
+constexpr int kGridCols  = 20;
 
-    ScrollState state;
-    state.step_x = 4;   // horizontal feels nicer in larger steps
-    state.step_y = 1;
-
-    const auto grid = build_grid(kGridRows, kGridCols);
-
-    // Diagnostic line — shows the most recent mouse event so you can see
-    // exactly what your terminal sends. If you press Shift+wheel and the
-    // line says "shift=0", the terminal is stripping the modifier; use
-    // native trackpad horizontal pan, ←/→ arrows, or a terminal that
-    // forwards modifiers (Kitty, WezTerm, iTerm2, recent Konsole).
-    std::string mouse_dbg = "(no mouse event yet)";
-
-    run({.title = "scroll_2d"},
-        [&](const Event& ev) {
-            if (key(ev, 'q')) return false;
-            // Diagnostic — print what mouse events look like for your
-            // terminal. Scroll itself is auto-dispatched by the runtime.
-            if (auto* m = as_mouse(ev)) {
-                const char* btn = "?";
-                switch (m->button) {
-                    case MouseButton::Left:        btn = "Left"; break;
-                    case MouseButton::Right:       btn = "Right"; break;
-                    case MouseButton::Middle:      btn = "Middle"; break;
-                    case MouseButton::ScrollUp:    btn = "ScrollUp"; break;
-                    case MouseButton::ScrollDown:  btn = "ScrollDown"; break;
-                    case MouseButton::ScrollLeft:  btn = "ScrollLeft"; break;
-                    case MouseButton::ScrollRight: btn = "ScrollRight"; break;
-                    case MouseButton::None:        btn = "None"; break;
-                }
-                const char* kind = (m->kind == MouseEventKind::Press)   ? "Press"
-                                 : (m->kind == MouseEventKind::Release) ? "Release"
-                                 :                                        "Move";
-                const int mx = m->x.value - 1;
-                const int my = m->y.value - 1;
-                const bool over_hbar = state.h_bar_at(mx, my) != nullptr;
-                mouse_dbg = std::string{btn} + " " + kind +
-                    "  at (" + std::to_string(mx) + "," + std::to_string(my) + ")" +
-                    "  shift=" + std::to_string(int(m->mods.shift)) +
-                    " alt="   + std::to_string(int(m->mods.alt)) +
-                    " ctrl="  + std::to_string(int(m->mods.ctrl)) +
-                    (over_hbar ? "  [OVER H-BAR]" : "");
-            }
-            return true;
-        },
-        [&] {
-            const std::string status =
-                "x=" + std::to_string(state.x) + "/" + std::to_string(state.max_x) +
-                "  y=" + std::to_string(state.y) + "/" + std::to_string(state.max_y);
-
-            return v(
-                t<"2D scroll — both axes via the framework primitive"> | Bold | Fg<100, 180, 255>,
-                t<"Grid is 40 rows × ~140 cols; viewport is 40×10."> | Dim,
-                blank_,
-                h(
-                    v(grid) | scroll(state, kViewportW, kViewportH),
-                    scrollbar_y(state, kViewportH, ScrollbarStyle::block())
-                ),
-                scrollbar_x(state, kViewportW, ScrollbarStyle::block()),
-                blank_,
-                text(status) | Fg<255, 180, 100>,
-                text("last mouse: " + mouse_dbg) | Fg<150, 220, 150>,
-                t<"arrows · PgUp/PgDn · Home/End · wheel over h-bar pans horizontally · q quit"> | Dim
-            ) | pad<1> | border_<Round> | bcol<50, 55, 70>;
-        }
-    );
+ScrollState make_state() {
+    ScrollState s;
+    s.step_x = 4;   // horizontal feels nicer in larger steps
+    s.step_y = 1;
+    return s;
 }
+
+struct Model {
+    // mutable: the renderer writes the extents back after layout. The
+    // Screen hands it wheel and drag events; keys come through update().
+    mutable ScrollState state = make_state();
+    // The most recent mouse event, so you can see exactly what your
+    // terminal sends. If Shift+wheel says "shift=0", the terminal strips
+    // the modifier; use a trackpad pan, ←/→, or Kitty/WezTerm/iTerm2.
+    std::string mouse_dbg = "(no mouse event yet)";
+};
+
+struct Scroll { KeyEvent key; };
+struct Mouse  { MouseEvent ev; };
+struct Quit {};
+using Msg = std::variant<Scroll, Mouse, Quit>;
+
+struct Scroll2D {
+    using Model = ::Model;
+    using Msg   = ::Msg;
+    using Cmd   = jaal::Cmd<Msg>;
+    using Sub   = jaal::Sub<Msg, on_key, on_mouse>;
+
+    static Cmd update(Model& m, Scroll s) { (void)m.state.handle(s.key, kViewportH, kViewportW); return {}; }
+    static Cmd update(Model&, Quit)       { return Cmd::quit(0); }
+    static Cmd update(Model& m, Mouse e) {
+        const MouseEvent& me = e.ev;
+        const char* btn = "?";
+        switch (me.button) {
+            case MouseButton::Left:        btn = "Left"; break;
+            case MouseButton::Right:       btn = "Right"; break;
+            case MouseButton::Middle:      btn = "Middle"; break;
+            case MouseButton::ScrollUp:    btn = "ScrollUp"; break;
+            case MouseButton::ScrollDown:  btn = "ScrollDown"; break;
+            case MouseButton::ScrollLeft:  btn = "ScrollLeft"; break;
+            case MouseButton::ScrollRight: btn = "ScrollRight"; break;
+            case MouseButton::None:        btn = "None"; break;
+        }
+        const char* kind = me.kind == MouseEventKind::Press ? "Press"
+                         : me.kind == MouseEventKind::Release ? "Release" : "Move";
+        const int mx = me.x.value - 1, my = me.y.value - 1;
+        const bool over_hbar = m.state.h_bar_at(mx, my) != nullptr;
+        m.mouse_dbg = std::string{btn} + " " + kind +
+            "  at (" + std::to_string(mx) + "," + std::to_string(my) + ")" +
+            "  shift=" + std::to_string(int(me.mods.shift)) +
+            " alt="    + std::to_string(int(me.mods.alt)) +
+            " ctrl="   + std::to_string(int(me.mods.ctrl)) +
+            (over_hbar ? "  [OVER H-BAR]" : "");
+        return {};
+    }
+
+    static Element view(const Model& m) {
+        static const auto grid = build_grid(kGridRows, kGridCols);   // constant content
+        const std::string status =
+            "x=" + std::to_string(m.state.x) + "/" + std::to_string(m.state.max_x) +
+            "  y=" + std::to_string(m.state.y) + "/" + std::to_string(m.state.max_y);
+        return v(
+            t<"2D scroll — both axes via the framework primitive"> | Bold | Fg<100, 180, 255>,
+            t<"Grid is 40 rows × ~140 cols; viewport is 40×10."> | Dim,
+            blank_,
+            h(
+                v(grid) | scroll(m.state, kViewportW, kViewportH),
+                scrollbar_y(m.state, kViewportH, ScrollbarStyle::block())
+            ),
+            scrollbar_x(m.state, kViewportW, ScrollbarStyle::block()),
+            blank_,
+            text(status) | Fg<255, 180, 100>,
+            text("last mouse: " + m.mouse_dbg) | Fg<150, 220, 150>,
+            t<"arrows · j/k · PgUp/PgDn · Home/End · wheel over h-bar pans horizontally · q quit"> | Dim
+        ) | pad<1> | border_<Round> | bcol<50, 55, 70>;
+    }
+
+    static Sub subscribe(const Model&) {
+        return Sub::batch(
+            Sub::on(on_key{}, [](const KeyEvent& k) -> std::optional<Msg> {
+                if (key_is(k, 'q')) return Quit{};
+                if (key_is(k, 'j')) return Scroll{KeyEvent{.key = SpecialKey::Down}};
+                if (key_is(k, 'k')) return Scroll{KeyEvent{.key = SpecialKey::Up}};
+                return Scroll{k};
+            }),
+            Sub::on(on_mouse{}, [](const MouseEvent& e) -> std::optional<Msg> { return Mouse{e}; }));
+    }
+    static bool subs_key(const Model&) { return true; }
+};
+
+static_assert(Program<Scroll2D>);
+
+int main() { return run<Scroll2D>({.title = "scroll_2d", .mouse = true}); }

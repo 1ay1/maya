@@ -17,10 +17,13 @@
 //
 // Keys: ↑/↓ scroll · PgUp/PgDn page · Home/End jump · q quit.
 
+#include <maya/app.hpp>
 #include <maya/maya.hpp>
 
 #include <algorithm>
 #include <string>
+#include <variant>
+#include <optional>
 #include <vector>
 
 using namespace maya;
@@ -57,44 +60,72 @@ struct ScrollList {
     }
 };
 
-int main() {
+ScrollList make_list() {
     ScrollList list;
     list.viewport_h = 8;
-    for (int i = 1; i <= 200; ++i) {
+    for (int i = 1; i <= 200; ++i)
         list.items.push_back("row " + std::to_string(i) + " — slice-pattern rendering");
+    return list;
+}
+
+struct Model { ScrollList list = make_list(); };
+
+struct ScrollBy { int delta; };   // rows; kPage = one viewport
+struct Top {};
+struct Bottom {};
+struct Quit {};
+using Msg = std::variant<ScrollBy, Top, Bottom, Quit>;
+constexpr int kPage = 1 << 20;
+
+struct ScrollSlice {
+    using Model = ::Model;
+    using Msg   = ::Msg;
+    using Cmd   = jaal::Cmd<Msg>;
+    using Sub   = jaal::Sub<Msg, on_key, on_mouse>;
+
+    static Cmd update(Model& m, ScrollBy s) {
+        const int page = m.list.viewport_h;
+        m.list.scroll_by(s.delta == kPage ? page : s.delta == -kPage ? -page : s.delta);
+        return {};
+    }
+    static Cmd update(Model& m, Top)    { m.list.to_top(); return {}; }
+    static Cmd update(Model& m, Bottom) { m.list.to_bottom(); return {}; }
+    static Cmd update(Model&, Quit)     { return Cmd::quit(0); }
+
+    static Element view(const Model& m) {
+        const auto& list = m.list;
+        const int total = static_cast<int>(list.items.size());
+        const int shown_to = std::min(list.offset + list.viewport_h, total);
+        const std::string status = "rows " + std::to_string(list.offset + 1) + "–" +
+                                   std::to_string(shown_to) + " of " + std::to_string(total);
+        return v(
+            t<"Slice-based pattern — emit only the visible window"> | Bold | Fg<100, 180, 255>,
+            t<"Off-screen rows are never laid out or painted."> | Dim,
+            blank_,
+            list.build(),
+            blank_,
+            text(status) | Dim,
+            t<"↑/↓ j/k row · PgUp/PgDn page · Home/End · q quit"> | Dim
+        ) | pad<1> | border_<Round> | bcol<50, 55, 70>;
     }
 
-    run({.title = "scroll_slice"},
-        [&](const Event& ev) {
-            if (key(ev, 'q'))                  return false;
-            if (key(ev, SpecialKey::Up))       list.scroll_by(-1);
-            if (key(ev, SpecialKey::Down))     list.scroll_by(+1);
-            if (key(ev, SpecialKey::PageUp))   list.scroll_by(-list.viewport_h);
-            if (key(ev, SpecialKey::PageDown)) list.scroll_by(+list.viewport_h);
-            if (key(ev, SpecialKey::Home))     list.to_top();
-            if (key(ev, SpecialKey::End))      list.to_bottom();
-            if (auto* m = as_mouse(ev); m && m->kind == MouseEventKind::Press) {
-                if (m->button == MouseButton::ScrollUp)   list.scroll_by(-1);
-                if (m->button == MouseButton::ScrollDown) list.scroll_by(+1);
-            }
-            return true;
-        },
-        [&] {
-            const int total = static_cast<int>(list.items.size());
-            const int shown_to = std::min(list.offset + list.viewport_h, total);
-            const std::string status =
-                "rows " + std::to_string(list.offset + 1) + "–" +
-                std::to_string(shown_to) + " of " + std::to_string(total);
+    static Sub subscribe(const Model&) {
+        return Sub::batch(
+            keys<Sub>({
+                {'q', Quit{}}, {'k', ScrollBy{-1}}, {'j', ScrollBy{+1}}, {SpecialKey::Up, ScrollBy{-1}}, {SpecialKey::Down, ScrollBy{+1}},
+                {SpecialKey::PageUp, ScrollBy{-kPage}}, {SpecialKey::PageDown, ScrollBy{+kPage}},
+                {SpecialKey::Home, Top{}}, {SpecialKey::End, Bottom{}},
+            }),
+            Sub::on(on_mouse{}, [](const MouseEvent& e) -> std::optional<Msg> {
+                if (e.kind != MouseEventKind::Press) return std::nullopt;
+                if (e.button == MouseButton::ScrollUp)   return ScrollBy{-1};
+                if (e.button == MouseButton::ScrollDown) return ScrollBy{+1};
+                return std::nullopt;
+            }));
+    }
+    static bool subs_key(const Model&) { return true; }
+};
 
-            return v(
-                t<"Slice-based pattern — emit only the visible window"> | Bold | Fg<100, 180, 255>,
-                t<"Off-screen rows are never laid out or painted."> | Dim,
-                blank_,
-                list.build(),
-                blank_,
-                text(status) | Dim,
-                t<"↑/↓ row · PgUp/PgDn page · Home/End · q quit"> | Dim
-            ) | pad<1> | border_<Round> | bcol<50, 55, 70>;
-        }
-    );
-}
+static_assert(Program<ScrollSlice>);
+
+int main() { return run<ScrollSlice>({.title = "scroll_slice", .mouse = true}); }

@@ -19,11 +19,14 @@
 //         // emit any Element from these.
 //     }
 
+#include <maya/app.hpp>
 #include <maya/maya.hpp>
 #include <maya/widget/scrollbar.hpp>
 
 #include <array>
 #include <string>
+#include <variant>
+#include <optional>
 
 using namespace maya;
 using namespace maya::dsl;
@@ -50,72 +53,90 @@ static const std::array<Preset, 13> kPresets = {{
     // danger() and pixel() are also available — drop them in here.
 }};
 
-int main() {
-    // Small viewports so each tile stays compact.
-    constexpr int kTileH = 6;
-    constexpr int kTileW = 12;
+constexpr int kTileH = 6;   // small viewports so each tile stays compact
+constexpr int kTileW = 12;
 
-    ScrollState state;
-    // Prime the maxes so the tiles show meaningful thumb positions from
-    // the very first frame, before any real content is wired up. The
-    // writeback below will overwrite these with the actual content
-    // extents once the first paint completes.
-    state.max_x = 24;
-    state.max_y = 18;
-    state.step_x = 2;
-    state.step_y = 1;
-
-    // No manual state.handle(*ev) plumbing — the framework's auto-
-    // dispatch forwards every input to scroll states that were painted
-    // in the previous frame. Just quit on 'q' and the rest is wired.
-    run({.title = "scroll_styles"},
-        [&](const Event& ev) {
-            if (key(ev, 'q')) return false;
-            return true;
-        },
-        [&] {
-            // Each tile is a labeled card showing both axes' bars.
-            //   ┌─name──────────┐
-            //   │ │ │ │         │  <- vertical bar (kTileH rows tall)
-            //   │ ┃ │ │         │
-            //   │ ┃ │ │         │
-            //   │ │ │ │         │
-            //   │ │ │ │         │
-            //   │ │ │ │         │
-            //   │ ──━━━━──      │  <- horizontal bar (kTileW cols wide)
-            //   └───────────────┘
-            auto tile = [&](const Preset& p) {
-                return v(
-                    text(p.name) | Bold | Fg<140, 180, 255>,
-                    scrollbar_y(state, kTileH, p.style),
-                    scrollbar_x(state, kTileW, p.style)
-                ) | pad<0, 1> | border_<Single> | bcol<70, 75, 90>;
-            };
-
-            // Pack into rows of 4 tiles so the showcase fits in ~70 cols.
-            constexpr int kPerRow = 4;
-            std::vector<Element> rows;
-            for (std::size_t i = 0; i < kPresets.size(); i += kPerRow) {
-                std::vector<Element> row_cells;
-                for (std::size_t j = i; j < i + kPerRow && j < kPresets.size(); ++j) {
-                    row_cells.push_back(tile(kPresets[j]));
-                }
-                rows.push_back(h(std::move(row_cells)).build());
-            }
-
-            const std::string status =
-                "y=" + std::to_string(state.y) + "/" + std::to_string(state.max_y) +
-                "  x=" + std::to_string(state.x) + "/" + std::to_string(state.max_x);
-
-            return v(
-                t<"Scrollbar style showcase"> | Bold | Fg<100, 180, 255>,
-                t<"13 presets. All bars share one ScrollState."> | Dim,
-                blank_,
-                v(std::move(rows)),
-                blank_,
-                text(status) | Fg<255, 180, 100>,
-                t<"↑/↓/←/→ scroll · PgUp/PgDn · Home/End · q quit"> | Dim
-            ) | pad<1> | border_<Round> | bcol<50, 55, 70>;
-        }
-    );
+// Prime the maxes so the tiles show meaningful thumb positions from the
+// very first frame: nothing here is scrolled content, only bars.
+ScrollState make_state() {
+    ScrollState s;
+    s.max_x = 24;
+    s.max_y = 18;
+    s.step_x = 2;
+    s.step_y = 1;
+    return s;
 }
+
+struct Model { mutable ScrollState state = make_state(); };
+
+struct Scroll { KeyEvent key; };
+struct Quit {};
+using Msg = std::variant<Scroll, Quit>;
+
+struct ScrollStyles {
+    using Model = ::Model;
+    using Msg   = ::Msg;
+    using Cmd   = jaal::Cmd<Msg>;
+    using Sub   = jaal::Sub<Msg, on_key>;
+
+    static Cmd update(Model& m, Scroll s) { (void)m.state.handle(s.key, kTileH, kTileW); return {}; }
+    static Cmd update(Model&, Quit)       { return Cmd::quit(0); }
+
+    static Element view(const Model& m) {
+        // Each tile is a labeled card showing both axes' bars.
+        //   ┌─name──────────┐
+        //   │ │ │ │         │  <- vertical bar (kTileH rows tall)
+        //   │ ┃ │ │         │
+        //   │ ┃ │ │         │
+        //   │ │ │ │         │
+        //   │ │ │ │         │
+        //   │ │ │ │         │
+        //   │ ──━━━━──      │  <- horizontal bar (kTileW cols wide)
+        //   └───────────────┘
+        auto tile = [&m](const Preset& p) {
+            return v(
+                text(p.name) | Bold | Fg<140, 180, 255>,
+                scrollbar_y(m.state, kTileH, p.style),
+                scrollbar_x(m.state, kTileW, p.style)
+            ) | pad<0, 1> | border_<Single> | bcol<70, 75, 90>;
+        };
+
+        // Pack into rows of 4 tiles so the showcase fits in ~70 cols.
+        constexpr int kPerRow = 4;
+        std::vector<Element> rows;
+        for (std::size_t i = 0; i < kPresets.size(); i += kPerRow) {
+            std::vector<Element> row_cells;
+            for (std::size_t j = i; j < i + kPerRow && j < kPresets.size(); ++j)
+                row_cells.push_back(tile(kPresets[j]));
+            rows.push_back(h(std::move(row_cells)).build());
+        }
+
+        const std::string status =
+            "y=" + std::to_string(m.state.y) + "/" + std::to_string(m.state.max_y) +
+            "  x=" + std::to_string(m.state.x) + "/" + std::to_string(m.state.max_x);
+
+        return v(
+            t<"Scrollbar style showcase"> | Bold | Fg<100, 180, 255>,
+            t<"13 presets. All bars share one ScrollState."> | Dim,
+            blank_,
+            v(std::move(rows)),
+            blank_,
+            text(status) | Fg<255, 180, 100>,
+            t<"↑/↓/←/→ j/k scroll · PgUp/PgDn · Home/End · q quit"> | Dim
+        ) | pad<1> | border_<Round> | bcol<50, 55, 70>;
+    }
+
+    static Sub subscribe(const Model&) {
+        return Sub::on(on_key{}, [](const KeyEvent& k) -> std::optional<Msg> {
+            if (key_is(k, 'q')) return Quit{};
+            if (key_is(k, 'j')) return Scroll{KeyEvent{.key = SpecialKey::Down}};
+            if (key_is(k, 'k')) return Scroll{KeyEvent{.key = SpecialKey::Up}};
+            return Scroll{k};
+        });
+    }
+    static bool subs_key(const Model&) { return true; }
+};
+
+static_assert(Program<ScrollStyles>);
+
+int main() { return run<ScrollStyles>({.title = "scroll_styles", .mouse = true}); }

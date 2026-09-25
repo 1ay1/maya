@@ -146,10 +146,11 @@ struct ScrollState {
     ScrollRect              bar_v_bounds    = {};
     ScrollRect              viewport_bounds = {};
 
-    // -- Auto-dispatch. When true (default), the run() loops forward
-    //    every input event to this state's handle() automatically as
-    //    long as it was painted in the previous frame. Set false for
-    //    fine-grained routing in apps with multiple scroll regions. --
+    // -- Auto-dispatch. When true (default), the Screen forwards MOUSE
+    //    events (wheel, scrollbar drag) to this state if it was painted in
+    //    the previous frame: only the device knows where the bars are.
+    //    Keys are the program's: route them with handle(key) in update().
+    //    Set false for fine-grained routing with several scroll regions. --
     bool auto_dispatch = true;
 
     // -- Internal drag state — set on Press, cleared on Release. The

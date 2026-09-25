@@ -100,12 +100,11 @@ public:
         //  * inline mouse rows: the terminal reports screen rows, a program
         //    draws in frame rows. Translate, and drop clicks outside the
         //    frame (they're on the user's scrollback, not on us).
-        //  * scroll views painted last frame take the wheel/drag before the
-        //    program sees the event (ScrollState::auto_dispatch), which is
-        //    what makes a scrollbar work with no code in update().
-        //
-        // maya's callback loop did both; the jaal host did neither, so a
-        // scroll view in a jaal program ignored the wheel.
+        //  * scroll views painted last frame take the wheel and scrollbar
+        //    drags (ScrollState::auto_dispatch): only the device knows where
+        //    each bar was painted. KEYS are not forwarded: the program owns
+        //    them and routes a scroll key to its ScrollState in update(),
+        //    or an arrow key would move a view the program didn't ask to.
         std::vector<Event> out;
         out.reserve(evs->size());
         for (auto& ev : *evs) {
@@ -117,8 +116,9 @@ public:
                     me->y = Rows{fr};
                 }
             }
-            for (auto* s : detail::live_scroll_states())
-                if (s && s->auto_dispatch) (void)s->handle_event(ev);
+            if (std::holds_alternative<MouseEvent>(ev))
+                for (auto* s : detail::live_scroll_states())
+                    if (s && s->auto_dispatch) (void)s->handle_event(ev);
             out.push_back(std::move(ev));
         }
         return out;

@@ -13,16 +13,21 @@
 // millions of rows). Use the clip pattern — this file — for any other
 // content: heterogeneous, markdown, computed, dynamic.
 //
-// Keys: ↑/↓ row · PgUp/PgDn page · Home/End jump · q quit.
+// Keys: ↑/↓ j/k row · PgUp/PgDn page · Home/End jump · q quit.
 
+#include <maya/app.hpp>
 #include <maya/maya.hpp>
 #include <maya/widget/scrollbar.hpp>
 
 #include <array>
+#include <optional>
 #include <string>
+#include <variant>
 
 using namespace maya;
 using namespace maya::dsl;
+
+namespace {
 
 static constexpr std::array<const char*, 30> kLines = {
     "01  the quick brown fox jumps over the lazy dog",
@@ -57,45 +62,69 @@ static constexpr std::array<const char*, 30> kLines = {
     "30  ── end ──",
 };
 
-int main() {
-    constexpr int kViewportH = 8;
-    ScrollState state;
-
-    auto rows = []() {
-        std::vector<Element> out;
-        out.reserve(kLines.size());
-        for (std::size_t i = 0; i < kLines.size(); ++i) {
-            auto row = text(kLines[i]);
-            if (i % 2 == 0) row = row | Dim;
-            out.push_back(row);
-        }
-        return out;
-    };
-
-    run({.title = "scroll_clip"},
-        [&](const Event& ev) {
-            if (key(ev, 'q')) return false;
-            // Scroll handling is auto-dispatched by the runtime; the
-            // event_fn only deals with app-specific keys like 'q'.
-            return true;
-        },
-        [&] {
-            const std::string status =
-                "y=" + std::to_string(state.y) +
-                "/" + std::to_string(state.max_y);
-
-            return v(
-                t<"Scrollable viewport — framework primitive"> | Bold | Fg<100, 180, 255>,
-                t<"overflow:Hidden + scroll_y; renderer translates at paint time."> | Dim,
-                blank_,
-                h(
-                    v(rows()) | scroll(state, kViewportH) | grow_<1>,
-                    scrollbar_y(state, kViewportH)
-                ),
-                blank_,
-                text(status) | Fg<255, 180, 100>,
-                t<"↑/↓ row · PgUp/PgDn page · Home/End · q quit"> | Dim
-            ) | pad<1> | border_<Round> | bcol<50, 55, 70>;
-        }
-    );
+// The rows, built once: the content is constant, only the scroll moves.
+Element content() {
+    std::vector<Element> out;
+    out.reserve(kLines.size());
+    for (std::size_t i = 0; i < kLines.size(); ++i) {
+        auto row = text(kLines[i]);
+        if (i % 2 == 0) row = row | Dim;
+        out.push_back(row);
+    }
+    return v(std::move(out));
 }
+
+constexpr int kViewportH = 8;
+
+struct Model {
+    // mutable: the renderer writes max_y back into it after layout, which is
+    // how scroll() clamps with no code here. The wheel is dispatched to it
+    // by the Screen; keys come through update().
+    mutable ScrollState state;
+};
+
+struct Scroll { KeyEvent key; };
+struct Quit {};
+using Msg = std::variant<Scroll, Quit>;
+
+struct ScrollClip {
+    using Model = ::Model;
+    using Msg   = ::Msg;
+    using Cmd   = jaal::Cmd<Msg>;
+    using Sub   = jaal::Sub<Msg, on_key>;
+
+    static Cmd update(Model& m, Scroll s) { (void)m.state.handle(s.key, kViewportH); return {}; }
+    static Cmd update(Model&, Quit)       { return Cmd::quit(0); }
+
+    static Element view(const Model& m) {
+        const std::string status = "y=" + std::to_string(m.state.y) + "/" + std::to_string(m.state.max_y);
+        return v(
+            t<"Scrollable viewport — framework primitive"> | Bold | Fg<100, 180, 255>,
+            t<"overflow:Hidden + scroll_y; renderer translates at paint time."> | Dim,
+            blank_,
+            h(
+                content() | scroll(m.state, kViewportH) | grow_<1>,
+                scrollbar_y(m.state, kViewportH)
+            ),
+            blank_,
+            text(status) | Fg<255, 180, 100>,
+            t<"↑/↓ j/k row · PgUp/PgDn page · Home/End · q quit"> | Dim
+        ) | pad<1> | border_<Round> | bcol<50, 55, 70>;
+    }
+
+    static Sub subscribe(const Model&) {
+        return Sub::on(on_key{}, [](const KeyEvent& k) -> std::optional<Msg> {
+            if (key_is(k, 'q')) return Quit{};
+            if (key_is(k, 'j')) return Scroll{KeyEvent{.key = SpecialKey::Down}};
+            if (key_is(k, 'k')) return Scroll{KeyEvent{.key = SpecialKey::Up}};
+            return Scroll{k};
+        });
+    }
+    static bool subs_key(const Model&) { return true; }
+};
+
+static_assert(Program<ScrollClip>);
+
+}  // namespace
+
+int main() { return run<ScrollClip>({.title = "scroll_clip", .mouse = true}); }

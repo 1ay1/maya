@@ -589,10 +589,15 @@ public:
     // Flush parser timeout events (e.g., bare Escape after delay).
     auto flush_timeouts() -> std::vector<Event>;
 
-    // Render an element tree to the terminal.
-    // Fullscreen: uses RenderPipeline (clear → paint → diff/serialize).
-    // Inline: uses compose_inline_frame (row-diff, scrollback-preserving).
+    // Render an element tree to the terminal (src/app/render.cpp), then one
+    // of the two paths:
+    //   render_inline      compose_inline_frame: row-diff, scrollback-preserving
+    //   render_fullscreen  RenderPipeline: clear → paint → diff/serialize
     auto render(const Element& root) -> Status;
+private:
+    auto render_inline(const Element& root, int w) -> Status;
+    auto render_fullscreen(const Element& root, int w) -> Status;
+public:
 
     // True when this Runtime emits binary grid frames (RenderBackend::Grid)
     // instead of ANSI — a cooperating host is painting cells for us.

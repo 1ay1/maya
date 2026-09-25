@@ -19,6 +19,7 @@
 #include <maya/widget/divider.hpp>
 #include <maya/widget/input.hpp>
 #include <maya/widget/markdown.hpp>
+#include <maya/widget/search_result.hpp>
 #include <maya/widget/modal.hpp>
 #include <maya/widget/model_badge.hpp>
 #include <maya/widget/panel.hpp>
@@ -1303,3 +1304,26 @@ TEST_CASE("reasoning stream: live vs settled chrome, and no fold") {
     std::println("PASS");
 }
 
+
+TEST_CASE("search result outlives the widget that built it") {
+    // SearchResult::build() used to return an adapt() element capturing
+    // `this`. A transcript builds the widget as a local and keeps only the
+    // element, so layout read a destroyed widget: examples/chat crashed
+    // (SIGSEGV in build_at) once the Grep block scrolled into a frame. The
+    // element must carry its own copy. Under ASan this was
+    // stack-use-after-scope.
+    auto make = [] {
+        SearchResult r{SearchKind::Grep, "needle"};
+        r.set_status(SearchStatus::Done);
+        r.set_expanded(true);
+        r.add_group({"src/a/really/long/path/to/some/file.cpp", {{3, "needle = 1;"}}});
+        return r.build();                 // r is gone after this
+    };
+    std::vector<Element> kept;
+    for (int i = 0; i < 3; ++i) kept.push_back(make());
+    std::vector<std::string> scribble(64, std::string(512, 'z'));   // reuse freed memory
+    (void)scribble;
+    const std::string out = render_to_string(dsl::v(kept), 60);
+    CHECK(out.find("needle") != std::string::npos);
+    CHECK(out.find("file.cpp") != std::string::npos);
+}

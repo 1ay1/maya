@@ -78,9 +78,11 @@ public:
     [[nodiscard]] Element build() const {
         // Width-aware: long file paths truncate at the START (…/dir/file
         // keeps the FILENAME — the part you came for) instead of the
-        // NoWrap clip eating the tail. Captures `this`: the widget is
-        // long-lived host state that outlives the frame's tree.
-        return detail::adapt([this](int w) { return build_at(w); });
+        // NoWrap clip eating the tail. Captures a COPY: a SearchResult is
+        // a value, routinely built from a temporary and the element kept
+        // (a transcript's frozen rows). Capturing `this` read a destroyed
+        // widget at layout time — a SIGSEGV in examples/chat.
+        return detail::adapt([self = *this](int w) { return self.build_at(w); });
     }
 
 private:

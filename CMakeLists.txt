@@ -183,7 +183,14 @@ elseif(APPLE AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND MAYA_HEAVY_OPT)
 endif()
 
 set(MAYA_LIB_SOURCES
-    src/app/app.cpp
+    src/app/runtime_create.cpp
+    src/app/runtime_input.cpp
+    src/app/runtime_lifetime.cpp
+    src/app/render.cpp
+    src/app/render_inline.cpp
+    src/app/render_fullscreen.cpp
+    src/app/render_grid.cpp
+    src/app/host_effects.cpp
     src/app/events.cpp
     src/render/print.cpp
     src/element/builder.cpp

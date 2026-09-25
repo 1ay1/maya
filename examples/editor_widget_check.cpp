@@ -10,6 +10,7 @@
 
 #include <maya/maya.hpp>
 #include <maya/print.hpp>
+#include <maya/widget/search_result.hpp>
 
 #include <maya/widget/code_view.hpp>
 #include <maya/widget/editor_view.hpp>
@@ -118,6 +119,8 @@ static std::vector<std::pair<const char*, std::function<Element()>>> factories()
                               .overload(1,2).doc("d"); return s | width(40); }},
         {"CommandPalette", []{ CommandPalette p; p.query="fm"; p.command({SymKind::Function,"Format","Editor","F"})
                                .select(0); return p | width(48); }},
+        {"SearchResult", []{ SearchResult r{SearchKind::Grep, "x"}; r.set_expanded(true);
+                             r.add_group({"src/a.cpp", {{3, "x = 1;"}}}); return r.build() | width(48); }},
         {"SearchResults", []{ SearchResults s; s.file("a.cpp",1).match(4,"  ","x"," ").active(0); return s | width(48); }},
         {"ContextMenu", []{ ContextMenu m; m.item("Go","F12").separator().check("Wrap",true)
                             .submenu("More").active(0); return m | width(36); }},

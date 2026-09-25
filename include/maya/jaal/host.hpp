@@ -282,10 +282,44 @@ public:
         }
         if (r.token != kInput) return;
         if (r.hangup) { cx.stop(0); return; }     // the terminal went away
-        auto events = term_.read();
-        if (!events) { cx.stop(70); return; }
-        for (auto& ev : *events)
-            std::visit([&](auto& e) { cx.emit(event_type{std::move(e)}); }, ev);
+        // Leftovers from the last read first: a navigation key ended that
+        // batch early so its frame could be drawn (see below).
+        const bool resuming = !held_.empty();
+        std::vector<Event> events = std::exchange(held_, {});
+        if (auto fresh = term_.read(); !fresh) { cx.stop(70); return; }
+        else events.insert(events.end(), std::make_move_iterator(fresh->begin()),
+                           std::make_move_iterator(fresh->end()));
+        // A navigation key's frame is still owed (input is held): this read
+        // may be just the terminal's frame ack arriving. Queue what came in
+        // behind the held keys, and let present() resume them after the
+        // frame. Emitting here would fold the next key before its frame and
+        // skip a row (measured: rows 1, 3, 5, ... of a burst).
+        if (!events.empty() && resuming) { held_ = std::move(events); return; }
+        emit_until_navigation(cx, events);
+    }
+
+    // Emit events one at a time; stop after a NAVIGATION key (arrows,
+    // Home/End, PgUp/PgDn, Tab) and hold the rest for the next wakeup.
+    //
+    // A fast terminal delivers a whole key-repeat run in one read. Folding
+    // it all before drawing is right for typing (the end state is all anyone
+    // wants) and wrong for navigation: holding Down through a list, the rows
+    // in between were computed and never shown, so the cursor visibly
+    // jumped 2 -> 4 -> 6. The cursor IS the feedback for an arrow key, so
+    // each one is drawn. (maya's old loop did this too; it's the same rule.)
+    void emit_until_navigation(jaal::host_context<jaal_host>& cx, std::vector<Event>& events) {
+        // jaal folds an emitted event on the spot (route() runs update), so
+        // "emit, then draw" needs the loop to turn between two navigation
+        // keys: stop right after one and hold the rest.
+        for (std::size_t i = 0; i < events.size(); ++i) {
+            const bool nav = detail::is_navigation_key(events[i]);
+            std::visit([&](auto& e) { cx.emit(event_type{std::move(e)}); }, events[i]);
+            if (nav && i + 1 < events.size()) {
+                held_.assign(std::make_move_iterator(events.begin() + static_cast<std::ptrdiff_t>(i) + 1),
+                             std::make_move_iterator(events.end()));
+                return;
+            }
+        }
     }
 
     // SIGWINCH is the one signal the host owns.
@@ -306,20 +340,36 @@ public:
     // animation until a keypress).
     template <class K>
     void present(K& k) {
+        const bool drew = present_frame(k);
+        // A navigation key ended the last input batch so ITS frame could be
+        // drawn. Only once that frame has actually gone out (not held back
+        // by the ack window or a backed-up tty) does the batch resume, and
+        // then only up to the NEXT navigation key: emitting folds it at
+        // once, so the loop has to turn (and draw) before the one after.
+        // Resuming the whole rest here drew every other row of a burst.
+        if (drew && !held_.empty() && cx_) {
+            auto rest = std::exchange(held_, {});
+            emit_until_navigation(*cx_, rest);
+        }
+    }
+
+    // Draw a frame if the Screen can take one now. True if one went out.
+    template <class K>
+    bool present_frame(K& k) {
         // A frame is still going out: don't compose another on top of it.
         // (The Screen diffs against what it believes is on the terminal;
         // composing now would diff against bytes the tty hasn't taken yet.)
         // The output watch drains it, and the frame is owed afterwards.
         if (term_.pending_output()) {
             if (term_.flush()) watch_output(false);
-            else { watch_output(true); owed_ = true; return; }
+            else { watch_output(true); owed_ = true; return false; }
         }
         // The last frame hasn't reached the glass yet (no ack): hold this one.
         // The model keeps changing meanwhile; when the ack arrives (it comes
         // in as input, which wakes us) the frame drawn is the latest state,
         // so input never queues behind stale frames. On a local terminal the
         // ack is back before the next frame is due, and this never blocks.
-        if (!term_.ready()) { owed_ = true; return; }
+        if (!term_.ready()) { owed_ = true; return false; }
         owed_ = false;
 
         const bool force = std::exchange(dirty_, false) || frame_due();
@@ -344,6 +394,7 @@ public:
         // what throttled a 2.5 MB/s animation to 7 fps).
         if (term_.pending_output()) watch_output(true);
         schedule(f);
+        return !f.skipped;
     }
 
     // One deadline for the next frame: the EARLIER of a widget's animation
@@ -372,6 +423,7 @@ public:
     // deadline that has arrived, a frame held back by pending output that
     // has now drained, or a coalesced frame the Screen still owes.
     [[nodiscard]] bool owes_frame() const noexcept {
+        if (!held_.empty()) return true;            // held input resumes after a frame
         if (term_.pending_output()) return false;   // the output watch will wake us
         if (awaiting_ack()) return false;           // the ack (input) will wake us
         return dirty_ || owed_ || term_.backpressured() || frame_due();
@@ -382,6 +434,7 @@ public:
     // a frame is unacknowledged, until the ack (it arrives as input) or the
     // ack timeout, whichever is first.
     [[nodiscard]] std::optional<std::chrono::milliseconds> wait_hint() const noexcept {
+        if (!held_.empty()) return std::chrono::milliseconds(0);
         if (term_.pending_output()) return std::nullopt;
         if (awaiting_ack()) {
             const auto left = *term_.ready_deadline() - clock::now();
@@ -462,6 +515,7 @@ private:
     std::optional<jaal::platform::native_reactor::registration> output_reg_;   // only while output is pending
     static constexpr std::uint64_t                            kOutput = 2;
     bool                                                      dirty_ = true;
+    std::vector<Event>                                        held_;   // input after a navigation key, awaiting its frame
     bool                                                      owed_  = false;   // a frame held back by pending output
     bool                                                      last_warmup_ = false;
     std::optional<clock::time_point>                          next_frame_at_;

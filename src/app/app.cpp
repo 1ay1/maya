@@ -2608,7 +2608,9 @@ Status canvas_run_impl(
             } else {
                 back.mark_all_damaged();
             }
+            const auto t_paint0 = Clock::now();
             on_paint(back, W, H);
+            const auto t_paint1 = Clock::now();
 
             out.clear();
             out += tmux::sync_begin();
@@ -2624,6 +2626,27 @@ Status canvas_run_impl(
             }
             out += ansi::reset;
             out += tmux::sync_end();
+
+            // MAYA_FRAME_PROF for canvas animations, in the Program loop's
+            // format: "paint" is the app's own on_paint (its simulation and
+            // drawing), "rest" is maya's diff/serialize. Canvas examples had
+            // no per-frame numbers at all before this.
+            if (const char* prof = std::getenv("MAYA_FRAME_PROF"); prof && *prof) {
+                static FILE* const f = [&]() -> FILE* {
+                    return (prof[0] == '/' || prof[0] == '.') ? std::fopen(prof, "a") : nullptr;
+                }();
+                if (f) {
+                    const auto ms = [](auto a, auto b) {
+                        return std::chrono::duration<double, std::milli>(b - a).count();
+                    };
+                    const auto t_enc = Clock::now();
+                    std::fprintf(f, "maya-frame: rt=%.2f cf=0.00 total=%.2f nodes=0 rows=%d w=%d "
+                                    "bytes=%zu canvas ph[b=0.00 l=0.00 p=%.2f]\n",
+                                 ms(t_paint0, t_enc), ms(t_paint0, t_enc), H, W, out.size(),
+                                 ms(t_paint0, t_paint1));
+                    std::fflush(f);
+                }
+            }
 
             // Empty-frame threshold: the markers are env-dependent
             // (DCS-wrapped inside tmux, empty when tmux can't sync), so

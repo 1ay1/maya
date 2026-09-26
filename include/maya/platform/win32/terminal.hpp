@@ -47,6 +47,10 @@ class Win32Terminal {
     // path that makes agentty run under mintty exactly as it does under a
     // real console. Detected once in open(); gates raw-mode + codepage calls.
     bool   pipe_mode_ = false;
+    // Sticky: set when the pipe hands us a clean EOF. Kept because EOF on a
+    // pipe is permanent, and because read_raw() must report it the same way
+    // on every later call.
+    bool   pipe_eof_ = false;
     DWORD  orig_in_mode_  = 0;
     DWORD  orig_out_mode_ = 0;
     UINT   orig_out_cp_   = 0;
@@ -176,16 +180,32 @@ public:
         // byte stream mintty already delivers with a plain ReadFile. The
         // event source has confirmed readiness before we get here.
         if (pipe_mode_) {
+            // EOF is sticky: once the writer is gone it never comes back.
+            if (pipe_eof_)
+                return err<std::string>(Error::io("stdin pipe closed (EOF)"));
             char buf[256];
             DWORD n = 0;
             if (!::ReadFile(stdin_, buf, sizeof(buf), &n, nullptr)) {
                 const DWORD e = ::GetLastError();
                 if (e == ERROR_IO_PENDING || e == ERROR_NO_DATA)
                     return ok(std::string{});
-                // Pipe closed (terminal exit) -> EOF, surface as empty.
-                if (e == ERROR_BROKEN_PIPE || e == ERROR_HANDLE_EOF)
-                    return ok(std::string{});
+                // Pipe closed (terminal exit) -> real EOF. Reporting it as an
+                // empty string makes it indistinguishable from "no bytes yet",
+                // and device/input.cpp simply produces no events and reads
+                // again -- a busy spin with no way out. Report the end of
+                // input as an error so the caller can quit.
+                if (e == ERROR_BROKEN_PIPE || e == ERROR_HANDLE_EOF) {
+                    pipe_eof_ = true;
+                    return err<std::string>(Error::io("stdin pipe closed (EOF)"));
+                }
                 return err<std::string>(Error::io("ReadFile(pipe stdin) failed"));
+            }
+            // ReadFile SUCCEEDS with n == 0 at end of file on a pipe -- the
+            // case `type NUL | agentty.exe` hits, and the one that hung the
+            // msys2 CI smoke test until it was killed at the 2 minute mark.
+            if (n == 0) {
+                pipe_eof_ = true;
+                return err<std::string>(Error::io("stdin pipe closed (EOF)"));
             }
             return ok(std::string(buf, n));
         }

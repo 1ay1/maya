@@ -299,10 +299,12 @@ if(Python3_Interpreter_FOUND)
     add_custom_target(maya_unicode_regen
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_CURRENT_SOURCE_DIR}/scripts/gen_unicode_width.py
-        COMMAND ${CMAKE_COMMAND}
-            -E copy_if_different
-             ${CMAKE_CURRENT_SOURCE_DIR}/include/maya/text/unicode_width_table.hpp.tmp
-             ${CMAKE_CURRENT_SOURCE_DIR}/include/maya/text/unicode_width_table.hpp
+        # The script writes the header directly. It used to emit a .hpp.tmp
+        # that this target copied into place, but the script's own OUT path
+        # kept the .tmp suffix — so running the SCRIPT by hand (the documented
+        # way, per the header's own banner) wrote a scratch file and left the
+        # real header untouched. Regenerating appeared to be a no-op, which is
+        # part of why a wrong table survived so long. One writer, one path.
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
         # The generated header is checked into the source tree. Do not list it
         # as a BYPRODUCT: CMake's clean target deletes byproducts, which made a
@@ -772,6 +774,16 @@ set_tests_properties(
         add_test(NAME seam
                  COMMAND ${CMAKE_COMMAND} -E env sh ${PROJECT_SOURCE_DIR}/tests/seam.sh)
         set_tests_properties(seam PROPERTIES TIMEOUT 60)
+
+        # The generated width table still matches data/ + the generator.
+        # unicode_width_table.hpp is the kind of file review skims, so a bad
+        # entry can outlive releases (agentty#55: Korean measured 4 columns
+        # per syllable instead of 2). Regenerates into a temp dir and diffs;
+        # reads the tree, so it needs no build.
+        add_test(NAME unicode_table_fresh
+                 COMMAND ${CMAKE_COMMAND} -E env sh
+                         ${PROJECT_SOURCE_DIR}/tests/unicode_table_fresh.sh)
+        set_tests_properties(unicode_table_fresh PROPERTIES TIMEOUT 120)
 
         set(_maya_posix_tests test_inline_frame test_composer_caret_shrink
             test_tmux_capabilities test_fresh_oversized_scrollback)

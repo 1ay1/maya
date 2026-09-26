@@ -120,7 +120,13 @@ TEST_CASE("combining marks") {
     static_assert(W(0x036F) == 0);  // last Combining Diacritical Marks
     static_assert(W(0x20D7) == 0);  // combining right arrow above (\vec)
     static_assert(W(0x20D0) == 0);  // first Combining Marks for Symbols
-    static_assert(W(0x20FF) == 0);  // last of that block
+    // U+20F0 is the LAST ASSIGNED codepoint in that block; U+20F1..U+20FF
+    // are unassigned (glibc returns -1 for them). This used to assert
+    // W(0x20FF) == 0, which only held because the old hand-written list
+    // zeroed the whole block range including the holes. The generated
+    // table follows the actual category data, so an unassigned codepoint
+    // measures 1 like any other unknown.
+    static_assert(W(0x20F0) == 0);  // last ASSIGNED of that block
     static_assert(W(0x1DC0) == 0);  // Combining Diacritical Marks Supplement
     static_assert(W(0xFE20) == 0);  // Combining Half Marks
     static_assert(W(0x200B) == 0);  // zero-width space
@@ -191,11 +197,19 @@ TEST_CASE("no off by one") {
     // columns of their own -- this line used to assert 1, which measured an
     // IME-decomposed Korean syllable (U+1112 U+1161 U+11AB) as 4 columns
     // instead of 2. glibc wcwidth reports 0 for the whole range.
+    //
+    // These jamo are general category Lo, NOT Mn, so the generated table
+    // can't get them from the category alone -- gen_unicode_width.py adds
+    // the two Hangul_Syllable_Type V/T spans explicitly. That makes this
+    // the assertion most likely to break if someone regenerates the table
+    // without that step, which is exactly why it's spelled out here.
     static_assert(W(0x1160) == 0);  // first medial vowel
     static_assert(W(0x11A7) == 0);  // last medial vowel
     static_assert(W(0x11A8) == 0);  // first final consonant
     static_assert(W(0x11FF) == 0);  // last final consonant
     static_assert(W(0x1200) == 1);  // just after -- Ethiopic, narrow
+    static_assert(W(0xD7B0) == 0);  // Jamo Extended-B, medial
+    static_assert(W(0xD7FF) == 0);  // Jamo Extended-B, final
 
     // A decomposed syllable must measure exactly what the precomposed one
     // does, or Korean text drifts a cell per character.
@@ -214,6 +228,50 @@ TEST_CASE("no off by one") {
     static_assert(W(0x26A1) == 2);  // ⚡ — the one
     static_assert(W(0x26A2) == 1);  // just past ⚡ — narrow
 
+    std::println("PASS");
+}
+
+TEST_CASE("real text in scripts that use combining marks") {
+    std::println("--- test_combining_scripts ---");
+    using maya::unicode::str_width;
+    // agentty#55, and the class of bug behind it. is_zero_width() used to be
+    // a hand-written list of ranges covering Latin, Cyrillic, Hebrew and
+    // Arabic. Every script it forgot measured one column too wide per mark,
+    // so the text drifted right and overwrote whatever followed it.
+    //
+    // The table is generated from UnicodeData.txt's general categories now,
+    // so these assertions are about the PROPERTY (a mark adds no columns),
+    // not about a range someone remembered to add.
+
+    // KOREAN. An IME delivers the decomposed form, so the two spellings of
+    // the same word MUST measure the same. This is the reported bug: the
+    // decomposed form came out at 4 columns per syllable instead of 2.
+    static_assert(str_width("\uD55C\uAD6D") == 4);                       // 한국 precomposed
+    static_assert(str_width("\u1112\u1161\u11AB\u1100\u116E\u11A8") == 4); // 한국 decomposed
+    static_assert(str_width("\uD55C\uAD6D")
+                  == str_width("\u1112\u1161\u11AB\u1100\u116E\u11A8"));
+
+    // THAI. Vowels and tone marks stack above/below the consonant.
+    // สวัสดี is 6 codepoints, 2 of them marks -> 4 columns.
+    static_assert(str_width("\u0E2A\u0E27\u0E31\u0E2A\u0E14\u0E35") == 4);
+
+    // ARABIC. Harakat (fatha, sukun) are non-spacing.
+    static_assert(str_width("\u0645\u064E\u0631\u0652\u062D\u064E\u0628\u0627") == 5);
+
+    // HEBREW. Niqqud (qamats, shin dot, holam) are non-spacing.
+    static_assert(str_width("\u05E9\u05B8\u05C1\u05DC\u05D5\u05B9\u05DD") == 4);
+
+    // DEVANAGARI is the counter-case that keeps the rule honest: U+093F and
+    // U+0940 are Mc (SPACING marks) and DO take a column, unlike the Mn
+    // marks above. हिन्दी = 4 spacing glyphs + 1 virama(Mn, 0) -> 5.
+    // A fix that blanket-zeroed "anything that looks like a mark" would get
+    // this wrong in the other direction.
+    static_assert(str_width("\u0939\u093F\u0928\u094D\u0926\u0940") == 5);
+
+    // And the cases that must not regress.
+    static_assert(str_width("e\u0301") == 1);                  // e + acute
+    static_assert(str_width("\u3053\u3093\u306B\u3061\u306F") == 10); // こんにちは
+    static_assert(str_width("hello") == 5);
     std::println("PASS");
 }
 

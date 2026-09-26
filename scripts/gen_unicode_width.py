@@ -5,14 +5,18 @@ Generate maya/include/maya/text/unicode_width_table.hpp from pinned UCD data.
 Inputs (committed under maya/data/):
   - EastAsianWidth.txt   — official Unicode East_Asian_Width property
   - emoji-data.txt       — official Unicode Emoji properties
+  - UnicodeData.txt      — official Unicode general categories
 
 Output:
   - maya/include/maya/text/unicode_width_table.hpp
-        Two `constexpr std::array<WidthRange, N>` literals:
+        Three `constexpr std::array<WidthRange, N>` literals:
           kWideRanges                 — Wide + Fullwidth (always 2 cols)
           kEmojiPresentationRanges    — Emoji_Presentation (2 cols on
                                         modern terminals only — gated at
                                         runtime by mode 2027 / heuristic)
+          kZeroWidthRanges            — combining marks + format controls
+                                        (0 cols: they compose onto the
+                                        preceding base character)
         Ranges are sorted, non-overlapping, and coalesced (adjacent
         ranges merged) so the runtime binary search has the smallest
         possible N.
@@ -34,7 +38,10 @@ from typing import Callable, Iterable
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent  # repo / maya
 DATA = ROOT / "data"
-OUT  = ROOT / "include" / "maya" / "text" / "unicode_width_table.hpp.tmp"
+# The real header. This said ".hpp.tmp" for a while, which meant every run
+# quietly wrote a scratch file next to the header and left the committed one
+# untouched — the generator looked like it worked and changed nothing.
+OUT  = ROOT / "include" / "maya" / "text" / "unicode_width_table.hpp"
 
 # UCD line: "0023" or "1F300..1F5FF" then ';' then property then '#' comment
 LINE_RE = re.compile(r"^([0-9A-Fa-f]+)(?:\.\.([0-9A-Fa-f]+))?\s*;\s*(\w+)")
@@ -54,6 +61,34 @@ def parse_ucd(path: pathlib.Path, want: Callable[[str], bool]) -> Iterable[tuple
             last  = int(m.group(2), 16) if m.group(2) else first
             if want(m.group(3)):
                 yield (first, last)
+
+
+def parse_categories(path: pathlib.Path):
+    """Yield (codepoint, general_category) for every assigned code point.
+
+    UnicodeData.txt encodes large blocks as a `<…, First>` / `<…, Last>`
+    row pair sharing one category rather than listing each member. Those
+    have to be expanded or whole scripts go missing — and the ranges that
+    use this form include CJK and Hangul.
+    """
+    pending_first = None
+    with path.open(encoding="utf-8") as fh:
+        for raw in fh:
+            f = raw.rstrip("\n").split(";")
+            if len(f) < 3:
+                continue
+            cp, name, cat = int(f[0], 16), f[1], f[2]
+            if name.endswith(", First>"):
+                pending_first = (cp, cat)
+                continue
+            if name.endswith(", Last>"):
+                if pending_first is not None:
+                    first, fcat = pending_first
+                    for c in range(first, cp + 1):
+                        yield (c, fcat)
+                    pending_first = None
+                continue
+            yield (cp, cat)
 
 
 def coalesce(ranges: Iterable[tuple[int, int]]) -> list[tuple[int, int]]:
@@ -88,17 +123,65 @@ def header_meta(path: pathlib.Path) -> str:
 def main() -> int:
     eaw_path   = DATA / "EastAsianWidth.txt"
     emoji_path = DATA / "emoji-data.txt"
+    ud_path    = DATA / "UnicodeData.txt"
 
-    if not eaw_path.exists() or not emoji_path.exists():
+    if not eaw_path.exists() or not emoji_path.exists() or not ud_path.exists():
         sys.stderr.write(
-            f"missing UCD files in {DATA} — drop EastAsianWidth.txt and "
-            "emoji-data.txt from https://www.unicode.org/Public/<ver>/ucd/ "
-            "and re-run.\n"
+            f"missing UCD files in {DATA} — drop EastAsianWidth.txt, "
+            "emoji-data.txt and UnicodeData.txt from "
+            "https://www.unicode.org/Public/<ver>/ucd/ and re-run.\n"
         )
         return 1
 
     wide  = coalesce(parse_ucd(eaw_path,   lambda p: p in ("W", "F")))
     emoji = coalesce(parse_ucd(emoji_path, lambda p: p == "Emoji_Presentation"))
+
+    # Zero-width: everything that composes onto a preceding base character
+    # rather than occupying a cell of its own.
+    #
+    #   Mn  non-spacing mark   — accents, Arabic/Hebrew points, Indic
+    #                            matras, Hangul conjoining jamo
+    #   Me  enclosing mark     — combining circles/squares
+    #   Cf  format control     — ZWSP/ZWNJ/ZWJ, bidi controls, BOM
+    #
+    # This list used to be written by hand in unicode_width.hpp and covered
+    # only Latin, Cyrillic, Hebrew and Arabic. Everything it missed measured
+    # one column too wide per mark: Hangul conjoining jamo (agentty#55 — an
+    # IME-decomposed Korean syllable came out 4 columns instead of 2), and
+    # the same bug for Thai, Devanagari, Bengali, Tamil and the rest.
+    #
+    # Two deliberate exclusions, both of which a terminal DOES advance for:
+    #   * U+0000..U+001F, U+007F..U+009F — Cc controls. is_control() handles
+    #     them; they are not text and must never reach a width query.
+    #   * U+00AD SOFT HYPHEN — Cf, but every terminal prints it as a cell.
+    zero_cats = {"Mn", "Me", "Cf"}
+    zero_cps = {
+        cp for cp, cat in parse_categories(ud_path)
+        if cat in zero_cats and cp != 0x00AD and not (cp < 0x20 or 0x7F <= cp <= 0x9F)
+    }
+
+    # Hangul conjoining jamo are the one thing the general category can't
+    # tell us. They are Lo (a letter), not Mn — but a JUNGSEONG (vowel) and
+    # a JONGSEONG (final) compose ONTO the preceding CHOSEONG to form one
+    # syllable block, so they advance the cursor by nothing. That's
+    # Hangul_Syllable_Type V and T; UAX #11 and every terminal treat them as
+    # zero-width, and glibc's wcwidth returns 0 for the whole span. Only the
+    # leading CHOSEONG (U+1100..U+115F, EAW=W) takes the two columns.
+    #
+    # Without this, typing Korean through an IME — which delivers the
+    # decomposed form, e.g. 한 as U+1112 U+1161 U+11AB — measured one
+    # syllable as 4 columns instead of 2 (agentty#55).
+    zero_cps |= set(range(0x1160, 0x1200))    # Jamo    V + T
+    zero_cps |= set(range(0xD7B0, 0xD800))    # Jamo Ext-B (V + T)
+
+    # The Arabic number-sign family (U+0600..U+0605, U+06DD, U+070F, U+0890,
+    # U+0891, U+08E2) is Cf, but these PREFIX a following digit sequence and
+    # terminals advance a cell for them. glibc agrees. Excluding them keeps
+    # the common case right; they are not combining marks in any real sense.
+    zero_cps -= {0x0600, 0x0601, 0x0602, 0x0603, 0x0604, 0x0605,
+                 0x06DD, 0x070F, 0x0890, 0x0891, 0x08E2}
+
+    zero = coalesce((cp, cp) for cp in zero_cps)
 
     eaw_meta   = header_meta(eaw_path)
     emoji_meta = header_meta(emoji_path)
@@ -111,8 +194,9 @@ def main() -> int:
 // Source files (pinned under maya/data/):
 //   EastAsianWidth.txt — {eaw_meta}
 //   emoji-data.txt     — {emoji_meta}
+//   UnicodeData.txt    — general categories (Mn/Me/Cf → zero width)
 //
-// Two range tables, both sorted and coalesced for O(log n) binary search:
+// Three range tables, all sorted and coalesced for O(log n) binary search:
 //
 //   kWideRanges
 //     Codepoints with East_Asian_Width = Wide or Fullwidth. These are the
@@ -131,6 +215,15 @@ def main() -> int:
 //     Character) plus an env-var heuristic; see
 //     maya::ansi::env_supports_synchronized_output() and
 //     maya::Runtime::supports_grapheme_clusters() for the gate.
+//
+//   kZeroWidthRanges
+//     Codepoints with general category Mn (non-spacing mark), Me
+//     (enclosing mark) or Cf (format control). They compose onto the
+//     preceding base character and occupy no columns of their own:
+//     accents, Arabic/Hebrew points, Indic matras, Hangul conjoining
+//     jamo, ZWSP/ZWNJ/ZWJ, bidi controls. Excludes the Cc controls
+//     (is_control()'s job) and U+00AD SOFT HYPHEN, which terminals do
+//     advance for.
 
 #include <array>
 #include <cstdint>
@@ -146,6 +239,8 @@ struct WidthRange {{
 
 {emit('kEmojiPresentationRanges', emoji)}
 
+{emit('kZeroWidthRanges', zero)}
+
 }} // namespace maya::unicode::detail
 """
 
@@ -153,7 +248,8 @@ struct WidthRange {{
     OUT.write_text(body, encoding="utf-8", newline="\n")
 
     print(f"wrote {OUT.relative_to(ROOT.parent)}: "
-          f"{len(wide)} wide ranges, {len(emoji)} emoji-presentation ranges")
+          f"{len(wide)} wide ranges, {len(emoji)} emoji-presentation ranges, "
+          f"{len(zero)} zero-width ranges")
     return 0
 
 

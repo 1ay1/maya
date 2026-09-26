@@ -184,9 +184,23 @@ TEST_CASE("no off by one") {
     std::println("--- test_no_off_by_one ---");
     // Boundary checks on the most common wide ranges.
     static_assert(W(0x10FF) == 1);  // just before Hangul Jamo
-    static_assert(W(0x1100) == 2);  // first Hangul Jamo
-    static_assert(W(0x115F) == 2);  // last Hangul Jamo
-    static_assert(W(0x1160) == 1);  // just after — Hangul Jamo medial vowels (narrow)
+    static_assert(W(0x1100) == 2);  // first Hangul Jamo LEADING (wide)
+    static_assert(W(0x115F) == 2);  // last Hangul Jamo LEADING
+    // U+1160.. are the conjoining MEDIAL and FINAL jamo. They compose onto
+    // the leading consonant to make one syllable block, so they take no
+    // columns of their own -- this line used to assert 1, which measured an
+    // IME-decomposed Korean syllable (U+1112 U+1161 U+11AB) as 4 columns
+    // instead of 2. glibc wcwidth reports 0 for the whole range.
+    static_assert(W(0x1160) == 0);  // first medial vowel
+    static_assert(W(0x11A7) == 0);  // last medial vowel
+    static_assert(W(0x11A8) == 0);  // first final consonant
+    static_assert(W(0x11FF) == 0);  // last final consonant
+    static_assert(W(0x1200) == 1);  // just after -- Ethiopic, narrow
+
+    // A decomposed syllable must measure exactly what the precomposed one
+    // does, or Korean text drifts a cell per character.
+    static_assert(maya::unicode::str_width("\u1112\u1161\u11AB")
+                  == maya::unicode::str_width("\uD55C"));
 
     // Yijing Hexagrams (U+4DC0..4DFF) are EAW=W per Unicode 16.0.
     static_assert(W(0x4DBF) == 2);  // last CJK Ext A

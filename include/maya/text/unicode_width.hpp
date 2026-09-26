@@ -90,9 +90,22 @@ namespace detail {
            (cp >= 0x0610 && cp <= 0x061A) ||   // Arabic marks (subset)
            (cp >= 0x064B && cp <= 0x065F) ||   // Arabic diacritics
            cp == 0x0670                    ||   // Arabic superscript alef
+           // Hangul conjoining jamo: VOWEL (U+1160..U+11A7) and FINAL
+           // (U+11A8..U+11FF) compose ONTO the leading consonant to form one
+           // syllable block, so they add no columns of their own. Only the
+           // LEADING jamo (U+1100..U+115F) is wide, and it is in kWideRanges.
+           //
+           // This is how Korean actually arrives from an IME: typing 한 can
+           // deliver U+1112 U+1161 U+11AB rather than the precomposed U+D55C.
+           // Counting the trailing two as one column each measured a single
+           // syllable as 4 columns instead of 2, so every Korean character
+           // pushed the rest of the line further out of place. glibc wcwidth
+           // reports 0 for this range; we now agree.
+           (cp >= 0x1160 && cp <= 0x11FF) ||   // Hangul Jamo medial + final
            (cp >= 0x1AB0 && cp <= 0x1AFF) ||   // Combining Diacritical Ext.
            (cp >= 0x1DC0 && cp <= 0x1DFF) ||   // Combining Diacritical Supp.
            (cp >= 0x20D0 && cp <= 0x20FF) ||   // Combining Marks for Symbols
+           (cp >= 0xD7B0 && cp <= 0xD7FF) ||   // Hangul Jamo Extended-B
            (cp >= 0xFE20 && cp <= 0xFE2F) ||   // Combining Half Marks
            cp == 0x200B || cp == 0x200C ||     // ZWSP, ZWNJ
            cp == 0x200D || cp == 0xFEFF;       // ZWJ, ZWNBSP/BOM

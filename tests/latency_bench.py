@@ -9,12 +9,24 @@ For every binary given: time to first frame, keypress -> screen latency
 import argparse, fcntl, os, pty, resource, select, signal, statistics, struct, sys, termios, time
 
 def cpu_of(pid):
-    # ps gives cumulative cpu time "M:SS.ss"
+    # ps gives cumulative cpu time as "M:SS.ss" up to an hour, then
+    # "H:MM:SS" past that (some ps builds emit "H:MM:SS" from the start).
+    # Old code did a single split(":") and crashed the moment a process
+    # accumulated an hour of cpu time or the ps build differed. Parse any
+    # count of ":"-separated fields, seconds last.
     out = os.popen(f"ps -o time= -p {pid}").read().strip()
     if not out:
         return None
-    m, s = out.split(":")
-    return int(m) * 60 + float(s)
+    parts = out.split(":")
+    try:
+        total = float(parts[-1])
+        mult  = 60.0
+        for p in reversed(parts[:-1]):
+            total += int(p) * mult
+            mult  *= 60.0
+        return total
+    except (ValueError, IndexError):
+        return None
 
 def drain(fd, secs):
     """Read for up to secs; return (bytes, time of last byte)."""

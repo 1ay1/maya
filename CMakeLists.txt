@@ -785,6 +785,28 @@ set_tests_properties(
                          ${PROJECT_SOURCE_DIR}/tests/unicode_table_fresh.sh)
         set_tests_properties(unicode_table_fresh PROPERTIES TIMEOUT 120)
 
+        # End-to-end key-to-first-byte latency: PTY write -> device drain
+        # -> parse -> Sub::on_key -> Msg -> update -> view -> Element -> the
+        # renderer -> PTY back. The microbenches in bench/ hold each stage
+        # tight; this one catches a regression that only shows up when the
+        # whole pipeline runs together (a stray reconcile per key, a slow
+        # renderer walk, a Sub firing too eagerly).
+        #
+        # Baseline on a workstation: median ~0.2 ms, p95 ~0.4 ms. Thresholds
+        # carry a lot of headroom (3 / 5 ms) so a shared CI runner does not
+        # trip; if either breaches, something got dramatically slower.
+        # Needs a PTY, so POSIX only. maya_counter must be built.
+        if(TARGET maya_counter AND Python3_Interpreter_FOUND)
+            add_test(NAME input_latency_gate
+                     COMMAND ${Python3_EXECUTABLE}
+                             ${PROJECT_SOURCE_DIR}/tests/input_latency_gate.py
+                             $<TARGET_FILE:maya_counter>)
+            set_tests_properties(input_latency_gate PROPERTIES
+                TIMEOUT 60
+                LABELS "perf"
+                RUN_SERIAL TRUE)  # wall-clock probe, do not race other tests
+        endif()
+
         set(_maya_posix_tests test_inline_frame test_composer_caret_shrink
             test_tmux_capabilities test_fresh_oversized_scrollback)
         if(NOT APPLE)

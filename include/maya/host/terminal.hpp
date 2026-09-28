@@ -47,44 +47,6 @@
 
 namespace maya {
 
-// Optional hooks a program may define, detected here.
-namespace detail {
-// Optional Program::visual_hash detector. When a Program type defines
-// `static std::uint64_t visual_hash(const Model&)`, the host
-// hashes the model just before calling view() and skips the view()
-// + render() pair when the hash is unchanged since the last render.
-// Cuts the wasted work for Tick-driven wakeups whose deltas don't
-// affect anything visible (smoothing pacer drained 0 bytes, spinner
-// frame unchanged because the bucket didn't roll over, status
-// toast already cleared).
-template <typename P, typename = void>
-struct HasVisualHash : std::false_type {};
-template <typename P>
-struct HasVisualHash<P, std::void_t<decltype(
-    P::visual_hash(std::declval<const typename P::Model&>()))>>
-    : std::true_type {};
-
-// Optional Program::needs_warmup detector. When a Program type defines
-// `static bool needs_warmup(const Model&)` AND it returns true for the
-// current model, the host performs an off-wire warmup_render of
-// the same view BEFORE the user-visible render. The warmup populates
-// maya's hash-keyed component cache; the user-visible render then
-// takes the cell-blit fast path. Burns one extra render() worth of
-// CPU off-frame to convert a tens-to-hundreds-of-ms cold paint into a
-// sub-millisecond warm paint — the right trade after a model swap
-// that loads a large frozen scrollback (agentty thread resume).
-//
-// The Program is responsible for clearing the flag on the next reducer
-// step so warmup fires exactly once per swap; leaving it stuck on
-// would double every frame's render cost.
-template <typename P, typename = void>
-struct HasNeedsWarmup : std::false_type {};
-template <typename P>
-struct HasNeedsWarmup<P, std::void_t<decltype(
-    P::needs_warmup(std::declval<const typename P::Model&>()))>>
-    : std::true_type {};
-} // namespace detail
-
 // The terminal's event sources (on_key, on_resize, ...), its effects
 // (set_title, commit_scrollback, suspend, ...), the Program concept and
 // keys<Sub>() all come from the siblings included above. This file is the
@@ -306,7 +268,7 @@ public:
             } else {
                 f = term_.present([&] {
                     Element root = build();
-                    if constexpr (detail::HasNeedsWarmup<P>::value) warm(k, root);
+                    if constexpr (jaal::HasNeedsWarmup<P>) warm(k, root);
                     return root;
                 });
             }

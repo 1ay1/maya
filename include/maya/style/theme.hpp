@@ -797,7 +797,22 @@ inline constexpr std::string_view kTrueColorTerms[] = {
     if (self_identified) return ColorTier::TrueColor;
 
     if (contains(term, "256color")) return ColorTier::Ansi256;
-    if (term.empty())              return ColorTier::Mono;
+    if (term.empty()) {
+#if defined(_WIN32)
+        // A native Windows console (cmd.exe / PowerShell under conhost) leaves
+        // TERM unset, yet modern conhost — Win10 1607+, which maya's Win32
+        // backend already requires and switches into ENABLE_VIRTUAL_TERMINAL_
+        // PROCESSING — renders 24-bit colour. Reaching here means a real
+        // console: a redirect with no host marker already returned Mono at the
+        // handle-probe gate above, and every self-identifying host (WT_SESSION,
+        // ConEmu, TERM_PROGRAM) returned TrueColor earlier. So the correct
+        // answer is TrueColor, not the POSIX "empty TERM = not a terminal"
+        // Mono that left agentty monochrome in plain cmd/PowerShell.
+        return ColorTier::TrueColor;
+#else
+        return ColorTier::Mono;
+#endif
+    }
 
     // ── 6. The xterm/screen/tmux family ───────────────────────────────
     // Real xterm has done 256 colours for two decades, and screen and tmux

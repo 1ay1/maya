@@ -807,6 +807,63 @@ set_tests_properties(
                 RUN_SERIAL TRUE)  # wall-clock probe, do not race other tests
         endif()
 
+        # ── Concurrency banlist ────────────────────────────────────
+        # Raw threads / mutexes / atomics / thread_locals are allowed only
+        # in files a human signed off on in tests/lint/allowlist.txt.
+        #
+        # This is jaal's own check pointed at maya. jaal runs it over ITS
+        # tree and agentty over agentty's, which left maya — the layer in
+        # between, and the one with the most raw primitives by far — as the
+        # only unchecked tree in the chain. The render caches, the palette
+        # publish and the markdown async worker all live here, so that was
+        # the wrong place for the gap: seam.sh catches a `.detach()` and
+        # nothing caught anything else.
+        #
+        # Every primitive in the allowlist today was already deliberate and
+        # already correct. The point of the gate is that the NEXT one has to
+        # be argued for instead of merely compiling.
+        #
+        # Two roots because the allowlist keys on paths relative to the root
+        # it scans. ROOT must be absolute: it is a file(GLOB_RECURSE) prefix,
+        # so a relative path silently matches zero files.
+        set(_MAYA_BANLIST ${PROJECT_SOURCE_DIR}/third_party/jaal/tests/lint/banlist.cmake)
+        if(EXISTS ${_MAYA_BANLIST})
+            add_test(NAME concurrency_banlist_src
+                     COMMAND ${CMAKE_COMMAND}
+                             -DROOT=${PROJECT_SOURCE_DIR}/src
+                             -DALLOW=${PROJECT_SOURCE_DIR}/tests/lint/allowlist.txt
+                             -P ${_MAYA_BANLIST})
+            add_test(NAME concurrency_banlist_include
+                     COMMAND ${CMAKE_COMMAND}
+                             -DROOT=${PROJECT_SOURCE_DIR}/include/maya
+                             -DALLOW=${PROJECT_SOURCE_DIR}/tests/lint/allow_include.txt
+                             -P ${_MAYA_BANLIST})
+            set_tests_properties(concurrency_banlist_src concurrency_banlist_include
+                                 PROPERTIES TIMEOUT 120 LABELS "static")
+
+            # The banlist only ever LOOKS UP the allowlist, so a grant whose
+            # justification is gone is silently ignored rather than
+            # reported. That rots one way: the exemption outlives the code,
+            # and the next person to add a mutex to that file inherits a
+            # pass nobody granted them. This fails the build on a dead or
+            # stale entry, using the banlist's own matching rules.
+            set(_MAYA_PRUNE ${PROJECT_SOURCE_DIR}/third_party/jaal/tests/lint/prune_allowlist.cmake)
+            if(EXISTS ${_MAYA_PRUNE})
+                add_test(NAME allowlist_tight_src
+                         COMMAND ${CMAKE_COMMAND}
+                                 -DROOT=${PROJECT_SOURCE_DIR}/src
+                                 -DALLOW=${PROJECT_SOURCE_DIR}/tests/lint/allowlist.txt
+                                 -P ${_MAYA_PRUNE})
+                add_test(NAME allowlist_tight_include
+                         COMMAND ${CMAKE_COMMAND}
+                                 -DROOT=${PROJECT_SOURCE_DIR}/include/maya
+                                 -DALLOW=${PROJECT_SOURCE_DIR}/tests/lint/allow_include.txt
+                                 -P ${_MAYA_PRUNE})
+                set_tests_properties(allowlist_tight_src allowlist_tight_include
+                                     PROPERTIES TIMEOUT 120 LABELS "static")
+            endif()
+        endif()
+
         set(_maya_posix_tests test_inline_frame test_composer_caret_shrink
             test_tmux_capabilities test_fresh_oversized_scrollback)
         if(NOT APPLE)

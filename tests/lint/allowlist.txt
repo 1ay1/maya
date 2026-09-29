@@ -1,0 +1,88 @@
+# Files allowed to use raw concurrency primitives, and which ones.
+#
+# Everything else must go through jaal's safe types: a task or scope instead
+# of std::thread, guarded<T> instead of std::mutex, loop_bound<T> instead of
+# thread_local. See third_party/jaal/docs/concurrency.md §7, and jaal's
+# tests/lint/banlist.cmake for the check itself.
+#
+# WHY THIS FILE EXISTS. jaal runs that check over its OWN tree and agentty
+# runs it over agentty's, which left maya — the layer in between, and the
+# one with by far the most raw primitives — as the only unchecked tree in
+# the chain. maya is where the render caches, the palette publish and the
+# markdown async worker live, so "nobody is watching this layer" was the
+# wrong place for the gap. The primitives below were already deliberate and
+# already correct; this file is what makes them STAY that way, and makes a
+# NEW one an argument rather than an accident.
+#
+# Each entry names the primitives that file may use, so a file allowed
+# std::mutex still cannot sneak in a .detach(). Adding a line is a
+# deliberate act: it says someone checked by hand that the raw primitive IS
+# the implementation of a safe thing, not a shortcut around one.
+#
+# Paths are relative to the scanned root. This file covers src/; the
+# headers have their own list (allow_include.txt), because the banlist runs
+# once per root and keys entries on paths relative to it — a shared file
+# would make every src entry look dead to the include run, and vice versa.
+
+# ── P1. The UI thread owns the world ─────────────────────────────────────
+# maya's actual concurrency model: almost everything happens on the loop
+# thread. These thread_locals are per-thread CACHES and SCRATCH, never a
+# channel between threads — the component cache, layout scratch pools, the
+# scroll registry, hit regions, focus scope, reactive scopes. A second
+# thread touching one gets its own instance, which is the intent: the data
+# is derived, rebuilt on demand, and never shared.
+#
+# jaal's loop_bound<T> is the typed replacement and the right long-term
+# home, but it binds to a running kernel; several of these are read from
+# free functions with no kernel in scope (measurement, layout) and one is a
+# header-only widget. Porting them is a real refactor, not a rename.
+layout/yoga.cpp: thread_local
+render/paint_box.cpp: thread_local
+render/paint_component.cpp: thread_local
+render/scrollback_ledger.cpp: thread_local
+terminal/tmux.cpp: thread_local
+widget/markdown/parser/parser_inline.cpp: thread_local
+widget/markdown/streaming/markdown_memo.cpp: thread_local
+
+# ── P2. Immutable publish behind an atomic ───────────────────────────────
+# The markdown palette and the theme were 35+ plain mutable globals written
+# by the UI thread and read by the markdown render path — which includes the
+# streaming re-parse worker. That was a data race by construction, and
+# live-previewing a theme mid-response was the interaction that hit it.
+#
+# Now the value is IMMUTABLE and published by pointer swap: a reader takes
+# one acquire load and then reads a frozen object nobody will mutate. This
+# is jaal's Frozen/shared discipline, hand-written here because maya's
+# palette predates it and is read from free functions with no kernel. The
+# atomic IS the safe abstraction, not a shortcut past one.
+render/canvas.cpp: atomic
+terminal/input.cpp: atomic
+render/renderer.cpp: atomic thread_local
+render/render_internal.hpp: atomic thread_local
+widget/markdown/render/syntax_highlight.cpp: atomic thread_local
+
+# ── P3. The markdown async worker ────────────────────────────────────────
+# The one genuine background thread maya owns: a streaming re-parse that
+# would otherwise block the frame. It is NOT a jaal task because it is a
+# widget-internal detail with no Cmd to return it through — the widget is
+# constructed inside view(), which is pure and cannot launch effects.
+#
+# The safety property is that every worker is OWNED and JOINED: AsyncWorkers
+# holds them in a vector, join_all() drains it, and tests/seam.sh fails the
+# build if a `.detach()` ever appears in this tree. A detached worker here
+# would run on during static destruction with the palette dying under it.
+widget/markdown/streaming/async.cpp: const_cast mutex
+widget/markdown/streaming/commit.cpp: mutex
+
+# ── P4. const_cast: memoization behind a const accessor ──────────────────
+# The logical-const pattern — filling a cache slot inside a const getter,
+# where every cache hit returns what a miss would have built. Not a
+# concurrency primitive at all; the banlist flags it because const_cast can
+# also be used to break Frozen, which is a real hazard worth a human read.
+#
+# Each of these mutates a memo (link refs, reveal state, layout cache) under
+# the widget's own mutex or on the loop thread alone. Called out here so a
+# const_cast that DOES break a shared frozen value has to argue for itself.
+widget/markdown/streaming/build.cpp: const_cast
+widget/markdown/streaming/render_tail.cpp: const_cast
+widget/markdown/render/syntax_lang.cpp: const_cast thread_local

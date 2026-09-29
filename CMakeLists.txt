@@ -535,10 +535,27 @@ if(MAYA_BUILD_EXAMPLES AND MAYA_BUILD_APP)
         add_dependencies(maya_examples ${tgt})
         target_link_libraries(${tgt} PRIVATE maya_app)
         if(MAYA_FAST_EXAMPLES)
+            # -O1, no unrolling, and no LTO *for this example's own object*:
+            # the demo is not what anyone profiles, and skipping IPO here is
+            # most of the build-time saving.
+            #
+            # The -fno-lto goes on the COMPILE only. Putting it on the LINK
+            # too is what broke every example in a default Release build:
+            # maya itself is built with CMAKE_INTERPROCEDURAL_OPTIMIZATION ON
+            # (see the top of this file), so libmaya.a holds fat LTO objects,
+            # and -fno-lto at link tells the driver not to load the LTO
+            # plugin. ld then cannot read those members and reports the whole
+            # library as missing:
+            #
+            #     libmaya.a(create.cpp.o): plugin needed to handle lto object
+            #     undefined reference to `maya::detail::Device::read_events()'
+            #
+            # -- 77 undefined symbols for a library sitting right there on the
+            # link line, in the correct order. INTERPROCEDURAL_OPTIMIZATION
+            # OFF below already keeps the example's own object out of LTO;
+            # the link must stay plugin-capable to consume maya's.
             target_compile_options(${tgt} PRIVATE
                 $<$<CXX_COMPILER_ID:GNU,Clang>:-O1 -g0 -fno-lto>)
-            target_link_options(${tgt} PRIVATE
-                $<$<CXX_COMPILER_ID:GNU,Clang>:-fno-lto>)
             set_target_properties(${tgt} PROPERTIES INTERPROCEDURAL_OPTIMIZATION OFF)
         elseif(DEFINED MAYA_LINUX_CXX_FLAGS)
             target_compile_options(${tgt} PRIVATE ${MAYA_LINUX_CXX_FLAGS})

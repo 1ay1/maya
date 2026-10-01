@@ -203,6 +203,38 @@ struct IoVec {
 }
 
 // ============================================================================
+// io_poll_readable — non-blocking check for pending input
+// ============================================================================
+//
+// Returns true if `handle` has at least one byte ready right now.
+//
+// Used on shutdown to swallow terminal REPLIES still in flight. An inline
+// frame ends with a DSR (`CSI 5 n`) and the terminal answers `CSI 0 n`; if we
+// stop reading before that answer lands, the bytes are delivered to whatever
+// reads the tty next — the user's shell — and their prompt gets a literal
+// `^[[0n` in it. We asked the question, so we owe the answer a reader.
+
+[[nodiscard]] inline bool io_poll_readable(
+    [[maybe_unused]] NativeHandle h, [[maybe_unused]] int timeout_ms = 0) noexcept
+{
+#if MAYA_PLATFORM_POSIX || MAYA_PLATFORM_MACOS
+    struct pollfd pfd{};
+    pfd.fd = h;
+    pfd.events = POLLIN;
+    pfd.revents = 0;
+    const int r = ::poll(&pfd, 1, timeout_ms);
+    // On error, report NOT readable: a drain loop must terminate, and
+    // pretending there is data on a broken fd would spin it.
+    if (r <= 0) return false;
+    return (pfd.revents & POLLIN) != 0;
+#else
+    // Win32 console input is message-based; WaitForSingleObject on the input
+    // handle signals when records are queued.
+    return ::WaitForSingleObject(h, static_cast<DWORD>(timeout_ms)) == WAIT_OBJECT_0;
+#endif
+}
+
+// ============================================================================
 // Terminal size query
 // ============================================================================
 

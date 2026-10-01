@@ -1,5 +1,6 @@
 // src/device/lifetime.cpp — finalize, cleanup, destructor, moves.
 #include "internal.hpp"
+#include <chrono>
 
 namespace maya::detail {
 
@@ -29,6 +30,38 @@ void Device::finalize_inline_frame() noexcept {
         } else {
             (void)platform::io_write_all(output_handle_, buf);
         }
+    }
+}
+
+void Device::drain_pending_replies() noexcept {
+    if (input_handle_ == platform::invalid_handle) return;
+
+    // Two bounds, both necessary. The byte cap stops a terminal that is
+    // genuinely streaming (a paste in flight, a mouse drag) from holding up
+    // exit; the time cap stops us waiting on one that will never answer.
+    //
+    // 8ms is chosen to cover a local tty's round trip (microseconds) and a
+    // reasonable ssh hop, while staying far below the threshold where a human
+    // notices a command didn't exit instantly.
+    constexpr int   kBudgetMs  = 8;
+    constexpr std::size_t kMaxBytes = 4096;
+
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::milliseconds{kBudgetMs};
+    char sink[256];
+    std::size_t drained = 0;
+
+    while (drained < kMaxBytes) {
+        const auto now = std::chrono::steady_clock::now();
+        if (now >= deadline) break;
+        const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(
+                              deadline - now).count();
+        if (!platform::io_poll_readable(input_handle_, static_cast<int>(left))) break;
+
+        const auto r = platform::io_read(input_handle_, sink, sizeof sink);
+        if (!r) break;              // fd error: nothing more to drain
+        if (*r == 0) break;         // EOF or EAGAIN
+        drained += *r;
     }
 }
 
@@ -69,6 +102,20 @@ auto Device::cleanup() -> Status {
         (void)platform::io_write_all(output_handle_, ansi::kitty_keyboard_pop);
         kitty_kbd_enabled_ = false;
     }
+    // Swallow terminal REPLIES that are still in flight.
+    //
+    // Every inline frame ends with a DSR (`CSI 5 n`) for flow control, and the
+    // terminal answers `CSI 0 n`. On exit the last frame's reply is typically
+    // still travelling: we stop reading, the bytes arrive after the process is
+    // gone, and the SHELL reads them — so the user's next prompt has a literal
+    // `^[[0n` sitting in it. Same for a late Cursor-Position Report from the
+    // inline mouse anchor.
+    //
+    // The app asked the questions, so the app owes the answers a reader. This
+    // is bounded and best-effort: drain for a few milliseconds, discard
+    // everything, and never block — a terminal that says nothing is the common
+    // case and must cost nothing.
+    drain_pending_replies();
     // Both terminal states (Terminal<AltScreen>, Terminal<Inline>) reverse
     // their own opt-ins in their destructors, so the rest of cleanup is
     // structurally guaranteed by the type system — there is no path where
@@ -103,6 +150,9 @@ Device::~Device() {
         (void)platform::io_write_all(output_handle_, ansi::kitty_keyboard_pop);
         kitty_kbd_enabled_ = false;
     }
+    // Same reason as cleanup(): a reply we asked for must not land on the
+    // user's shell prompt. Idempotent — draining an empty fd is a no-op.
+    drain_pending_replies();
 }
 
 Device::Device(Device&& o) noexcept

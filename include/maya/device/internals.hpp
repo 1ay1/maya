@@ -681,6 +681,18 @@ public:
     // Final cleanup (show cursor, reset, newline).
     auto cleanup() -> Status;
 
+    /// Swallow terminal replies still in flight, so they don't land on the
+    /// shell's prompt after we exit.
+    ///
+    /// Every inline frame ends with a DSR (`CSI 5 n`); the terminal answers
+    /// `CSI 0 n`. If we stop reading before the answer arrives, the next
+    /// reader of the tty gets it — and the user sees a literal `^[[0n` in
+    /// their prompt. We asked, so we read.
+    ///
+    /// Bounded and best-effort: a few milliseconds, everything discarded,
+    /// never blocking. A terminal with nothing to say costs one poll().
+    void drain_pending_replies() noexcept;
+
     // Emit the inline frame's owed restore bytes (cursor back to the
     // resting row, ?25h / ?7h / DECSCUSR / OSC-112 as claimed) and seal
     // the coherence chain. Runs in cleanup() BEFORE the Terminal dtor's

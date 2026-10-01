@@ -720,13 +720,26 @@ static Element highlight_code_from(const std::string& code,
 // re-rendered tens or hundreds of times — once per inline frame — so a
 // content-keyed cache turns the recurring cost into a hash lookup.
 //
-// Cache is thread_local (renderer is single-threaded per app instance
-// in practice; this avoids contention if the host ever spawns a side
-// renderer). FIFO-evicts in halves when capacity is exceeded so we
-// never grow unbounded across long sessions. Keying combines a 64-bit
-// FNV-1a hash of `code` with a hash of `lang_tag`; the cached Element
-// is returned by copy, which for the typical TextElement case is a
-// string + runs vector — cheap relative to running the highlighter.
+// Cache is thread_local, and that is LOAD-BEARING rather than defensive.
+// This comment used to read "renderer is single-threaded per app instance in
+// practice; this avoids contention if the host ever spawns a side renderer",
+// which is wrong in a way worth spelling out: maya already renders on a
+// second thread, and has for as long as streaming markdown has existed.
+// StreamingMarkdown::spawn_async_worker_ (src/widget/markdown/streaming/
+// async.cpp) hands a full re-parse to the AsyncWorkers pool, and that worker
+// calls md_block_to_element on every block — which lands here.
+//
+// So this cache, the resume state below, and the layout/paint scratch pools
+// the block render touches are all genuinely per-thread: the loop thread and
+// the async worker each get their own, which is the CORRECT semantics and not
+// a contention hedge. In particular they must NOT become jaal's
+// loop_bound<T>: that would abort the worker on its first code fence.
+//
+// FIFO-evicts in halves when capacity is exceeded so we never grow unbounded
+// across long sessions. Keying combines a 64-bit FNV-1a hash of `code` with a
+// hash of `lang_tag`; the cached Element is returned by copy, which for the
+// typical TextElement case is a string + runs vector — cheap relative to
+// running the highlighter.
 namespace {
 // The host's on/off switch. Read on the render path, written from the UI
 // thread — same ownership model as the markdown palette.

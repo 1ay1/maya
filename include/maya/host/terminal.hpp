@@ -155,12 +155,12 @@ public:
     // each one is drawn. (maya's old loop did this too; it's the same rule.)
     // A partial sequence has waited out the escape timeout.
     [[nodiscard]] bool escape_due() const noexcept {
-        return escape_since_ && clock::now() - *escape_since_ >= Screen::kEscapeTimeout;
+        return escape_since_ && clock::now() - *escape_since_ >= Dev::kEscapeTimeout;
     }
     // How long until it will have.
     [[nodiscard]] std::optional<std::chrono::milliseconds> escape_wait() const noexcept {
         if (!escape_since_) return std::nullopt;
-        const auto left = *escape_since_ + Screen::kEscapeTimeout - clock::now();
+        const auto left = *escape_since_ + Dev::kEscapeTimeout - clock::now();
         return std::max(std::chrono::milliseconds(0), std::chrono::ceil<std::chrono::milliseconds>(left));
     }
     static std::optional<std::chrono::milliseconds> earliest(std::optional<std::chrono::milliseconds> a,

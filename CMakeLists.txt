@@ -786,7 +786,7 @@ set_tests_properties(
     #     toolchain doesn't expose cleanly from this TU, and the restore
     #     behaviour it guards is platform-identical.
     if(UNIX)
-        # The layering rule, as a test: nothing outside include/maya/jaal/ may
+        # The layering rule, as a test: nothing outside include/maya/host/ may
         # depend on jaal. Reads the tree, so it needs no build.
         add_test(NAME seam
                  COMMAND ${CMAKE_COMMAND} -E env sh ${PROJECT_SOURCE_DIR}/tests/seam.sh)

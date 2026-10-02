@@ -11,8 +11,8 @@
 // driving a real pty and squinting at bytes. With the host templated, a test
 // hands it a scripted device and asserts on the calls it makes.
 //
-// The concept is deliberately the WHOLE surface the host touches (25 calls,
-// checked below). If a host change needs a 26th, it gets added here and
+// The concept is deliberately the WHOLE surface the host touches (26 calls,
+// checked below). If a host change needs a 27th, it gets added here and
 // every fake stops compiling until it is implemented — which is the point:
 // the fake can't silently drift from the device it stands in for.
 
@@ -51,6 +51,11 @@ concept Device = requires(D d,
     { d.has_pending_input() }      -> std::same_as<bool>;
     { d.resolve_pending_input() }  -> std::same_as<std::vector<Event>>;
     { d.on_resize() };
+    // How long a lone ESC waits before it resolves to the Escape key. The
+    // host reads it off the DEVICE, not off Screen: a fake that stands in
+    // for a terminal sets its own, so escape-resolution is testable at a
+    // timeout a test can actually wait out.
+    { D::kEscapeTimeout } -> std::convertible_to<std::chrono::milliseconds>;
 
     // ── drawing: one frame, and what the scheduler must do next ───────────
     // present() takes a BUILDER, not a finished tree: widgets register their

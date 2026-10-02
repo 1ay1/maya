@@ -30,9 +30,11 @@
 #include <vector>
 
 // Standalone (no doctest): this TU links maya_app, and a tiny harness keeps
-// it independent of the consolidated runner.
-#define MAYA_CAT_(a, b) a##b
-#define MAYA_CAT(a, b) MAYA_CAT_(a, b)
+// it independent of the consolidated runner. Named HOST_CAT, not MAYA_CAT:
+// <maya/core/expected.hpp> already defines a MAYA_CAT_ and redefining it
+// here is a warning (and a landmine if the two ever differ).
+#define HOST_CAT_(a, b) a##b
+#define HOST_CAT(a, b) HOST_CAT_(a, b)
 
 struct Case { const char* name; void (*fn)(); };
 static std::vector<Case>& cases() { static std::vector<Case> v; return v; }
@@ -44,11 +46,11 @@ static int g_fails = 0;
     } while (0)
 
 #define TEST_CASE(nm)                                                          \
-    static void MAYA_CAT(tc_, __LINE__)();                                     \
-    static const struct MAYA_CAT(reg_, __LINE__) {                             \
-        MAYA_CAT(reg_, __LINE__)() { cases().push_back({nm, MAYA_CAT(tc_, __LINE__)}); } \
-    } MAYA_CAT(reg_inst_, __LINE__);                                           \
-    static void MAYA_CAT(tc_, __LINE__)()
+    static void HOST_CAT(tc_, __LINE__)();                                     \
+    static const struct HOST_CAT(reg_, __LINE__) {                             \
+        HOST_CAT(reg_, __LINE__)() { cases().push_back({nm, HOST_CAT(tc_, __LINE__)}); } \
+    } HOST_CAT(reg_inst_, __LINE__);                                           \
+    static void HOST_CAT(tc_, __LINE__)()
 
 using namespace maya;
 using namespace std::chrono_literals;
@@ -83,6 +85,11 @@ struct FakeDevice {
     [[nodiscard]] bool has_pending_input() const noexcept { return pending_input_v; }
     std::vector<Event> resolve_pending_input() { pending_input_v = false; return {}; }
     void on_resize() { log.push_back("on_resize"); }
+
+    // Deliberately NOT Screen's 50ms. The host reads the timeout off the
+    // device, so a test can assert on escape resolution without sleeping
+    // out a real terminal's wait.
+    static constexpr std::chrono::milliseconds kEscapeTimeout{10};
 
     // present() takes a BUILDER: widgets make their animation requests while
     // the tree is built, so the device must run build() itself.

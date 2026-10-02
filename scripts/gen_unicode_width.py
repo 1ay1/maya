@@ -245,7 +245,14 @@ struct WidthRange {{
 """
 
     OUT.parent.mkdir(parents=True, exist_ok=True)
-    OUT.write_text(body, encoding="utf-8", newline="\n")
+    # Path.open(newline="\n"), not Path.write_text(newline="\n"): the kwarg was
+    # only added to write_text in 3.10, and macOS still ships 3.9 as the
+    # system/Xcode python3 — which is what CMake's find_package(Python3)
+    # picks up when Homebrew's isn't first on PATH. Path.open has forwarded
+    # newline to io.open since 3.4, so this runs everywhere and still pins
+    # LF endings (the header is checked in; CRLF would churn the diff).
+    with OUT.open("w", encoding="utf-8", newline="\n") as fh:
+        fh.write(body)
 
     print(f"wrote {OUT.relative_to(ROOT.parent)}: "
           f"{len(wide)} wide ranges, {len(emoji)} emoji-presentation ranges, "

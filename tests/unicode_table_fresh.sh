@@ -37,7 +37,12 @@ cp data/EastAsianWidth.txt data/emoji-data.txt data/UnicodeData.txt \
 }
 
 if ! "$PY" "$tmp/scripts/gen_unicode_width.py" >/dev/null 2>"$tmp/err"; then
-    echo "  FAIL  the generator does not run:"
+    # Name the interpreter: ctest and an interactive shell often have
+    # different PATHs, so this test can fail under ctest and pass by hand
+    # purely because one found python3.9 and the other 3.13. Without the
+    # version printed here that looks like flakiness rather than a
+    # generator that isn't version-portable.
+    echo "  FAIL  the generator does not run under $PY ($("$PY" -V 2>&1)):"
     sed 's/^/          /' "$tmp/err"
     exit 1
 fi
@@ -49,6 +54,7 @@ if diff -u "$HEADER" "$tmp/$HEADER" > "$tmp/diff" 2>/dev/null; then
 fi
 
 echo "  FAIL  $HEADER is stale or hand-edited."
+echo "        Regenerated with $PY ($("$PY" -V 2>&1))."
 echo "        Regenerate with: python3 scripts/gen_unicode_width.py"
 echo "        First 40 lines of the difference:"
 head -40 "$tmp/diff" | sed 's/^/          /'

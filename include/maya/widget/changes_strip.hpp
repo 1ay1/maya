@@ -52,6 +52,11 @@ public:
         // spacer are essential; the key hints shed lowest-keep first
         // (review → reject → accept) when the strip is too narrow —
         // measured, so a relabeled hint re-decides by itself.
+        //
+        // The chords are Ctrl-held because accept/reject-all are bulk
+        // decisions over files already written to disk; the host binds the
+        // same ^A/^X inside its review pane, so the hint must not promise a
+        // bare letter that does nothing.
         std::vector<FitItem> header;
         header.push_back({h(
             text("Changes ", Style{}.with_fg(cfg_.border_color).with_bold()),
@@ -62,10 +67,10 @@ public:
             text("Ctrl+R", Style{}.with_fg(cfg_.text_color)),
             text(" review  ", Style{}.with_fg(muted))).build(), 1});
         header.push_back({h(
-            text("A", Style{}.with_fg(cfg_.accept_color)),
+            text("Ctrl+A", Style{}.with_fg(cfg_.accept_color)),
             text(" accept  ", Style{}.with_fg(muted))).build(), 3});
         header.push_back({h(
-            text("X", Style{}.with_fg(cfg_.reject_color)),
+            text("Ctrl+X", Style{}.with_fg(cfg_.reject_color)),
             text(" reject", Style{}.with_fg(muted))).build(), 2});
 
         FileChanges fc;

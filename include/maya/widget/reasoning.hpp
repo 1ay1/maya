@@ -141,6 +141,12 @@ public:
     /// Live = still receiving reasoning (animated header + reveal caret).
     /// Settled = done (full text stays; spinner → token estimate).
     void set_live(bool live) noexcept {
+        // Settling releases the ticker's reserved height: the settled body
+        // renders in full with no window, so a stale max would pad dead rows
+        // under it. Re-arming on a fresh live block starts the reservation
+        // from that block's own first frame rather than inheriting the
+        // previous turn's tallest moment.
+        if (live_ != live) *live_tail_rows_max_ = 0;
         live_ = live;
         md_->set_live(live);
     }
@@ -324,6 +330,19 @@ private:
     Config cfg_;
     std::shared_ptr<StreamingMarkdown> md_;
     bool live_ = true;
+    // Tallest row count the live tail window has occupied for THIS block.
+    // The window is node-based so its row height dips when a short paragraph
+    // becomes newest; padding up to this absorbs the dip so the block never
+    // shrinks mid-stream.
+    //
+    // A shared_ptr CELL, not a plain member: the render lambda must not
+    // capture `this` (a ReasoningStream is a value, routinely built from a
+    // temporary with the Element kept -- capturing the widget would read
+    // freed memory at layout time, the same hazard last_paint_width_cell_
+    // documents in markdown.hpp). The cell outlives the widget for as long
+    // as some Element still references it. Reset by set_live() on every
+    // live/settled transition.
+    std::shared_ptr<int> live_tail_rows_max_ = std::make_shared<int>(0);
     std::size_t char_hint_ = 0; // host-supplied reasoning length (0 = use md_)
     std::int64_t elapsed_ms_ = 0; // host-supplied reasoning duration (0 = hide)
 
@@ -454,7 +473,8 @@ private:
         const LitColor waypoint = th_.resolve(cfg_.waypoint_fg);
         ComponentElement comp;
         comp.render = [body = std::move(body), fg, bright, waypoint,
-                       grad, pulse, tail, structured]
+                       grad, pulse, tail, structured,
+                       rows_max = live_tail_rows_max_]
                       (int w, int h) -> Element {
             Element rendered = body; // copy the (cheap) wrapper node
             int total = materialize_and_count(rendered, w, h);
@@ -464,6 +484,46 @@ private:
                 int pidx = 0;
                 prune_to_tail(rendered, total - tail, pidx);
                 total = tail;
+            }
+            // ...then hold the HEIGHT steady.
+            //
+            // The window is `tail` line-NODES, but a node wraps to a
+            // variable number of ROWS, so the block's height tracks whatever
+            // three paragraphs happen to be newest. Measured at width 50 with
+            // tail=3: 8 -> 13 -> 12 -> 9 rows as paragraphs arrive. Every
+            // decrease is a height SHRINK mid-stream, which yanks the
+            // composer and the status bar up under the user's cursor -- the
+            // reported "the last paragraph makes the height short". A short
+            // final paragraph is the worst case and also the common one.
+            //
+            // So the ticker keeps a running MAX of the rows it has occupied
+            // while live and pads up to it. Growth is still immediate (the
+            // block rises as reasoning arrives); only the dips are absorbed.
+            // The pad is reset by set_live(true) at the start of a block, and
+            // irrelevant once settled because the settled body renders in
+            // full with no window at all.
+            //
+            // Padding rather than row-slicing the window: slicing would mean
+            // splitting a line-node, which loses the markdown structure and
+            // the reveal cursor's byte mapping. faded_tail() is the row-exact
+            // alternative for hosts that can give up markdown + typewriter;
+            // this path keeps both.
+            if (tail > 0) {
+                const int rows = measure_element(Element{rendered}, w).height.value;
+                if (rows > *rows_max) *rows_max = rows;
+                if (const int pad = *rows_max - rows; pad > 0) {
+                    BoxElement stack;
+                    stack.layout.direction = FlexDirection::Column;
+                    stack.children.push_back(Element{rendered});
+                    // Blank rows BELOW the newest line: the live edge stays
+                    // where the eye already is, and the reserved space sits
+                    // between it and the answer rather than shoving the whole
+                    // block down.
+                    for (int i = 0; i < pad; ++i)
+                        stack.children.push_back(Element{TextElement{}});
+                    rendered = Element{std::move(stack)};
+                    total = *rows_max;
+                }
             }
             // Gradient endpoint (breathing when pulsing); flat = fg→fg.
             LitColor to = fg;

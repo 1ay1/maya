@@ -14,6 +14,11 @@ std::atomic<std::uint64_t>& clipboard_rx_bytes() noexcept {
     return n;
 }
 
+std::atomic<std::uint64_t>& clipboard_read_refused() noexcept {
+    static std::atomic<std::uint64_t> n{0};
+    return n;
+}
+
 // ============================================================================
 // InputParser public methods
 // ============================================================================
@@ -1078,18 +1083,24 @@ void InputParser::parse_osc5522(std::string_view body,
         return;
     }
 
-    // ENOSYS / EPERM / EBUSY / anything unknown — abandon; the host already
-    // handles "terminal never replied", and this parser is deliberately
-    // dependency-free (no logger to reach).
+    // ENOSYS / EPERM / EBUSY / anything unknown — abandon the transfer, but
+    // RECORD it: a refusal and silence need different advice, and the user
+    // cannot tell them apart from the symptom (both end as "text pasted").
     //
-    // EPERM is worth naming because it is the COMMON one, not an edge case:
-    // kitty's `clipboard_control` defaults to write-only (`write-clipboard
-    // write-primary`), so a read request from a fresh install is refused even
-    // though kitty fully implements the protocol. The user sees an image
-    // paste silently become text. Hosts that care should detect kitty
-    // independently and say so — agentty does this in its ComposerPaste arm —
-    // rather than inferring "no OSC 5522 support" from the missing reply,
-    // which sends the user to fix the wrong thing.
+    // EPERM is the COMMON one, not an edge case: kitty's `clipboard_control`
+    // defaults to write-only (`write-clipboard write-primary`), so a read
+    // request from a fresh install is refused even though kitty fully
+    // implements the protocol. The user sees an image paste silently become
+    // text, because kitty still serves text/plain over OSC 52.
+    //
+    // The counter is how the host learns which message to show. This used to
+    // say "hosts that care should detect kitty independently" — they cannot:
+    // across ssh+tmux there is no env fingerprint for the OUTER terminal, so
+    // the only evidence that kitty is there AND refusing is this packet.
+    // Dropping it sent users to fix the wrong thing.
+    if (!status.empty() && status != "OK" && status != "DATA"
+        && status != "DONE")
+        clipboard_read_refused().fetch_add(1, std::memory_order_relaxed);
     abort_transfer();
 }
 

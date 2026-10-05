@@ -34,6 +34,22 @@ namespace maya {
 // moved, the terminal IS answering and the deadline should be extended.
 [[nodiscard]] std::atomic<std::uint64_t>& clipboard_rx_bytes() noexcept;
 
+// Bumped when the terminal REFUSED a clipboard read — an OSC 5522 reply whose
+// status is an error (EPERM/ENOSYS/EBUSY) rather than OK/DATA/DONE.
+//
+// Separate from silence, because the fix is different and the user cannot
+// guess which they hit. kitty's `clipboard_control` defaults to write-only,
+// so a fresh install ANSWERS a read request with EPERM: the protocol is
+// implemented, the permission is not granted. Dropping that on the floor
+// makes an image paste silently become text (kitty still serves text/plain
+// via OSC 52), and the host then tells the user their terminal lacks OSC
+// 5522 support — sending them to fix the wrong thing.
+//
+// Monotonic; only movement is meaningful. Sample before arming a read and
+// compare after: if it moved, say "your terminal refused the read" and name
+// the setting, not "your terminal never answered".
+[[nodiscard]] std::atomic<std::uint64_t>& clipboard_read_refused() noexcept;
+
 // ============================================================================
 // Key - all recognized key values
 // ============================================================================

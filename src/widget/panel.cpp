@@ -539,11 +539,17 @@ std::vector<Element> Panel::render_item(const Item& r, int index) const {
             .style   = Style{}.with_fg(th.help),
             .wrap    = TextWrap::TruncateEnd}});
 
+    // An error WRAPS. Every other prose line in this family truncates,
+    // because a cut hint still points the right way — but an error is the
+    // one string in a pane whose tail is the part you need: "connect
+    // failed: no route to 10.0.0.5:11434 (check the endpoint…)" truncated
+    // to the colon tells you something broke and nothing about what to do.
+    // Reported on #75 with a cut error and blank rows underneath it.
     if (!r.error.empty())
         out.push_back(Element{TextElement{
             .content = "      \xe2\x9a\xa0 " + r.error,
             .style   = Style{}.with_fg(th.error),
-            .wrap    = TextWrap::TruncateEnd}});
+            .wrap    = TextWrap::Wrap}});
 
     return out;
 }
@@ -738,8 +744,19 @@ int Panel::item_lines(const Item& r, int index, bool on_row) const {
     // else is one line, which is what every text kind is.
     int n = panel::control_rows(r.control, item_ctx(index));
     if (on_row && !r.help.empty()) ++n;
-    if (!r.error.empty())          ++n;
+    // The error wraps, so its height is whatever the width makes it — not
+    // the 1 this assumed. Measure it the way render_item will lay it out
+    // (same prefix, same body width), because a row measured at one height
+    // and painted at another is this family's scroll-accounting bug.
+    if (!r.error.empty()) n += error_lines(r.error);
     return n;
+}
+
+int Panel::error_lines(const std::string& err) const {
+    const int w = Config::content_width(surface_cols());
+    if (w <= 0) return 1;
+    const auto lines = word_wrap("      \xe2\x9a\xa0 " + err, w);
+    return std::max<int>(1, static_cast<int>(lines.size()));
 }
 
 int Panel::menu_lines(const Menu& m) {
@@ -1146,6 +1163,15 @@ Element Panel::build() const {
             .content = "  " + cfg_.subtitle,
             .style   = Style{}.with_fg(cfg_.theme.label),
             .wrap    = TextWrap::TruncateEnd}});
+        stack.push_back(Element{TextElement{}});
+    }
+    // The pane's error, under the subtitle and WRAPPED — see Config::error
+    // for why this is not just another subtitle.
+    if (!cfg_.error.empty()) {
+        stack.push_back(Element{TextElement{
+            .content = "  \xe2\x9a\xa0 " + cfg_.error,
+            .style   = Style{}.with_fg(cfg_.theme.error),
+            .wrap    = TextWrap::Wrap}});
         stack.push_back(Element{TextElement{}});
     }
     // The tab strip sits between the subtitle and the header: the subtitle

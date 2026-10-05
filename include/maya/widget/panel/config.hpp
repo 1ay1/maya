@@ -30,6 +30,17 @@ struct Config {
     std::string title;        // centred on the top border
     std::string subtitle;     // status line above the body
 
+    // A failure the whole pane is in, shown under the subtitle.
+    //
+    // Separate from `subtitle` because the two have different contracts.
+    // A subtitle is a one-line situation report and TRUNCATES: cutting
+    // "connected \xc2\xb7 14 tools" loses nothing you needed. An error WRAPS,
+    // because its tail is the part that tells you what to do — "connect
+    // failed: no route to 10.0.0.5:11434 (check the endpoint)" cut at the
+    // colon says only that something broke. Hosts used to put errors in
+    // `subtitle` and inherit the truncation (#75).
+    std::string error;
+
     std::vector<Item> items;
     // Index into `items` (or `prebuilt`) of the cursor. <0 = no selection.
     int               selected = -1;

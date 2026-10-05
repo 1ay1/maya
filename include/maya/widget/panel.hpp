@@ -98,53 +98,63 @@ public:
     static constexpr const char* kEdgeBar = "\xe2\x96\x8e";
 
     // Columns an EDITED value may occupy before it scrolls horizontally under
-    // its caret. Derived from min_width — which the HOST already clamps to
-    // the terminal — never measured inside the flex layout (asking for the
-    // true width in there is what led to the reserve-constant bugs). The
-    // floor keeps narrow panels usable; the deduction leaves room for the
-    // marker lane, label and gaps. The layout still clips whatever exceeds
-    // it — the budget only decides WHERE the window sits, never how much
-    // space the cell gets.
+    // its caret.
+    //
+    // From the SURFACE, not from min_width. min_width is a FLOOR and the
+    // panel stretches past it to fill its container, so a budget derived
+    // from it answers the same number on a 60-column pane and a 200-column
+    // one: this used to pin the window at 34 columns however wide the
+    // terminal was, so a long URL arrived cut off with empty pane beside
+    // it (#75).
+    //
+    // surface_cols() and not the flex layout: a scroll viewport measures
+    // its children against an unbounded width, so a cell that asked the
+    // layout would get 2^24. The terminal width is known before layout, so
+    // it cannot join that loop.
+    //
+    // The deduction is the rest of the row — marker lane, label and gaps.
+    // The layout still clips whatever exceeds the cell; the budget only
+    // decides where the window sits inside it.
     [[nodiscard]] int edit_budget() const noexcept {
-        return std::max(34, cfg_.min_width - 26);
+        return std::max(34, surface_cols() - 26);
+    }
+
+    // The width this panel is being drawn at, for the budgets to divide up.
+    //
+    // ONE place answers it, because two budgets disagreeing about how wide
+    // the panel is would put a drawn control and an edited one on different
+    // ideas of the same row.
+    //
+    // The terminal and not available_width(): build() assembles the tree
+    // BEFORE the render pass publishes a context, so there is no slot to
+    // ask yet. min_width is the last resort for a panel measured with no
+    // terminal at all.
+    [[nodiscard]] int surface_cols() const noexcept {
+        const int term = panel::detail::terminal_cols();
+        return term > 0 ? term : cfg_.min_width;
     }
 
     // Columns a DRAWN control (a bar, a meter, a strip) may occupy.
     //
-    // Same derivation as edit_budget and for the same reason, which that
-    // comment states: never measured inside the flex layout, because a
-    // scroll viewport measures children against an unbounded width and a
-    // control that asked would answer 2^24, publish it as the panel's
-    // horizontal extent, and dirty the scroll state on every resize.
-    // min_width is a fact known before layout — and the HOST already clamps
-    // it to the terminal, so it tracks the real surface without being
-    // measured against it.
+    // Same derivation as edit_budget: surface_cols(). NOT min_width — that
+    // is a FLOOR and a panel stretches past it, so a budget derived from it
+    // answers the same number on a 60-column pane and a 200-column one,
+    // which is the frozen-picture bug this exists to fix.
+    //
+    // Still never measured inside the flex layout, which is the trap: a
+    // scroll viewport measures its children against an unbounded width, so
+    // a control that asked the LAYOUT would answer 2^24, publish that as
+    // the panel's horizontal extent, and dirty the scroll state on every
+    // resize. The terminal width is known before layout starts, so it
+    // cannot join that loop.
     //
     // The deduction is larger than edit_budget's because a drawn control
     // shares its line with a label AND a value, where an edited one has the
-    // rest of the row: label lane + both gaps + the value column. The floor
-    // keeps a narrow panel drawing SOMETHING rather than nothing — the
-    // per-kind clamp in ItemCtx::drawn_cells decides what that means for
-    // each picture.
-    // From the TERMINAL, not from min_width. That distinction cost a
-    // debugging round and is worth stating: min_width is a FLOOR, and a
-    // panel stretches past it to fill its container — so deriving a width
-    // budget from it yields the same number on a 60-column pane and a
-    // 200-column one, which is exactly the frozen-picture bug this exists
-    // to fix. edit_budget can use min_width because it only decides WHERE
-    // a scrolling window sits inside a cell, not how big the cell is.
-    //
-    // Still never measured inside the flex layout, which is the trap the
-    // sibling's comment names: a scroll viewport measures its children
-    // against an unbounded width, so a control that asked the LAYOUT would
-    // answer 2^24 and dirty the scroll state on every resize. The terminal
-    // width is known BEFORE layout, so it cannot join that loop.
-    //
-    // The deduction is the row's other columns: chrome, the label lane,
-    // both gaps and the value cell.
+    // rest of the row. The floor keeps a narrow panel drawing SOMETHING
+    // rather than nothing — the per-kind clamp in ItemCtx::drawn_cells
+    // decides what that means for each picture.
     [[nodiscard]] int draw_budget() const noexcept {
-        const int term = panel::detail::terminal_cols();
-        const int screen = term > 0 ? term : cfg_.min_width;
+        const int screen = surface_cols();
 
         // NOT flowing: the established answer, byte for byte. Every panel
         // that does not opt into column flow must be unaffected by it, and
@@ -292,6 +302,11 @@ private:
     // matrix of row shapes asserting render_item(r).size() == item_lines(r).
     [[nodiscard]] int item_lines(const Item& r, int index, bool on_row) const;
     [[nodiscard]] static int menu_lines(const Menu& m);
+
+    // Rows a wrapped row-error occupies at the current width. Its own
+    // helper because both the measure pass and the paint pass must get the
+    // same answer from the same place.
+    [[nodiscard]] int error_lines(const std::string& err) const;
 
     // A zero-child box that occupies `n` rows: the skipped rows' geometry
     // without their cost.

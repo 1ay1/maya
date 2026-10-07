@@ -125,6 +125,18 @@ public:
         //     may already have committed to the terminal's scrollback.
         //     Below the body it is always the newest row.
         bool  meter_below = false;
+        // Paint the meter row as a filled CHIP — a band behind the line —
+        // instead of bare text on the block's background. A fill reads as a
+        // LABEL for the thing beside it rather than another line of it,
+        // which is what this row is.
+        //
+        // The host supplies the finished Style because only it can pair ink
+        // with a band under the terminal's own palette: agentty's
+        // ui::chip_style tints an RGB theme and hands the question to the
+        // terminal with SGR 7 otherwise. A widget guessing at that is how
+        // you get normal foreground on a bright band.
+        bool  meter_chip = false;
+        Style meter_chip_style{};
         // Wrap the block in a bordered box (the left ┃ rail). A bordered box
         // is an ATOMIC layout unit — maya can't scroll it off row-by-row, so a
         // reasoning taller than the viewport gets CLIPPED (rows vanish) once
@@ -320,9 +332,13 @@ private:
 
     [[nodiscard]] Element assemble(Element body) const {
         std::vector<Element> rows;
-        rows.reserve(2);
+        rows.reserve(3);
         if (cfg_.meter_below) {
             rows.push_back(std::move(body));
+            // One empty row between the reasoning and its meter, so the
+            // chip sits apart from the text instead of looking like the
+            // next line of it.
+            rows.push_back(Element{TextElement{}});
             rows.push_back(build_header());
         } else {
             rows.push_back(build_header());
@@ -405,11 +421,24 @@ private:
     [[nodiscard]] Element build_header() const {
         std::string content;
         std::vector<StyledRun> runs;
+        // On a chip every run shares the band's ink: a label is text on a
+        // tint, and ink that changes mid-chip is a second thing for the eye
+        // to resolve. Emphasis (bold/italic) still comes through.
+        const bool chip = cfg_.meter_chip;
         auto push = [&](std::string_view part, Style st) {
+            if (chip) {
+                Style s = cfg_.meter_chip_style;
+                if (st.bold)   s = s.with_bold();
+                if (st.italic) s = s.with_italic();
+                st = s;
+            }
             const std::size_t s = content.size();
             content.append(part);
             runs.push_back(StyledRun{s, content.size() - s, st});
         };
+
+        // The chip's own padding, filled like the rest of the band.
+        if (chip) push(" ", Style{});
 
         // ✦ sigil in the accent hue.
         {
@@ -446,6 +475,8 @@ private:
             if (elapsed_ms_ > 0)
                 push("  \xc2\xb7  " + duration_label(), meta_style);            // · 3.2s
         }
+
+        if (chip) push(" ", Style{});
 
         return Element{TextElement{
             .content = std::move(content),

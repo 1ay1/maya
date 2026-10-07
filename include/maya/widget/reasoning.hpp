@@ -17,6 +17,15 @@
 //   ┃ ✦ Reasoned · ~420 tokens           ← settled header (no spinner)
 //   ┃ …full reasoning stays here, never folds…
 //
+// With meter_below the same line moves under the body and reads as a footer,
+// flush with the body's first column. meter_sweep rides a highlight band
+// across it while live:
+//
+//   ┃ …so I can reuse the reveal machinery.
+//   ┃
+//   ┃ ✦ Thinking ⠋  ·  158 tok  ·  6.2s  ·  26 tok/s
+//       └──── a brighter band travels left→right across this row
+//
 // Design decisions (all deliberate, all UX):
 //   • A soft indigo LEFT RAIL (a real box border, not per-line prefixes) so
 //     the block reads as one distinct, quiet aside and the markdown body can
@@ -57,6 +66,7 @@
 #include "../style/style.hpp"
 #include "markdown.hpp"
 #include "spinner.hpp"
+#include "gradient.hpp"       // detail::lerp_color — theme-safe per-char blend
 
 namespace maya {
 
@@ -137,6 +147,21 @@ public:
         // you get normal foreground on a bright band.
         bool  meter_chip = false;
         Style meter_chip_style{};
+        // Ride a highlight band left→right across the meter row while live.
+        // The footer is the one row that says "still working", and motion
+        // says it without another word or glyph competing for the eye.
+        //
+        // Theme-safe by construction: each character blends from its own ink
+        // toward meter_sweep_fg through lerp_color, which SNAPS instead of
+        // projecting when either end has no channels. So an RGB theme gets a
+        // smooth crest and theme::native gets a hard-edged band in the user's
+        // own palette — never maya's guess at it. Off under reduce_motion.
+        bool  meter_sweep = false;
+        Color meter_sweep_fg = Color::slot(ThemeSlot::Text);
+        int   meter_sweep_ms = 2600;   // one pass, edge to edge
+        // Add throughput to the meter ("· 26 tok/s"). Needs elapsed_ms, and
+        // stays hidden until there is enough of a sample to be honest.
+        bool  meter_rate = false;
         // Wrap the block in a bordered box (the left ┃ rail). A bordered box
         // is an ATOMIC layout unit — maya can't scroll it off row-by-row, so a
         // reasoning taller than the viewport gets CLIPPED (rows vanish) once
@@ -400,6 +425,19 @@ private:
         return std::to_string((toks + 500) / 1000) + "k";
     }
 
+    // Reasoning throughput, "26 tok/s". Empty until the sample is long
+    // enough to mean something: at 200 ms a burst reads 400 tok/s and then
+    // halves twice while you watch it, which is noise wearing a number.
+    [[nodiscard]] std::string rate_label() const {
+        if (elapsed_ms_ < 1500) return {};
+        const double toks = static_cast<double>((reasoning_chars() + 3) / 4);
+        const double secs = static_cast<double>(elapsed_ms_) / 1000.0;
+        if (toks < 1.0 || secs <= 0.0) return {};
+        const long rate = static_cast<long>(toks / secs + 0.5);
+        if (rate <= 0) return {};
+        return std::to_string(rate) + " tok/s";
+    }
+
     // Humanized reasoning duration: "0.8s" → "3.2s" → "42s" → "1m03s".
     // Sub-10s keeps one decimal (a short think reads as "3.2s", not "3s");
     // ≥10s rounds to whole seconds; ≥60s switches to m s.
@@ -466,6 +504,9 @@ private:
                 push("  \xc2\xb7  " + token_estimate() + " tok", meta_style); // · N tok
             if (elapsed_ms_ > 0)
                 push("  \xc2\xb7  " + duration_label(), meta_style);          // · 3.2s
+            if (cfg_.meter_rate)
+                if (const std::string r = rate_label(); !r.empty())
+                    push("  \xc2\xb7  " + r, meta_style);                     // · 26 tok/s
         } else {
             push(cfg_.settled_word, word_style);
             // Suppress the token meta at ~0 so a stray empty block never
@@ -474,9 +515,14 @@ private:
                 push("  \xc2\xb7  " + token_estimate() + " tokens", meta_style); // · N tokens
             if (elapsed_ms_ > 0)
                 push("  \xc2\xb7  " + duration_label(), meta_style);            // · 3.2s
+            if (cfg_.meter_rate)
+                if (const std::string r = rate_label(); !r.empty())
+                    push("  \xc2\xb7  " + r, meta_style);                       // · 26 tok/s
         }
 
         if (chip) push(" ", Style{});
+
+        apply_sweep(content, runs);
 
         return Element{TextElement{
             .content = std::move(content),
@@ -484,6 +530,62 @@ private:
             .wrap    = TextWrap::TruncateEnd, // one row, never wraps
             .runs    = std::move(runs),
         }};
+    }
+
+    // Is the travelling band running this frame? Live only — a settled
+    // footer is a record, and a record that shimmers reads as still working.
+    [[nodiscard]] bool sweep_active() const noexcept {
+        return cfg_.meter_sweep && live_ && !maya::anim::reduce_motion();
+    }
+
+    // Recolor the finished meter into per-character runs, each blended from
+    // its own ink toward meter_sweep_fg by a gaussian crest that travels
+    // left→right. Runs with no fg (the plain spaces) are left alone, so the
+    // band brightens ink and never paints over an inherited default.
+    //
+    // The crest starts and ends OFF the row (-band → n+band) so each pass
+    // arrives and leaves instead of popping back to the first column.
+    void apply_sweep(const std::string& content,
+                     std::vector<StyledRun>& runs) const {
+        if (!sweep_active() || content.empty() || runs.empty()) return;
+
+        std::vector<std::pair<std::size_t, std::size_t>> cells;
+        for (std::size_t pos = 0; pos < content.size();) {
+            const std::size_t start = pos;
+            (void)decode_utf8(content, pos);
+            if (pos <= start) break;              // malformed: don't spin
+            cells.push_back({start, pos - start});
+        }
+        const int n = static_cast<int>(cells.size());
+        if (n < 2) return;
+
+        // Byte offset -> the style the run pass already decided for it.
+        auto style_at = [&runs](std::size_t off) {
+            for (const StyledRun& r : runs)
+                if (off >= r.byte_offset && off < r.byte_offset + r.byte_length)
+                    return r.style;
+            return Style{};
+        };
+
+        const double band = std::max(4.0, static_cast<double>(n) * 0.22);
+        const double head = maya::anim::loop_phase(
+            static_cast<double>(cfg_.meter_sweep_ms));
+        const double crest = -band + head * (static_cast<double>(n) + 2.0 * band);
+
+        std::vector<StyledRun> swept;
+        swept.reserve(cells.size());
+        for (int i = 0; i < n; ++i) {
+            Style st = style_at(cells[static_cast<std::size_t>(i)].first);
+            const double d = (static_cast<double>(i) - crest) / band;
+            const double w = std::exp(-d * d * 2.4);
+            if (w > 0.02 && st.fg)
+                st = st.with_fg(detail::lerp_color(*st.fg, cfg_.meter_sweep_fg,
+                                                   static_cast<float>(w)));
+            swept.push_back(StyledRun{cells[static_cast<std::size_t>(i)].first,
+                                      cells[static_cast<std::size_t>(i)].second,
+                                      st});
+        }
+        runs = std::move(swept);
     }
 
     [[nodiscard]] Element build_body() const {

@@ -488,10 +488,76 @@ private:
             int idx = 0;
             apply_gradient(rendered, fg, to, idx, total, w, h,
                            structured, waypoint);
+            // A provider's delta usually ends on a paragraph break, which
+            // leaves a trailing gap under the newest line. In a row window
+            // that gap costs budget -- the oldest row gets cropped to pay
+            // for a row with nothing in it -- and while the wire is quiet it
+            // is just dead space at the bottom of the block. Trim it: the
+            // last row is always the newest text, and the next delta brings
+            // its own spacing back.
+            drop_trailing_blanks(rendered, w, h);
             return cap > 0 ? window_to_rows(std::move(rendered), cap, w, h)
                            : rendered;
         };
         return Element{std::move(comp)};
+    }
+
+    // Does this subtree paint nothing but whitespace? A trailing gap node,
+    // not a row the reader needs.
+    static bool blank_subtree(const Element& e, int w, int h) {
+        bool blank = true;
+        std::visit([&](const auto& node) {
+            using T = std::decay_t<decltype(node)>;
+            if constexpr (std::is_same_v<T, TextElement>) {
+                blank = node.content.find_first_not_of(" \t\r\n") == std::string::npos;
+            } else if constexpr (std::is_same_v<T, BoxElement>) {
+                // Borders and padding paint, so such a box is not blank.
+                if (node.has_border() || node.layout.padding.vertical() > 0) {
+                    blank = false;
+                    return;
+                }
+                for (const auto& c : node.children)
+                    if (!blank_subtree(c, w, h)) { blank = false; return; }
+            } else if constexpr (std::is_same_v<T, ElementList>) {
+                for (const auto& c : node.items)
+                    if (!blank_subtree(c, w, h)) { blank = false; return; }
+            } else if constexpr (std::is_same_v<T, ComponentElement>) {
+                blank = node.render ? blank_subtree(node.render(w, h), w, h) : true;
+            } else {
+                blank = false;   // anything else paints something
+            }
+        }, e.inner);
+        return blank;
+    }
+
+    // Drop the trailing whitespace-only nodes of a vertical stack, and the
+    // gap rows they brought with them.
+    static void drop_trailing_blanks(Element& e, int w, int h) {
+        std::visit([&](auto& node) {
+            using T = std::decay_t<decltype(node)>;
+            if constexpr (std::is_same_v<T, BoxElement>) {
+                while (!node.children.empty()
+                       && blank_subtree(node.children.back(), w, h))
+                    node.children.pop_back();
+                if (!node.children.empty())
+                    drop_trailing_blanks(node.children.back(), w, h);
+            } else if constexpr (std::is_same_v<T, ElementList>) {
+                while (!node.items.empty()
+                       && blank_subtree(node.items.back(), w, h))
+                    node.items.pop_back();
+                if (!node.items.empty())
+                    drop_trailing_blanks(node.items.back(), w, h);
+            } else if constexpr (std::is_same_v<T, ComponentElement>) {
+                if (node.render) {
+                    Element inner = node.render(w, h);
+                    drop_trailing_blanks(inner, w, h);
+                    node.render = [inner = std::move(inner)](int, int) {
+                        return inner;
+                    };
+                }
+            }
+            // ElementListRef is borrowed, app-owned data — never mutated.
+        }, e.inner);
     }
 
     // Rows the (materialized) tree occupies at `w`, straight from the layout

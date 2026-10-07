@@ -51,6 +51,8 @@
 #include "../core/animation.hpp"   // anim::lerp(Color,Color,t)
 #include "../core/motion.hpp"      // anim::wave / anim::frame_index (self-pacing)
 #include "../element/box.hpp"
+#include "../layout/yoga.hpp"      // layout::compute — measure the tail window
+#include "../render/renderer.hpp"  // build_layout_tree
 #include "../style/border.hpp"
 #include "../style/style.hpp"
 #include "markdown.hpp"
@@ -84,11 +86,17 @@ public:
         // Breathe the newest lines + the rail with the animation clock while
         // live, so the block reads as actively thinking (needs gradient_body).
         bool  pulse = false;
-        // While live, show only the last N line-nodes of the reasoning (a
-        // scrolling "thought ticker") so a long chain-of-thought stays
-        // compact and doesn't shove the composer around. 0 = show everything.
-        // Settled always shows the full body.
-        int   live_tail_lines = 0;
+        // While live, show only the last N ROWS of the reasoning (a scrolling
+        // "thought ticker") so a long chain-of-thought stays compact and
+        // doesn't shove the composer around. 0 = show everything. Settled
+        // always shows the full body.
+        //
+        // ROWS, not line-nodes: the block's height is min(content, N), so it
+        // grows to the cap and then holds. A node window could not promise
+        // that — a node wraps to a variable number of rows, so the height
+        // dipped whenever a shorter paragraph became the newest node, and a
+        // mid-stream shrink yanks the host's composer up.
+        int   live_tail_rows = 0;
         // STRUCTURE the reasoning into beats: paragraph-leading decision
         // markers ("Let me…", "First", "Actually", "So," …) and markdown
         // emphasis/headers render as bright `waypoint_fg` waypoints while the
@@ -443,7 +451,7 @@ private:
         // gradient off, it's a flat muted recolor (a frozen, uniform aside).
         const bool grad = cfg_.gradient_body && live_;
         const bool pulse = cfg_.pulse && live_;
-        const int  tail  = live_ ? cfg_.live_tail_lines : 0;
+        const int  cap   = live_ ? cfg_.live_tail_rows : 0;
         const bool structured = cfg_.structured;
         // Resolved up front: everything below BLENDS these (lerp, darken), and
         // blending needs channels. cfg_ holds Color so a host may configure a
@@ -454,35 +462,20 @@ private:
         const LitColor waypoint = th_.resolve(cfg_.waypoint_fg);
         ComponentElement comp;
         comp.render = [body = std::move(body), fg, bright, waypoint,
-                       grad, pulse, tail, structured]
+                       grad, pulse, cap, structured]
                       (int w, int h) -> Element {
             Element rendered = body; // copy the (cheap) wrapper node
             int total = materialize_and_count(rendered, w, h);
-            // Tail window: keep only the last `tail` line-nodes (a scrolling
-            // thought ticker) so long reasoning stays compact while live.
-            if (tail > 0 && total > tail) {
+            // Coarse prune first: a visible row needs a node and every node
+            // is at least one row tall, so nodes older than the last `cap`
+            // can never land inside a cap-row window. Dropping them keeps
+            // the per-frame work bounded by the window, not by how long the
+            // model has been thinking.
+            if (cap > 0 && total > cap) {
                 int pidx = 0;
-                prune_to_tail(rendered, total - tail, pidx);
-                total = tail;
+                prune_to_tail(rendered, total - cap, pidx);
+                total = cap;
             }
-            // The window is `tail` line-NODES and a node wraps to a variable
-            // number of ROWS, so the block's height dips when a shorter
-            // paragraph becomes newest (measured at width 50, tail=3:
-            // 8 -> 13 -> 12 -> 9 rows). That shrink yanks the host's
-            // composer up mid-stream.
-            //
-            // It was briefly fixed by padding up to a running row max. That
-            // removed the shrink and replaced it with something worse to
-            // look at: permanent blank rows under the newest line for the
-            // rest of the block, which users read as the widget being
-            // broken. A dip is transient; dead space is not.
-            //
-            // So: no pad. A row-EXACT window is the real answer -- select
-            // the tail by rows rather than by nodes -- but that means
-            // splitting a line-node, which loses the markdown structure and
-            // the reveal cursor's byte mapping, so it is a bigger change
-            // than belongs in this guard. faded_tail() is the row-exact
-            // option today for hosts that can give up markdown + typewriter.
             // Gradient endpoint (breathing when pulsing); flat = fg→fg.
             LitColor to = fg;
             if (grad) {
@@ -495,9 +488,145 @@ private:
             int idx = 0;
             apply_gradient(rendered, fg, to, idx, total, w, h,
                            structured, waypoint);
-            return rendered;
+            return cap > 0 ? window_to_rows(std::move(rendered), cap, w, h)
+                           : rendered;
         };
         return Element{std::move(comp)};
+    }
+
+    // Rows the (materialized) tree occupies at `w`, straight from the layout
+    // engine — no second wrap implementation to drift from the painter.
+    static int measure_rows(const Element& e, int w) {
+        std::vector<layout::LayoutNode> nodes;
+        const std::size_t root = render_detail::build_layout_tree(e, nodes, Theme{});
+        layout::compute(nodes, root, w);
+        return nodes[root].computed.size.height.value;
+    }
+
+    // Keep the newest `cap` rows of the body, cut at ROW granularity.
+    //
+    // The cut splits a paragraph's wrapped lines instead of dropping the
+    // paragraph, so the window holds its height while markdown structure,
+    // styled runs and the reveal caret all survive — and the caret is at the
+    // bottom, which is the edge the window is anchored to.
+    static Element window_to_rows(Element body, int cap, int w, int h) {
+        if (w <= 0 || cap <= 0) return body;
+        flatten_components(body, w, h);
+        const int rows = measure_rows(body, w);
+        if (rows <= cap) return body;
+
+        const int want = rows - cap;
+        const int cut  = drop_top_rows(body, want, w);
+        if (cut <= want) return body;
+        // A container's gap row cannot outlive the child above it, so a cut
+        // that lands on one eats a row more than asked. Hand it back as a
+        // blank row at the TOP of the window — which is what that gap looked
+        // like anyway — so the height stays exactly `cap`.
+        BoxElement pad;
+        pad.layout.height = Dimension::fixed(cut - want);
+        BoxElement stack;
+        stack.layout.direction = FlexDirection::Column;
+        stack.children.push_back(Element{std::move(pad)});
+        stack.children.push_back(std::move(body));
+        return Element{std::move(stack)};
+    }
+
+    // Replace every (materialized) component with the subtree it renders, so
+    // the measure + crop below walk a plain Box/List/Text tree. Measuring a
+    // live ComponentElement would go through the renderer's pointer-keyed
+    // component cache, and these nodes are temporaries.
+    static void flatten_components(Element& e, int w, int h) {
+        if (auto* comp = std::get_if<ComponentElement>(&e.inner)) {
+            if (comp->render) {
+                Element inner = comp->render(w, h);
+                flatten_components(inner, w, h);
+                e = std::move(inner);
+                return;
+            }
+        }
+        std::visit([&](auto& node) {
+            using T = std::decay_t<decltype(node)>;
+            if constexpr (std::is_same_v<T, BoxElement>) {
+                for (auto& c : node.children) flatten_components(c, w, h);
+            } else if constexpr (std::is_same_v<T, ElementList>) {
+                for (auto& c : node.items) flatten_components(c, w, h);
+            }
+        }, e.inner);
+    }
+
+    // Drop the first `k` rows of a vertical block subtree, in place. Returns
+    // the rows actually dropped: `k`, or one container gap row more when the
+    // cut lands on a gap (window_to_rows pays that back).
+    static int drop_top_rows(Element& e, int k, int w) {
+        if (k <= 0) return 0;
+        int done = 0;
+        std::visit([&](auto& node) {
+            using T = std::decay_t<decltype(node)>;
+            if constexpr (std::is_same_v<T, TextElement>) {
+                done = crop_text_top(node, k, w);
+            } else if constexpr (std::is_same_v<T, BoxElement>) {
+                // The box's own top chrome goes first: the window cut it off.
+                if (node.has_border() && node.border.sides.top) {
+                    node.border.sides.top = false;
+                    ++done;
+                }
+                const int p = std::min(k - done, node.layout.padding.top);
+                if (p > 0) { node.layout.padding.top -= p; done += p; }
+                done += drop_leading(node.children, node.layout.gap,
+                                     k - done,
+                                     std::max(0, w - node.inner_horizontal()));
+            } else if constexpr (std::is_same_v<T, ElementList>) {
+                done = drop_leading(node.items, 0, k, w);
+            }
+            // ElementListRef is borrowed, app-owned data — never mutated.
+        }, e.inner);
+        return done;
+    }
+
+    template <class Vec>
+    static int drop_leading(Vec& kids, int gap, int k, int w) {
+        if (k <= 0) return 0;
+        int done = 0;
+        std::size_t drop = 0;
+        while (drop < kids.size() && done < k) {
+            const int r = measure_rows(kids[drop], w);
+            if (done + r <= k) {
+                // Whole child, and the gap row that followed it goes too.
+                done += r + (drop + 1 < kids.size() ? gap : 0);
+                ++drop;
+                continue;
+            }
+            done += drop_top_rows(kids[drop], k - done, w);
+            break;
+        }
+        kids.erase(kids.begin(), kids.begin() + static_cast<std::ptrdiff_t>(drop));
+        return done;
+    }
+
+    // Drop the first `k` wrapped rows of a text node (0 < k < its rows).
+    // The wrap cache keys on content.size(), so the shorter content
+    // invalidates it without a setter.
+    static int crop_text_top(TextElement& t, int k, int w) {
+        const auto& lines = t.format(w);
+        if (k <= 0 || static_cast<std::size_t>(k) >= lines.size()) return 0;
+        const std::size_t off = lines[static_cast<std::size_t>(k)].byte_offset;
+        if (off == 0 || off > t.content.size()) return 0;
+        t.content.erase(0, off);
+        std::vector<StyledRun> kept;
+        kept.reserve(t.runs.size());
+        for (auto r : t.runs) {
+            const std::size_t end = r.byte_offset + r.byte_length;
+            if (end <= off) continue;            // entirely above the cut
+            if (r.byte_offset < off) {           // straddles it
+                r.byte_length = end - off;
+                r.byte_offset = 0;
+            } else {
+                r.byte_offset -= off;
+            }
+            kept.push_back(r);
+        }
+        t.runs = std::move(kept);
+        return k;
     }
 
     // Pulse phase in [0,1] from the shared animation clock (~1.4 s period),

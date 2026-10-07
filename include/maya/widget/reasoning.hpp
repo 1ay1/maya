@@ -86,10 +86,16 @@ public:
         // Breathe the newest lines + the rail with the animation clock while
         // live, so the block reads as actively thinking (needs gradient_body).
         bool  pulse = false;
-        // While live, show only the last N ROWS of the reasoning (a scrolling
-        // "thought ticker") so a long chain-of-thought stays compact and
-        // doesn't shove the composer around. 0 = show everything. Settled
-        // always shows the full body.
+        // Show only the last N ROWS of the reasoning (a scrolling "thought
+        // ticker") so a long chain-of-thought stays compact and doesn't
+        // shove the composer around. 0 = show everything.
+        //
+        // The HOST decides when this applies, and it is deliberately not
+        // tied to set_live(): "is the model thinking right now" (the header)
+        // and "can more reasoning still arrive" (the window) are different
+        // questions, and a widget that answers them with one flag changes
+        // the block's shape every time the stream pauses or a tool runs.
+        // A host that wants the full body passes 0.
         //
         // ROWS, not line-nodes: the block's height is min(content, N), so it
         // grows to the cap and then holds. A node window could not promise
@@ -108,6 +114,17 @@ public:
         // its own per-row colors (the faded_tail), skip the chrome's flat
         // recolor so the fade survives.
         bool  body_prestyled = false;
+        // Put the "✦ Thinking · 158 tokens · 6.2s" line UNDER the body
+        // instead of over it. Two reasons, one of them structural:
+        //
+        //   • it reads as a footer for what you just watched, and while the
+        //     model is live the spinner then sits closest to the live edge;
+        //   • the meter MUTATES every frame (tokens, elapsed, spinner). At
+        //     the top of a growing block that row scrolls toward the
+        //     viewport edge while still changing, which is a row the host
+        //     may already have committed to the terminal's scrollback.
+        //     Below the body it is always the newest row.
+        bool  meter_below = false;
         // Wrap the block in a bordered box (the left ┃ rail). A bordered box
         // is an ATOMIC layout unit — maya can't scroll it off row-by-row, so a
         // reasoning taller than the viewport gets CLIPPED (rows vanish) once
@@ -304,8 +321,13 @@ private:
     [[nodiscard]] Element assemble(Element body) const {
         std::vector<Element> rows;
         rows.reserve(2);
-        rows.push_back(build_header());
-        rows.push_back(std::move(body));
+        if (cfg_.meter_below) {
+            rows.push_back(std::move(body));
+            rows.push_back(build_header());
+        } else {
+            rows.push_back(build_header());
+            rows.push_back(std::move(body));
+        }
 
         BoxElement box;
         box.layout.direction = FlexDirection::Column;
@@ -451,7 +473,7 @@ private:
         // gradient off, it's a flat muted recolor (a frozen, uniform aside).
         const bool grad = cfg_.gradient_body && live_;
         const bool pulse = cfg_.pulse && live_;
-        const int  cap   = live_ ? cfg_.live_tail_rows : 0;
+        const int  cap   = cfg_.live_tail_rows;   // host-decided, see Config
         const bool structured = cfg_.structured;
         // Resolved up front: everything below BLENDS these (lerp, darken), and
         // blending needs channels. cfg_ holds Color so a host may configure a

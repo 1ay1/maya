@@ -76,7 +76,7 @@ using ::jaal::guarded;          // a value only reachable under its lock
 using ::jaal::scope;            // structured helpers: all joined on return
 using ::jaal::nursery;
 using pool       = ::jaal::kernel::pool;        // owned worker threads
-using stop_group = ::jaal::kernel::stop_group;  // cancel + await foreign work
+using stop_group = ::jaal::kernel::stop_group;  // cancel or await work
 using ::jaal::kernel::delay_for;                // a sleep that wakes on stop
 using ::jaal::kernel::loop_bound;               // state only the loop touches
 using ::jaal::kernel::loop_identity;

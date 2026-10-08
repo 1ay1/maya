@@ -94,6 +94,17 @@ inline std::atomic<std::int64_t>& anim_clock_frozen_ms() noexcept {
          + detail::anim_clock_skew_ms().load(std::memory_order_relaxed) * 1000;
 }
 
+/// The animation clock as a steady_clock time_point, for a view that compares
+/// against steady_clock stamps in its model (a phase start, a toast expiry).
+/// Same clock as anim_now_us(), so a frozen or skewed test clock moves these
+/// too. In production it is steady_clock::now(). A view reads this, never
+/// steady_clock directly, so its time is the frame's time.
+[[nodiscard]] inline std::chrono::steady_clock::time_point anim_now() noexcept {
+    return std::chrono::steady_clock::time_point{
+        std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+            std::chrono::microseconds{anim_now_us()})};
+}
+
 namespace testing {
 
 /// Advance the animation clock by `ms` WITHOUT sleeping. Test-only:

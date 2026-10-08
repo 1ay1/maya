@@ -69,26 +69,15 @@ core/anim_clock.hpp: atomic
 terminal/terminal.hpp: atomic
 terminal/input.hpp: atomic
 
-# ── P3. The markdown async worker ────────────────────────────────────────
-# The one genuine background thread maya owns: a streaming re-parse that
-# would otherwise block the frame. It is NOT a jaal task because it is a
-# widget-internal detail with no Cmd to return it through — the widget is
-# constructed inside view(), which is pure and cannot launch effects.
-#
-# The safety property is that every worker is OWNED and JOINED: AsyncWorkers
-# holds them in a vector, join_all() drains it, and tests/seam.sh fails the
-# build if a `.detach()` ever appears in this tree. A detached worker here
-# would run on during static destruction with the palette dying under it.
-widget/markdown/streaming_internal.hpp: atomic mutex thread
+# ── The markdown async result slot ───────────────────────────────────────
+# The parse itself runs on maya::exec (jaal's pool); markdown.hpp keeps the
+# slot the job publishes into, behind a mutex and a ready flag.
 widget/markdown.hpp: atomic mutex
 
-# ── P4. Parallel pixel fill ──────────────────────────────────────────────
-# A fork-join over rows of an image, bounded by hardware_concurrency and
-# skipped entirely below 4096 pixels. jthreads join at scope exit, each
-# worker writes a disjoint row stride, and nothing escapes the call. This is
-# a parallel ALGORITHM, not shared state — the shape jaal's pool exists for,
-# but it runs inside a widget with no kernel in reach.
-element/pixels.hpp: thread thread_local
+# ── P4. Pixel style memo ─────────────────────────────────────────────────
+# The row fill runs on maya::exec (a jaal::scope under maya::run). What's
+# left is a per-thread colour→style memo, so concurrent rows never share it.
+element/pixels.hpp: thread_local
 
 # ── P5. const_cast: memoization behind a const accessor ──────────────────
 # The logical-const pattern — filling a cache slot inside a const getter,

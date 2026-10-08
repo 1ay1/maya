@@ -49,6 +49,7 @@
 
 #include <jaal/jaal.hpp>
 
+#include "executor.hpp"
 #include "../device/options.hpp"
 #include "../screen.hpp"
 #include "interop.hpp"
@@ -63,16 +64,23 @@ namespace maya {
 /// Exit codes: the program's own via Cmd::quit(n), or 70 (EX_SOFTWARE) if
 /// the terminal can't be opened — there is no screen to report on, so it is
 /// the one failure run() answers for itself.
-template <Program P>
+///
+/// `Host` is the host template: maya's terminal_host by default. An app with
+/// effects of its own derives from terminal_host and passes its host here,
+/// so it never calls jaal directly.
+template <Program P, template <class> class Host = terminal_host>
 int run(Options cfg = {}, jaal::run_options opt = {}) {
     // Report a missing handle()/start_source() in jaal's words — it names
     // the effect and the program. Without this the error still happens, as
     // an unsatisfied constraint on jaal::run several levels down.
-    jaal::require_host_for<terminal_host<P>, P>();
+    jaal::require_host_for<Host<P>, P>();
 
     auto term = Screen::open(cfg);
     if (!term) return 70;                         // couldn't take the terminal
-    terminal_host<P> host{*term, cfg.fps};
+    // maya's own parallel work (pixel rows, big markdown parses) runs on
+    // jaal for the program's lifetime, then is joined before we return.
+    host_detail::executor_scope exec;
+    Host<P> host{*term, cfg.fps};
     return jaal::run<P>(host, std::move(opt));
 }
 

@@ -2,10 +2,11 @@
 # tests/seam.sh — the layering rule, as a test.
 #
 # maya is the view layer and the terminal device; jaal is the runtime;
-# include/maya/host/ is where they meet. The rule that makes "maya is to jaal
-# what Ink is to React" a fact instead of a slogan:
+# include/maya/host/ and include/maya/runtime.hpp are where they meet. The
+# rule that makes "maya is to jaal what Ink is to React" a fact instead of a
+# slogan:
 #
-#   NOTHING outside include/maya/host/ may depend on jaal.
+#   NOTHING outside include/maya/host/ and maya/runtime.hpp may depend on jaal.
 #
 # A prose mention in a comment is fine — that's how a reader finds the seam.
 # An #include or a jaal:: name is not. If this fails, someone reached across
@@ -43,6 +44,7 @@ leaks=""
 for f in $(grep -rl 'jaal' include/maya --include='*.hpp' 2>/dev/null); do
     case "$f" in
         include/maya/host/*) continue ;;      # the seam itself
+        include/maya/runtime.hpp) continue ;; # jaal re-exported for apps
     esac
     # Strip // comments, then look for real dependencies.
     if sed 's://.*::' "$f" | grep -qE '#[[:space:]]*include[[:space:]]*<jaal|jaal::'; then
@@ -53,7 +55,7 @@ if [ -n "$leaks" ]; then
     fail "these headers depend on jaal outside the seam:"
     for f in $leaks; do echo "          $f"; done
 else
-    echo "  ok    only maya/host/ depends on jaal"
+    echo "  ok    only maya/host/ and maya/runtime.hpp depend on jaal"
 fi
 
 # 3. The seam is where we say it is.

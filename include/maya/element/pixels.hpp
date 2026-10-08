@@ -28,11 +28,13 @@
 #include <cstdint>
 #include <memory>
 #include <utility>
-#include <thread>
+#include <thread>   // hardware_concurrency
 #include <vector>
 
 #include "builder.hpp"
 #include "../render/canvas.hpp"
+
+#include "../core/executor.hpp"
 
 namespace maya {
 
@@ -79,10 +81,9 @@ public:
                 for (int x = 0; x < w_; ++x) px_[idx(x, y)] = fn(x, y);
         };
         if (n == 1 || static_cast<long>(w_) * h_ < 4096) { for (int y = 0; y < h_; ++y) for (int x = 0; x < w_; ++x) px_[idx(x, y)] = fn(x, y); return; }
-        std::vector<std::jthread> pool;
-        pool.reserve(static_cast<std::size_t>(n - 1));
-        for (int t = 1; t < n; ++t) pool.emplace_back(rows, t);
-        rows(0);
+        // On the runtime's threads (maya::exec): joined before this returns.
+        exec::parallel_for(static_cast<std::size_t>(n),
+                           [&](std::size_t t) { rows(static_cast<int>(t)); });
     }
 
     /// The pixel size of a cell area: w columns, 2*h rows (half blocks).

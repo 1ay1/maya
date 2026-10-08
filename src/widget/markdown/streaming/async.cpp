@@ -29,6 +29,7 @@
 #include "maya/widget/markdown.hpp"
 #include "maya/widget/markdown/internal.hpp"
 #include "maya/widget/markdown/streaming_internal.hpp"
+#include "maya/core/executor.hpp"
 
 namespace maya {
 
@@ -106,17 +107,10 @@ void StreamingMarkdown::spawn_async_worker_(std::shared_ptr<std::string> source)
         async_slot_ = slot;
     }
 
-    // The worker is OWNED, not detached. maya's rule is that it starts no
-    // thread the process doesn't account for (docs/internals/design.md rule
-    // 1); a detached thread is one nobody can wait for, so at exit it ran on
-    // in a process tearing its statics down. The registry below holds every
-    // worker, reaps finished ones as new ones start, and joins the rest in
-    // its destructor — so the process leaves with no parse in flight.
-    //
-    // Result lifetime is unchanged and independent of the join: the slot is
-    // a shared_ptr the worker co-owns, so a StreamingMarkdown destroyed
-    // mid-parse just drops its copy and the worker's result retires with it.
-    md_detail::async_workers().spawn([slot]() mutable {
+    // On the runtime's pool via maya::exec, joined before maya::run returns
+    // (inline with no runtime). The slot is co-owned by the job, so a
+    // StreamingMarkdown destroyed mid-parse just drops its copy.
+    exec::post([slot]() mutable {
         // The slot retains the source for the entire task; using a
         // reference avoids a second full-buffer copy in the thread closure.
         const std::string& src = *slot->source;

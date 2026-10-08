@@ -200,6 +200,7 @@ elseif(APPLE AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND MAYA_HEAVY_OPT)
 endif()
 
 set(MAYA_LIB_SOURCES
+    src/core/executor.cpp
     src/device/create.cpp
     src/device/input.cpp
     src/device/lifetime.cpp

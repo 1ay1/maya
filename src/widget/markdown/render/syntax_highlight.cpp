@@ -726,7 +726,7 @@ static Element highlight_code_from(const std::string& code,
 // which is wrong in a way worth spelling out: maya already renders on a
 // second thread, and has for as long as streaming markdown has existed.
 // StreamingMarkdown::spawn_async_worker_ (src/widget/markdown/streaming/
-// async.cpp) hands a full re-parse to the AsyncWorkers pool, and that worker
+// async.cpp) hands a full re-parse to maya::exec (the runtime pool), and that job
 // calls md_block_to_element on every block — which lands here.
 //
 // So this cache, the resume state below, and the layout/paint scratch pools

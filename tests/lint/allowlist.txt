@@ -61,18 +61,17 @@ render/renderer.cpp: atomic thread_local
 render/render_internal.hpp: atomic thread_local
 widget/markdown/render/syntax_highlight.cpp: atomic thread_local
 
-# ── P3. The markdown async worker ────────────────────────────────────────
-# The one genuine background thread maya owns: a streaming re-parse that
-# would otherwise block the frame. It is NOT a jaal task because it is a
-# widget-internal detail with no Cmd to return it through — the widget is
-# constructed inside view(), which is pure and cannot launch effects.
-#
-# The safety property is that every worker is OWNED and JOINED: AsyncWorkers
-# holds them in a vector, join_all() drains it, and tests/seam.sh fails the
-# build if a `.detach()` ever appears in this tree. A detached worker here
-# would run on during static destruction with the palette dying under it.
+# ── P3. The markdown async result slot ───────────────────────────────────
+# The big-document parse runs on maya::exec (jaal's pool under maya::run, so
+# maya starts no thread). The widget keeps a mutex around the one slot the
+# job publishes its result into: a handoff, not a runtime.
 widget/markdown/streaming/async.cpp: const_cast mutex
 widget/markdown/streaming/commit.cpp: mutex
+
+# ── maya::exec install ───────────────────────────────────────────────────
+# The executor hook (core/executor.hpp) is set by maya::run before the program
+# starts and cleared after; a mutex covers that and the copy a widget reads.
+core/executor.cpp: mutex
 
 # ── P4. const_cast: memoization behind a const accessor ──────────────────
 # The logical-const pattern — filling a cache slot inside a const getter,

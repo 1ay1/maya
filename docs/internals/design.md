@@ -11,15 +11,14 @@ from it.
 
 1. **One loop, and it is jaal's.** maya has no event loop, no timers, no
    effect types. `maya::run<P>()` is a thin function that opens the
-   terminal and hands it to `jaal::run`. maya starts no thread the process
-   can't account for: there are exactly two, both owned and both joined
-   before they can outlive their caller — `Image::fill_rows` (a parallel
+   terminal and hands it to `jaal::run`. maya starts no thread of its own:
+   the two places it needs parallelism — `Image::fill_rows` (a parallel
    for that joins before it returns) and the big-document markdown parse
-   (`md.set_content_async`, owned by `md_detail::async_workers()`, joined
-   at exit). Neither is a loop, and nothing is detached: a detached thread
-   is one nobody can wait for, which at exit means code running inside a
-   process destroying the statics under it. Concurrency a PROGRAM asks for
-   is jaal's `Cmd::task` — maya never spawns on a program's behalf.
+   (`md.set_content_async`) — use jaal's primitives (`jaal::scope`, a jaal
+   pool), not `std::thread`. Nothing is detached: a detached thread is one
+   nobody can wait for, which at exit means code running inside a process
+   destroying the statics under it. Concurrency a PROGRAM asks for is
+   jaal's `Cmd::task` — maya never spawns on a program's behalf.
 2. **A program is a jaal program with a `view()` that returns an
    `Element`.** Nothing else. There is no callback loop, no canvas loop,
    no "live" loop: a canvas demo is a program whose view is `pixels(img)`
@@ -37,12 +36,21 @@ from it.
 
 ## The layers
 
+maya is the middle of a strict chain: **app → maya → jaal**. An app (agentty)
+depends on maya and never on jaal. Every runtime and concurrency primitive
+the app uses — the program types, tasks, threads, locks, cancellation,
+processes, polling — reaches it as a `maya::` name re-exported from jaal by
+`<maya/runtime.hpp>`. jaal is maya's implementation; maya is free to reshape
+what it re-exports. When an app needs something jaal has and maya doesn't
+expose yet, it is added to maya, not reached around it.
+
 | Header | What | Knows jaal? |
 |---|---|---|
 | `<maya/maya.hpp>` | elements, DSL, layout, style, widgets, `Image`/`pixels`, `print` | no |
 | `<maya/screen.hpp>` | `Screen`: the terminal device (raw mode, input, frame diff, flow control) | no |
 | `<maya/host/run.hpp>` | `run<P>`, and the whole of maya with it: the include an app uses | yes |
-| `include/maya/host/` | where maya meets a runtime, and the ONLY place in maya that may name jaal | yes |
+| `<maya/runtime.hpp>` | jaal's runtime API under `maya::` names (aliases, no code): what an app uses instead of including jaal | yes |
+| `include/maya/host/` | where maya meets a runtime, and with `runtime.hpp` the ONLY place in maya that may name jaal | yes |
 
 `maya` (the library) stays free of jaal. `maya::app` (CMake target) is
 maya + jaal, and is what a program links.
@@ -67,7 +75,7 @@ without failing the `static_assert` in `device.hpp`.
 
 The rule is mechanical, and `tests/seam.sh` runs it in CI:
 
-    grep -rl jaal include/maya --include=*.hpp | grep -v maya/host/
+    grep -rl jaal include/maya --include=*.hpp | grep -v -e maya/host/ -e maya/runtime
 
 prints nothing. Everything else may NAME jaal in a comment — that is how a
 reader finds the seam — but may not include it or use its types.

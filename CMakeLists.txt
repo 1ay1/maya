@@ -845,6 +845,12 @@ set_tests_properties(
         # it scans. ROOT must be absolute: it is a file(GLOB_RECURSE) prefix,
         # so a relative path silently matches zero files.
         set(_MAYA_BANLIST ${PROJECT_SOURCE_DIR}/third_party/jaal/tests/lint/banlist.cmake)
+        # agentty → maya → jaal: maya names nothing above it, and only
+        # host/ + runtime.hpp touch jaal. tests/lint/layering.cmake.
+        add_test(NAME layering
+                 COMMAND ${CMAKE_COMMAND} -DROOT=${PROJECT_SOURCE_DIR}
+                         -P ${PROJECT_SOURCE_DIR}/tests/lint/layering.cmake)
+        set_tests_properties(layering PROPERTIES TIMEOUT 120 LABELS "static")
         if(EXISTS ${_MAYA_BANLIST})
             add_test(NAME concurrency_banlist_src
                      COMMAND ${CMAKE_COMMAND}

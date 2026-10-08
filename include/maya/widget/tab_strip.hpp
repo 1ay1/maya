@@ -208,7 +208,6 @@ struct TabStrip {
             // render and "… Models | Smart | …" on the next, from identical
             // input; the panel's rule row already guards the same sentinel
             // one line below this in panel.cpp.
-            if (std::getenv("STRIP_DBG")) if(true){std::string j; for(const auto&t:tabs) j+=t.label+","; std::fprintf(stderr,"STRIP w=%d act=%d n=%d [%s]\n",avail_w,act,n,j.c_str());}
             constexpr int kMaxWidth = 4096;
             if (avail_w > kMaxWidth) avail_w = kMaxWidth;
             if (avail_w < 0)         avail_w = 0;

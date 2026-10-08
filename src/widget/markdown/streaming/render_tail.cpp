@@ -344,11 +344,14 @@ void StreamingMarkdown::refresh_live_table_floor_() const {
         return;
     }
 
-    // Escape hatch for A/B measurement / emergencies: AGENTTY_NO_TABLE_FLOOR
+    // Escape hatch for A/B measurement / emergencies: MAYA_NO_TABLE_FLOOR
     // disables the reservation (table reverts to per-revealed-row widths).
-    static const bool disabled =
-        [] { const char* e = std::getenv("AGENTTY_NO_TABLE_FLOOR");
-             return e && e[0] && e[0] != '0'; }();
+    // The old AGENTTY_ spelling is still honoured.
+    static const bool disabled = [] {
+        const char* e = std::getenv("MAYA_NO_TABLE_FLOOR");
+        if (!e) e = std::getenv("AGENTTY_NO_TABLE_FLOOR");
+        return e && e[0] && e[0] != '0';
+    }();
     if (disabled) { live_table_floor_.clear(); return; }
 
     // Start of the live tail's first non-blank line.

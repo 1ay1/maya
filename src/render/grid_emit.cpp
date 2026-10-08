@@ -167,15 +167,19 @@ inline char32_t sanitize_cp(char32_t cp) {
     return cp;
 }
 
-// Set once at startup from AGENTTY_GRID_WIDTH_RESOLVED=1. When true, wide
+// Set once at startup from MAYA_GRID_WIDTH_RESOLVED=1. When true, wide
 // glyphs are emitted with a U+0000 CONTINUATION codepoint filling their
 // trailing column, so a run's codepoint count equals its COLUMN count. A host
 // then advances one column per codepoint and renders U+0000 as nothing — no
 // wcwidth on the host side, no column drift. Off by default (v2 behaviour:
 // trailing half is skipped, len = codepoints < columns).
+//
+// AGENTTY_GRID_WIDTH_RESOLVED is still read as an alias: hosts written for
+// agentty's grid protocol (the VS Code extension) set that name.
 inline bool width_resolved_mode() {
     static const bool on = [] {
-        const char* e = std::getenv("AGENTTY_GRID_WIDTH_RESOLVED");
+        const char* e = std::getenv("MAYA_GRID_WIDTH_RESOLVED");
+        if (!e) e = std::getenv("AGENTTY_GRID_WIDTH_RESOLVED");
         return e && e[0] == '1';
     }();
     return on;

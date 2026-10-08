@@ -10,6 +10,8 @@ cmake_install.cmake
 compile_commands.json
 *.cmake
 !CMakeLists.txt
+# hand-written scripts, not generated: tests/lint/*.cmake
+!tests/lint/*.cmake
 Testing/Temporary/LastTestsFailed.log
 Testing/Temporary/LastTest.log
 Testing/Temporary/CTestCostData.txt

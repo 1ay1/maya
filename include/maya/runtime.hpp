@@ -29,6 +29,9 @@
 #include <jaal/kernel/pool.hpp>
 #include <jaal/kernel/stop_group.hpp>
 #include <jaal/platform/clock.hpp>
+#include <jaal/platform/concepts.hpp>
+#include <jaal/platform/process.hpp>
+#include <jaal/platform/signal.hpp>
 #include <jaal/platform/select.hpp>
 #if !defined(_WIN32)
 #  include <jaal/platform/posix/process.hpp>
@@ -56,6 +59,12 @@ using ::jaal::HasVisualHash;
 using ::jaal::HasNeedsWarmup;
 using ::jaal::handled_as_group;
 namespace fx = ::jaal::fx;      // core effects: fx::quit, …
+// The bare runtime concept (maya::Program, in host/sources.hpp, adds view()).
+template <class P>
+concept RuntimeProgram = ::jaal::Program<P>;
+// What a host hook sees: fd readiness and delivered signals.
+using ::jaal::readiness;
+using ::jaal::sig;
 
 // ── Values that cross threads ───────────────────────────────────────────
 using ::jaal::Sendable;
@@ -71,11 +80,21 @@ using stop_group = ::jaal::kernel::stop_group;  // cancel + await foreign work
 using ::jaal::kernel::delay_for;                // a sleep that wakes on stop
 using ::jaal::kernel::loop_bound;               // state only the loop touches
 using ::jaal::kernel::loop_identity;
+using ::jaal::kernel::loop_key;
+using ::jaal::kernel::loop_token;
 
 // ── Platform: processes, polling, locks, the clock ──────────────────────
 namespace platform {
 using ::jaal::platform::native_file_lock;
 using ::jaal::platform::steady_clock;
+// A child process and the vocabulary for running one.
+using ::jaal::platform::process_spec;
+using ::jaal::platform::exit_status;
+using ::jaal::platform::stop_mode;
+using ::jaal::platform::stop_scope;
+using ::jaal::platform::interest;
+using ::jaal::platform::readiness;
+using ::jaal::platform::wait_result;
 #if !defined(_WIN32)
 using ::jaal::platform::posix_process;
 using ::jaal::platform::poll_reactor;

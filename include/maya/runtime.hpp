@@ -27,6 +27,7 @@
 #include <jaal/kernel/delay.hpp>
 #include <jaal/kernel/loop.hpp>
 #include <jaal/kernel/pool.hpp>
+#include <jaal/kernel/published.hpp>
 #include <jaal/kernel/stop_group.hpp>
 #include <jaal/platform/clock.hpp>
 #include <jaal/platform/concepts.hpp>
@@ -79,6 +80,7 @@ using pool       = ::jaal::kernel::pool;        // owned worker threads
 using stop_group = ::jaal::kernel::stop_group;  // cancel or await work
 using ::jaal::kernel::delay_for;                // a sleep that wakes on stop
 using ::jaal::kernel::loop_bound;               // state only the loop touches
+using ::jaal::kernel::published;                // the current object, swapped whole
 using ::jaal::kernel::loop_identity;
 using ::jaal::kernel::loop_key;
 using ::jaal::kernel::loop_token;

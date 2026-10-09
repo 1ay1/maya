@@ -94,6 +94,7 @@ using ::jaal::platform::process_spec;
 using ::jaal::platform::exit_status;
 using ::jaal::platform::stop_mode;
 using ::jaal::platform::stop_scope;
+using ::jaal::platform::stream_to;
 using ::jaal::platform::interest;
 using ::jaal::platform::readiness;
 using ::jaal::platform::wait_result;

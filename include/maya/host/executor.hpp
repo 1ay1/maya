@@ -32,7 +32,10 @@ class executor_scope {
                 });
             },
             .post = [p = pool_.get()](std::function<void()> job) {
-                p->post([job = std::move(job)](std::stop_token) { job(); });
+                // Already erased by maya::exec, so it goes in through the
+                // kernel's key rather than the checked post().
+                ::jaal::kernel::pool_access::post(
+                    *p, [job = std::move(job)](std::stop_token) { job(); });
             },
         });
     }

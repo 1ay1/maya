@@ -24,6 +24,8 @@
 // Use the macros at the bottom so app code still never spells jaal.
 
 #include <jaal/jaal.hpp>
+#include <jaal/core/co_owned.hpp>
+#include <jaal/core/sync.hpp>
 #include <jaal/kernel/delay.hpp>
 #include <jaal/kernel/loop.hpp>
 #include <jaal/kernel/pool.hpp>
@@ -71,7 +73,9 @@ using ::jaal::sig;
 // ── Values that cross threads ───────────────────────────────────────────
 using ::jaal::Sendable;
 using ::jaal::Frozen;
+using ::jaal::Sync;             // many threads may use one T& at once
 using ::jaal::shared;           // Sendable && Frozen, shared without a lock
+using ::jaal::co_owned;         // Sync state that jobs and their owner share
 
 // ── Concurrency ─────────────────────────────────────────────────────────
 using ::jaal::guarded;          // a value only reachable under its lock
@@ -80,6 +84,8 @@ using ::jaal::nursery;
 using pool       = ::jaal::kernel::pool;        // owned worker threads
 using stop_group = ::jaal::kernel::stop_group;  // cancel or await work
 using worker_group = ::jaal::kernel::worker_group;  // owned jobs, barrier stop
+using ::jaal::kernel::CheckedJob;               // captureless body, Sendable args
+using ::jaal::kernel::require_job;
 using ::jaal::kernel::delay_for;                // a sleep that wakes on stop
 using ::jaal::kernel::loop_bound;               // state only the loop touches
 using ::jaal::kernel::published;                // the current object, swapped whole
@@ -141,3 +147,6 @@ using ::jaal::explore;
     inline constexpr bool ::jaal::sendable_opt_in<__VA_ARGS__> = true
 #define MAYA_FROZEN_T(...) \
     inline constexpr bool ::jaal::frozen_opt_in<__VA_ARGS__> = true
+// A class whose every member function is safe to call concurrently.
+#define MAYA_SYNC(...) \
+    template <> inline constexpr bool ::jaal::sync_opt_in<__VA_ARGS__> = true

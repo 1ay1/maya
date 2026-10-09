@@ -103,7 +103,14 @@ using ::jaal::platform::wait_result;
 #if !defined(_WIN32)
 using ::jaal::platform::posix_process;
 using ::jaal::platform::poll_reactor;
+#else
+using ::jaal::platform::windows_process;
+using ::jaal::platform::read_some;
+using ::jaal::platform::write_some;
 #endif
+using ::jaal::platform::native_process;   // posix_process or windows_process
+using ::jaal::platform::native_reactor;
+using ::jaal::borrowed_handle;
 }  // namespace platform
 
 // ── Test hosts: run a program without a terminal ────────────────────────

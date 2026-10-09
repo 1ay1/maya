@@ -84,6 +84,7 @@ using ::jaal::kernel::delay_for;                // a sleep that wakes on stop
 using ::jaal::kernel::loop_bound;               // state only the loop touches
 using ::jaal::kernel::published;                // the current object, swapped whole
 using ::jaal::kernel::loop_identity;
+using ::jaal::kernel::on_loop;          // is this thread a kernel's loop?
 using ::jaal::kernel::loop_key;
 using ::jaal::kernel::loop_token;
 

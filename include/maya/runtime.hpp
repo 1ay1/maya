@@ -29,6 +29,7 @@
 #include <jaal/kernel/pool.hpp>
 #include <jaal/kernel/published.hpp>
 #include <jaal/kernel/stop_group.hpp>
+#include <jaal/kernel/worker_group.hpp>
 #include <jaal/platform/clock.hpp>
 #include <jaal/platform/concepts.hpp>
 #include <jaal/platform/process.hpp>
@@ -78,6 +79,7 @@ using ::jaal::scope;            // structured helpers: all joined on return
 using ::jaal::nursery;
 using pool       = ::jaal::kernel::pool;        // owned worker threads
 using stop_group = ::jaal::kernel::stop_group;  // cancel or await work
+using worker_group = ::jaal::kernel::worker_group;  // owned jobs, barrier stop
 using ::jaal::kernel::delay_for;                // a sleep that wakes on stop
 using ::jaal::kernel::loop_bound;               // state only the loop touches
 using ::jaal::kernel::published;                // the current object, swapped whole

@@ -107,10 +107,16 @@ using ::jaal::platform::poll_reactor;
 using ::jaal::platform::windows_process;
 using ::jaal::platform::read_some;
 using ::jaal::platform::write_some;
+using ::jaal::platform::quote_arg;
+using ::jaal::platform::join_command_line;
+using ::jaal::platform::cmd_command_line;
+using ::jaal::platform::resolves_to_batch;
 #endif
 using ::jaal::platform::native_process;   // posix_process or windows_process
 using ::jaal::platform::native_reactor;
 using ::jaal::borrowed_handle;
+using ::jaal::owned_handle;
+using ::jaal::platform::duplicate_handle;
 }  // namespace platform
 
 // ── Test hosts: run a program without a terminal ────────────────────────

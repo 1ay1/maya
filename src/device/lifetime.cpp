@@ -25,7 +25,7 @@ void Device::finalize_inline_frame() noexcept {
             for (int i = 0; i < 50 && writer_->has_residue(); ++i) {
                 if (auto st = writer_->try_drain_residue(); !st) break;
                 if (writer_->has_residue())
-                    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+                    (void)platform::io_poll_writable(output_handle_, 2);
             }
         } else {
             (void)platform::io_write_all(output_handle_, buf);

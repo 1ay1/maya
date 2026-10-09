@@ -182,14 +182,14 @@ struct IoVec {
 // always return true and pay only the syscall cost (~µs).
 
 [[nodiscard]] inline bool io_poll_writable(
-    [[maybe_unused]] NativeHandle h) noexcept
+    [[maybe_unused]] NativeHandle h, [[maybe_unused]] int timeout_ms = 0) noexcept
 {
 #if MAYA_PLATFORM_POSIX || MAYA_PLATFORM_MACOS
     struct pollfd pfd{};
     pfd.fd = h;
     pfd.events = POLLOUT;
     pfd.revents = 0;
-    int r = ::poll(&pfd, 1, 0);
+    int r = ::poll(&pfd, 1, timeout_ms);
     if (r <= 0) {
         // 0 = timeout (kernel buffer currently full)
         // < 0 = error (EINTR / EBADF). On error, conservatively assume

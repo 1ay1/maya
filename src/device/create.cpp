@@ -229,7 +229,8 @@ auto Device::create(Options cfg) -> Result<Device> {
                 resp += *data;
                 if ((row = take_cpr(resp)) > 0) break;
             } else {
-                std::this_thread::sleep_for(std::chrono::milliseconds(2));
+                // Wake when the reply arrives, not on a timer.
+                (void)platform::io_poll_readable(rt.input_handle_, 2);
             }
         }
         if (row > 0) rt.inline_top_row_ = row;
@@ -325,7 +326,7 @@ auto Device::create(Options cfg) -> Result<Device> {
                     // terminal doesn't speak DECRQM; stop waiting now.
                     if (take_da1(resp2)) break;
                 } else {
-                    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+                    (void)platform::io_poll_readable(rt.input_handle_, 2);
                 }
             }
             if (ps >= 0)

@@ -660,13 +660,7 @@ auto Device::render_inline(const Element& root, int w) -> Status {
                     // + abort available for bug hunts, default to
                     // recovering the user's session.
                     if (std::getenv("MAYA_GATE_ABORT")) {
-#ifdef _WIN32
-                        _putenv_s("MAYA_DEBUG_GATE", "1");
-#else
-                        setenv("MAYA_DEBUG_GATE", "1", 1);
-#endif
-                        (void)arm.scrollback_prefix_matches(
-                            canvas_, overflow);
+                        arm.dump_prefix_mismatch(canvas_, overflow);
                         std::fprintf(stderr,
                             "[maya] FATAL: scrollback-invariant "
                             "gate fired (committed prefix shifted: "

@@ -428,6 +428,9 @@ public:
     [[nodiscard]] bool scrollback_prefix_matches(
         const Canvas& canvas, int rows) const noexcept;
 
+    /// Print the first mismatching rows of that compare to stderr.
+    void dump_prefix_mismatch(const Canvas& canvas, int rows) const noexcept;
+
     /// True iff rows [lo, hi) of `canvas` are byte-identical to the same
     /// rows of this state's prev_cells (same width). The bounded sibling
     /// of scrollback_prefix_matches: check_scrollback uses it to verify

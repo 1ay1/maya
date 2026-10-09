@@ -204,10 +204,22 @@ bool InlineFrameState::scrollback_prefix_matches(
     const uint64_t* a = prev_cells_.data();
     const uint64_t* b = canvas.cells();
     const bool match = std::memcmp(a, b, need * sizeof(uint64_t)) == 0;
-    if (!match && std::getenv("MAYA_DEBUG_GATE")) {
-        // Diagnostic (env-gated): find the first mismatching row, then
-        // dump a ±8-row window from BOTH buffers so re-wraps / shifts
-        // are visible in context.
+    if (!match && std::getenv("MAYA_DEBUG_GATE")) dump_prefix_mismatch(canvas, rows);
+    return match;
+}
+
+void InlineFrameState::dump_prefix_mismatch(
+    const Canvas& canvas, int rows) const noexcept
+{
+    const int W = prev_width_;
+    if (rows <= 0 || W <= 0 || canvas.width() != W || rows > prev_rows_) return;
+    const std::size_t need = static_cast<std::size_t>(rows) * W;
+    if (prev_cells_.size() < need || canvas.cell_count() < need) return;
+    const uint64_t* a = prev_cells_.data();
+    const uint64_t* b = canvas.cells();
+    {
+        // Find the first mismatching row, then dump a ±8-row window from
+        // BOTH buffers so re-wraps / shifts are visible in context.
         int first_bad = -1;
         std::string idxs;
         for (int y = 0; y < rows; ++y) {
@@ -273,7 +285,6 @@ bool InlineFrameState::scrollback_prefix_matches(
             }
         }
     }
-    return match;
 }
 
 // Structure-only prefix compare: glyphs/hyperlink/width, ignoring style_id.

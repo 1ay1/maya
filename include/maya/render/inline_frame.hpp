@@ -281,6 +281,9 @@ public:
         const Canvas& canvas, int rows) const noexcept {
         return state_.scrollback_prefix_matches(canvas, rows);
     }
+    void dump_prefix_mismatch(const Canvas& canvas, int rows) const noexcept {
+        state_.dump_prefix_mismatch(canvas, rows);
+    }
 
     /// Run the scrollback gate and, on success, mint the ScrollbackProof
     /// that render() requires. Returns nullopt iff the committed prefix

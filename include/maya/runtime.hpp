@@ -79,6 +79,9 @@ using ::jaal::co_owned;         // Sync state that jobs and their owner share
 
 // ── Concurrency ─────────────────────────────────────────────────────────
 using ::jaal::guarded;          // a value only reachable under its lock
+using ::jaal::lock_level;       // which guarded may be taken inside which
+using ::jaal::lock_order_error; // a lock taken out of order, or a wait under one
+using ::jaal::kernel::lock_order::forget_held_after_fork;  // first call in a fork child
 using ::jaal::scope;            // structured helpers: all joined on return
 using ::jaal::nursery;
 using pool       = ::jaal::kernel::pool;        // owned worker threads

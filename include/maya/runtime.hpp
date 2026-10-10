@@ -99,6 +99,7 @@ using ::jaal::kernel::loop_token;
 // ── Platform: processes, polling, locks, the clock ──────────────────────
 namespace platform {
 using ::jaal::platform::native_file_lock;
+using ::jaal::platform::lock_mode;
 using ::jaal::platform::steady_clock;
 // A child process and the vocabulary for running one.
 using ::jaal::platform::process_spec;

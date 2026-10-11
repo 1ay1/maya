@@ -23,6 +23,12 @@
 // in jaal; a specialisation has to name the template where it was declared.
 // Use the macros at the bottom so app code still never spells jaal.
 
+// maya-level switch: -DMAYA_FORCE_PUBLISHED_MUTEX forces the mutex fallback
+// (a test of that path) without the app naming jaal's macro.
+#if defined(MAYA_FORCE_PUBLISHED_MUTEX) && !defined(JAAL_FORCE_PUBLISHED_MUTEX)
+#  define JAAL_FORCE_PUBLISHED_MUTEX 1
+#endif
+
 #include <jaal/jaal.hpp>
 #include <jaal/core/co_owned.hpp>
 #include <jaal/core/sync.hpp>
@@ -138,6 +144,10 @@ using ::jaal::given;              // test update() with no kernel
 using ::jaal::run_tasks_inline;   // run a Cmd's tasks inline, get their messages
 
 }  // namespace maya
+
+// 1 when maya::published is lock-free (std::atomic<std::shared_ptr>), 0 when
+// it falls back to a small mutex. For a test that pins which path it built.
+#define MAYA_ATOMIC_SHARED_PTR JAAL_ATOMIC_SHARED_PTR
 
 // Opt a type into Sendable / Frozen when jaal can't see inside it. These
 // specialise jaal's templates (the only place a specialisation may live)

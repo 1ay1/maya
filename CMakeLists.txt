@@ -493,6 +493,13 @@ if(MAYA_BUILD_APP)
     add_library(maya::app ALIAS maya_app)
     set_target_properties(maya_app PROPERTIES EXPORT_NAME app)
     target_link_libraries(maya_app INTERFACE maya jaal::jaal)
+    # The runtime alone (<maya/runtime.hpp>: guarded, published, pools, the
+    # platform layer) with no terminal library. For a small target, a race
+    # test say, that must not pull in the whole of maya.
+    add_library(maya_runtime INTERFACE)
+    add_library(maya::runtime ALIAS maya_runtime)
+    target_include_directories(maya_runtime INTERFACE ${PROJECT_SOURCE_DIR}/include)
+    target_link_libraries(maya_runtime INTERFACE jaal::jaal)
     if(MAYA_APP_STD_FLAG)
         target_compile_options(maya_app INTERFACE ${MAYA_APP_STD_FLAG})
         target_compile_options(jaal PRIVATE ${MAYA_APP_STD_FLAG})

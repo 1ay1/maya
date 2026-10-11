@@ -130,6 +130,9 @@ using ::jaal::platform::resolves_to_batch;
 #endif
 using ::jaal::platform::native_process;   // posix_process or windows_process
 using ::jaal::platform::native_reactor;
+// OS signals as a handle a reactor can watch; take() hands them over.
+using ::jaal::platform::native_signals;
+using ::jaal::platform::signal_set;
 using ::jaal::borrowed_handle;
 using ::jaal::owned_handle;
 using ::jaal::platform::duplicate_handle;

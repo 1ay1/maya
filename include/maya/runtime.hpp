@@ -134,6 +134,8 @@ using ::jaal::sim;
 using ::jaal::sim_options;
 using ::jaal::headless;
 using ::jaal::explore;
+using ::jaal::given;              // test update() with no kernel
+using ::jaal::run_tasks_inline;   // run a Cmd's tasks inline, get their messages
 
 }  // namespace maya
 

@@ -68,7 +68,16 @@ public:
 
     [[nodiscard]] auto disable_raw() -> Status {
         if (raw_) {
-            if (::tcsetattr(in_fd_, TCSAFLUSH, &original_) < 0)
+            // NOT TCSAFLUSH. On darwin that waits for the output queue to
+            // drain, and on a pty whose reader has stopped (a stalled ssh
+            // hop, a wedged terminal, a test harness that stopped pumping)
+            // it waits forever -- the process hangs on its way out. Linux
+            // ptys report an empty queue so the same call never blocks
+            // there. Output processing happens at write time, so anything
+            // already queued is unaffected by switching modes now; discard
+            // unread input (the FLUSH half) explicitly instead.
+            (void)::tcflush(in_fd_, TCIFLUSH);
+            if (::tcsetattr(in_fd_, TCSANOW, &original_) < 0)
                 return err(Error::from_errno("tcsetattr: failed to restore terminal"));
             raw_ = false;
         }
@@ -131,7 +140,7 @@ public:
 
     MacTerminal& operator=(MacTerminal&& o) noexcept {
         if (this != &o) {
-            if (raw_) ::tcsetattr(in_fd_, TCSAFLUSH, &original_);
+            if (raw_) (void)disable_raw();
             in_fd_    = std::exchange(o.in_fd_, -1);
             out_fd_   = std::exchange(o.out_fd_, -1);
             original_ = o.original_;
@@ -144,7 +153,7 @@ public:
     MacTerminal& operator=(const MacTerminal&) = delete;
 
     ~MacTerminal() {
-        if (raw_) ::tcsetattr(in_fd_, TCSAFLUSH, &original_);
+        if (raw_) (void)disable_raw();
     }
 };
 

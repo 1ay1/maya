@@ -75,9 +75,17 @@ terminal/input.hpp: atomic
 widget/markdown.hpp: atomic mutex
 
 # ── P4. Pixel style memo ─────────────────────────────────────────────────
+# ── P4. Pixel style memo ───────────────────────────────────────────────────────────────────────────────
 # The row fill runs on maya::exec (a jaal::scope under maya::run). What's
 # left is a per-thread colour→style memo, so concurrent rows never share it.
 element/pixels.hpp: thread_local
+
+# ── P4b. maya::exec's two capability roots ───────────────────────────────────────────────────────────
+# jaal::thread_root asserts "this thread holds no lock". Checked by hand:
+# parallel_for is only reached from view() code (Pixels::fill_rows), which
+# is never handed a capability and so can't be inside a guarded body; and
+# ~executor_scope runs in maya::run after jaal::run has returned.
+host/executor.hpp: cap_mint
 
 # ── P5. const_cast: memoization behind a const accessor ──────────────────
 # The logical-const pattern — filling a cache slot inside a const getter,

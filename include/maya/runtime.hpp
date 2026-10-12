@@ -83,12 +83,21 @@ using ::jaal::Sync;             // many threads may use one T& at once
 using ::jaal::shared;           // Sendable && Frozen, shared without a lock
 using ::jaal::co_owned;         // Sync state that jobs and their owner share
 
-// ── Concurrency ─────────────────────────────────────────────────────────
-using ::jaal::guarded;          // a value only reachable under its lock
-using ::jaal::lock_level;       // which guarded may be taken inside which
-using ::jaal::lock_order_error; // a lock taken out of order, or a wait under one
-using ::jaal::kernel::lock_order::forget_held_after_fork;  // first call in a fork child
-using ::jaal::scope;            // structured helpers: all joined on return
+// ── Concurrency ─────────────────────────────────────────────────────────────────────────
+using ::jaal::guarded;          // a value only reachable under its lock: guarded<T, Rank>
+// Lock order is a type (jaal core/capability.hpp). A lock's rank:
+using ::jaal::rank;             // rank<N, "name">: lower ranks are taken first
+using ::jaal::leaf;             // the default rank: taken last, alone
+using ::jaal::Rank;
+// Capabilities: proof of which locks the current thread holds.
+using ::jaal::unlocked;         // const unlocked&: holds nothing (may block, may take any lock)
+using ::jaal::held;             // const held<R>&: inside a lock ranked R
+using ::jaal::below;            // const below<R>&: a PARAMETER, "caller holds only ranks < R"
+using ::jaal::thread_root;      // the root capability for main() / a foreign thread (lint-allowlisted)
+using ::jaal::JoinFree;         // destroying T never waits for a thread (guarded<T> requires it)
+using ::jaal::joins_on_destroy; // mark a type whose destructor joins
+using ::jaal::lock_order_error; // a pool shut down from one of its own jobs
+using ::jaal::scope;            // structured helpers: all joined on return (needs unlocked)
 using ::jaal::nursery;
 using pool       = ::jaal::kernel::pool;        // owned worker threads
 using stop_group = ::jaal::kernel::stop_group;  // cancel or await work

@@ -22,13 +22,21 @@ class executor_scope {
   public:
     executor_scope() {
         exec::install(exec::Executor{
+            // Called from view() code (Pixels::fill_rows) on the loop thread.
+            // A view is a pure function of the model: it holds no jaal lock
+            // and can't reach one (a guarded needs a capability, and view()
+            // is never handed one). So the loop thread is unlocked here, and
+            // the join below is a wait it may make. This is the one reviewed
+            // root for maya's view-side parallelism (lint: ban_cap_mint).
             .parallel_for = [](std::size_t n,
                                const std::function<void(std::size_t)>& fn) {
                 if (n <= 1) { if (n) fn(0); return; }
-                ::jaal::scope([&](::jaal::nursery& nur) {
-                    for (std::size_t i = 1; i < n; ++i)
-                        nur.spawn([&fn, i] { fn(i); });
-                    fn(0);   // the caller does one share itself
+                ::jaal::thread_root([&](const ::jaal::unlocked& cap) {
+                    ::jaal::scope(cap, [&](::jaal::nursery& nur) {
+                        for (std::size_t i = 1; i < n; ++i)
+                            nur.spawn([&fn, i] { fn(i); });
+                        fn(0);   // the caller does one share itself
+                    });
                 });
             },
             .post = [p = pool_.get()](std::function<void()> job) {
@@ -42,7 +50,10 @@ class executor_scope {
     ~executor_scope() {
         exec::install({});
         // Every background parse has finished (or never starts) by here.
-        (void)pool_->shutdown(::jaal::kernel::pool::no_deadline);
+        // maya::run's frame, after jaal::run returned: no lock is held.
+        ::jaal::thread_root([&](const ::jaal::unlocked& cap) {
+            (void)pool_->shutdown(cap, ::jaal::kernel::pool::no_deadline);
+        });
     }
     executor_scope(const executor_scope&)            = delete;
     executor_scope& operator=(const executor_scope&) = delete;

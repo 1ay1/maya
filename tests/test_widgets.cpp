@@ -1221,7 +1221,7 @@ TEST_CASE("reasoning stream: live vs settled chrome, and no fold") {
         maya::ReasoningStream::Config cfg;
         cfg.gradient_body = true;
         cfg.pulse = true;
-        cfg.live_tail_lines = 3;   // ticker: only the last few line-nodes
+        cfg.live_tail_rows = 3;    // ticker: only the last few rows
         maya::ReasoningStream rs{cfg};
         rs.set_live(true);
         rs.set_content("ALPHA_LINE\n\nBETA_LINE\n\nGAMMA_LINE");

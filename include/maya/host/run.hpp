@@ -68,7 +68,12 @@ namespace maya {
 /// `Host` is the host template: maya's terminal_host by default. An app with
 /// effects of its own derives from terminal_host and passes its host here,
 /// so it never calls jaal directly.
-template <Program P, template <class> class Host = terminal_host>
+///
+/// `class...`, not `class`: terminal_host is <Program P, Device Dev = Screen>,
+/// and binding a two-parameter template (defaulted or not) to a
+/// `template <class> class` relies on P0522, which MSVC doesn't implement --
+/// every maya::run<App>() call failed there with C2672.
+template <Program P, template <class...> class Host = terminal_host>
 int run(Options cfg = {}, jaal::run_options opt = {}) {
     // Report a missing handle()/start_source() in jaal's words — it names
     // the effect and the program. Without this the error still happens, as

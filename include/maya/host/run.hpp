@@ -45,6 +45,7 @@
 //
 // Link maya::app. docs/internals/design.md has the rules.
 
+#include <cstdio>
 #include <utility>
 
 #include <jaal/jaal.hpp>
@@ -81,7 +82,16 @@ int run(Options cfg = {}, jaal::run_options opt = {}) {
     jaal::require_host_for<Host<P>, P>();
 
     auto term = Screen::open(cfg);
-    if (!term) return 70;                         // couldn't take the terminal
+    if (!term) {
+        // Exit 70 used to be silent, which made "agentty just exits" a
+        // guessing game. The device error already names the failing call
+        // and errno (tcgetattr / tcsetattr / write); say it, plus where.
+        std::fprintf(stderr, "maya: can't take the terminal: %s (%s:%u)\n",
+                     term.error().message.c_str(),
+                     term.error().location.file_name(),
+                     static_cast<unsigned>(term.error().location.line()));
+        return 70;
+    }
     // maya's own parallel work (pixel rows, big markdown parses) runs on
     // jaal for the program's lifetime, then is joined before we return.
     host_detail::executor_scope exec;

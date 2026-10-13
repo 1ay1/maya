@@ -44,16 +44,19 @@ if(hits)
 endif()
 
 # Inside maya, only the adapter to the runtime may name jaal: host/ (where
-# maya plugs into jaal as a terminal host) and runtime.hpp (the re-export
-# seam for apps). The view layer — elements, widgets, render, style,
-# terminal — stays a pure library that knows nothing about the runtime.
+# maya plugs into jaal as a terminal host) and the re-export seams for apps:
+# runtime.hpp (everything) and capability.hpp (just the lock-order
+# capability types, for headers that only pass a capability through). The
+# view layer — elements, widgets, render, style, terminal — stays a pure
+# library that knows nothing about the runtime.
 set(jhits "")
 foreach(dir include src)
     file(GLOB_RECURSE files ${ROOT}/${dir}/*.cpp ${ROOT}/${dir}/*.hpp ${ROOT}/${dir}/*.h)
     foreach(f IN LISTS files)
         file(RELATIVE_PATH rel ${ROOT} ${f})
         if(rel MATCHES "^include/maya/host/" OR rel MATCHES "^src/host/"
-           OR rel STREQUAL "include/maya/runtime.hpp")
+           OR rel STREQUAL "include/maya/runtime.hpp"
+           OR rel STREQUAL "include/maya/capability.hpp")
             continue()
         endif()
         file(STRINGS ${f} lines REGEX "jaal")

@@ -36,6 +36,7 @@
 #include <jaal/kernel/loop.hpp>
 #include <jaal/kernel/pool.hpp>
 #include <jaal/kernel/published.hpp>
+#include <jaal/kernel/snapshot.hpp>
 #include <jaal/kernel/stop_group.hpp>
 #include <jaal/kernel/worker_group.hpp>
 #include <jaal/platform/clock.hpp>
@@ -94,10 +95,19 @@ using ::jaal::unlocked;         // const unlocked&: holds nothing (may block, ma
 using ::jaal::held;             // const held<R>&: inside a lock ranked R
 using ::jaal::below;            // const below<R>&: a PARAMETER, "caller holds only ranks < R"
 using ::jaal::thread_root;      // the root capability for main() / a foreign thread (lint-allowlisted)
+// A capability that lives for the program, for a TEST SUITE's root: a test
+// body is a thread root that holds nothing between statements, and a
+// harness can't wrap every case in thread_root. Never for product code (the
+// mint lint scans src/ and include/; tests/ is the reviewed exception).
+inline const unlocked& test_root() {
+    static const unlocked root = ::jaal::cap_access::fresh_thread();
+    return root;
+}
 using ::jaal::JoinFree;         // destroying T never waits for a thread (guarded<T> requires it)
 using ::jaal::joins_on_destroy; // mark a type whose destructor joins
 using ::jaal::lock_order_error; // a pool shut down from one of its own jobs
 using ::jaal::scope;            // structured helpers: all joined on return (needs unlocked)
+template <class T> using snapshot = ::jaal::snapshot<T>;  // read-mostly value, no lock at all
 using ::jaal::nursery;
 using pool       = ::jaal::kernel::pool;        // owned worker threads
 using stop_group = ::jaal::kernel::stop_group;  // cancel or await work
@@ -178,3 +188,7 @@ using ::jaal::run_tasks_inline;   // run a Cmd's tasks inline, get their message
 // A class whose every member function is safe to call concurrently.
 #define MAYA_SYNC(...) \
     template <> inline constexpr bool ::jaal::sync_opt_in<__VA_ARGS__> = true
+// A class whose destructor joins threads: maya::guarded<T> refuses it, so it
+// can never be destroyed (and wait) inside a lock body.
+#define MAYA_JOINS_ON_DESTROY(...) \
+    template <> inline constexpr bool ::jaal::joins_on_destroy<__VA_ARGS__> = true

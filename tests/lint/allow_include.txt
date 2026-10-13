@@ -86,6 +86,11 @@ element/pixels.hpp: thread_local
 # is never handed a capability and so can't be inside a guarded body; and
 # ~executor_scope runs in maya::run after jaal::run has returned.
 host/executor.hpp: cap_mint
+# runtime.hpp's test_root(): the program-lifetime root a TEST SUITE hands its
+# test bodies (each a thread root that holds nothing between statements).
+# Product code never calls it; agentty's mint lint scans src/ and include/
+# and would flag a use there.
+runtime.hpp: cap_mint
 
 # ── P5. const_cast: memoization behind a const accessor ──────────────────
 # The logical-const pattern — filling a cache slot inside a const getter,

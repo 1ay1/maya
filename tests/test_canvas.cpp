@@ -1,6 +1,10 @@
 // Tests for Canvas, StylePool, and Cell
 #include <maya/maya.hpp>
-#include <cassert>
+#include <array>
+// NDEBUG guard: CMake builds tests in Release (-O3 -DNDEBUG), which strips
+// assert(). Undefine it here so this file's runtime asserts actually fire.
+#undef NDEBUG
+#include "agtest.hpp"
 #include <print>
 
 using namespace maya;
@@ -9,7 +13,7 @@ using namespace maya;
 // Canvas tests
 // ============================================================================
 
-void test_canvas_dimensions() {
+TEST_CASE("canvas dimensions") {
     std::println("--- test_canvas_dimensions ---");
     StylePool pool;
     Canvas canvas(20, 10, &pool);
@@ -18,7 +22,7 @@ void test_canvas_dimensions() {
     std::println("PASS\n");
 }
 
-void test_canvas_set_get_char() {
+TEST_CASE("canvas set get char") {
     std::println("--- test_canvas_set_get_char ---");
     StylePool pool;
     Canvas canvas(10, 5, &pool);
@@ -28,7 +32,7 @@ void test_canvas_set_get_char() {
     std::println("PASS\n");
 }
 
-void test_canvas_set_get_different_chars() {
+TEST_CASE("canvas set get different chars") {
     std::println("--- test_canvas_set_get_different_chars ---");
     StylePool pool;
     Canvas canvas(10, 5, &pool);
@@ -41,7 +45,7 @@ void test_canvas_set_get_different_chars() {
     std::println("PASS\n");
 }
 
-void test_canvas_set_get_style() {
+TEST_CASE("canvas set get style") {
     std::println("--- test_canvas_set_get_style ---");
     StylePool pool;
     uint16_t sid = pool.intern(Style{}.with_bold());
@@ -53,7 +57,7 @@ void test_canvas_set_get_style() {
     std::println("PASS\n");
 }
 
-void test_canvas_set_oob_no_crash() {
+TEST_CASE("canvas set oob no crash") {
     std::println("--- test_canvas_set_oob_no_crash ---");
     StylePool pool;
     Canvas canvas(5, 5, &pool);
@@ -69,7 +73,7 @@ void test_canvas_set_oob_no_crash() {
     std::println("PASS\n");
 }
 
-void test_canvas_clear_zeroes_cells() {
+TEST_CASE("canvas clear zeroes cells") {
     std::println("--- test_canvas_clear_zeroes_cells ---");
     StylePool pool;
     Canvas canvas(5, 3, &pool);
@@ -80,7 +84,7 @@ void test_canvas_clear_zeroes_cells() {
     std::println("PASS\n");
 }
 
-void test_canvas_write_text_chars() {
+TEST_CASE("canvas write text chars") {
     std::println("--- test_canvas_write_text_chars ---");
     StylePool pool;
     Canvas canvas(20, 5, &pool);
@@ -93,7 +97,7 @@ void test_canvas_write_text_chars() {
     std::println("PASS\n");
 }
 
-void test_canvas_write_text_style() {
+TEST_CASE("canvas write text style") {
     std::println("--- test_canvas_write_text_style ---");
     StylePool pool;
     uint16_t sid = pool.intern(Style{}.with_bold());
@@ -104,7 +108,62 @@ void test_canvas_write_text_style() {
     std::println("PASS\n");
 }
 
-void test_canvas_fill_rect() {
+// SECURITY: write_text must NOT emit terminal-control codepoints to cells.
+// Untrusted text (process names, filenames, pasted blobs) can carry escape
+// introducers; if any reach the terminal they inject a sequence the emulator
+// acts on. The filter must catch C0, DEL, AND the C1 block (raw and
+// UTF-8-encoded) — while leaving the surrounding printable glyphs intact.
+TEST_CASE("canvas write text drops control bytes") {
+    std::println("--- test_canvas_write_text_drops_control_bytes ---");
+    StylePool pool;
+
+    auto no_control = [](Canvas& c, int w, int h) {
+        for (int y = 0; y < h; ++y)
+            for (int x = 0; x < w; ++x) {
+                char32_t cp = c.get(x, y).character;
+                // A control codepoint must never appear in a cell. (Empty
+                // cells read as 0, which IS < 0x20 — so assert the exact
+                // dangerous ranges, not "any control".)
+                assert(!(cp == 0x7F || (cp >= 0x80 && cp <= 0x9F)));
+                assert(!(cp >= 0x01 && cp < 0x20));
+            }
+    };
+
+    // C0 CSI clear-screen, 8-bit CSI (0x9B), OSC (0x9D), ST (0x9C), DEL, and a
+    // UTF-8-encoded C1 CSI (0xC2 0x9B), each right after a marker letter. The
+    // control bytes must vanish; the printable bytes around them (including the
+    // now-inert "[2J"/"31m" that followed the stripped introducers) may remain
+    // — what matters for security is that NO control codepoint reaches a cell.
+    {
+        Canvas canvas(40, 3, &pool);
+        std::string evil = std::string("A\x1b" "B\x9b" "C\x9d" "D\x9c" "E\x7f" "F\xC2\x9B" "G");
+        canvas.write_text(0, 0, evil, 0);
+        no_control(canvas, 40, 3);
+        // The marker letters A..G survive in order. Raw 8-bit C1 bytes are not
+        // valid UTF-8 leads, so decode_utf8 renders them as U+FFFD (the
+        // replacement glyph) rather than dropping them — that is SAFE (U+FFFD
+        // is inert), so we filter it out when checking letter order. The
+        // UTF-8-ENCODED C1 (0xC2 0x9B) does decode to U+009B and IS dropped.
+        std::u32string letters;
+        for (int x = 0; x < 40; ++x) {
+            char32_t cp = canvas.get(x, 0).character;
+            if (cp >= U'A' && cp <= U'Z') letters.push_back(cp);
+        }
+        assert(letters == U"ABCDEFG");
+    }
+
+    // Legitimate UTF-8 (accent, CJK, emoji) must render — no false positives.
+    {
+        Canvas canvas(20, 3, &pool);
+        canvas.write_text(0, 0, "caf\xC3\xA9", 0);          // café
+        assert(canvas.get(0, 0).character == U'c');
+        assert(canvas.get(3, 0).character == U'\u00E9');    // é preserved
+        no_control(canvas, 20, 3);
+    }
+    std::println("PASS\n");
+}
+
+TEST_CASE("canvas fill rect") {
     std::println("--- test_canvas_fill_rect ---");
     StylePool pool;
     Canvas canvas(10, 6, &pool);
@@ -126,7 +185,7 @@ void test_canvas_fill_rect() {
     std::println("PASS\n");
 }
 
-void test_canvas_push_pop_clip() {
+TEST_CASE("canvas push pop clip") {
     std::println("--- test_canvas_push_pop_clip ---");
     StylePool pool;
     Canvas canvas(10, 10, &pool);
@@ -143,7 +202,7 @@ void test_canvas_push_pop_clip() {
     std::println("PASS\n");
 }
 
-void test_canvas_clip_restored_after_pop() {
+TEST_CASE("canvas clip restored after pop") {
     std::println("--- test_canvas_clip_restored_after_pop ---");
     StylePool pool;
     Canvas canvas(10, 10, &pool);
@@ -159,7 +218,7 @@ void test_canvas_clip_restored_after_pop() {
     std::println("PASS\n");
 }
 
-void test_canvas_damage_after_clear() {
+TEST_CASE("canvas damage after clear") {
     std::println("--- test_canvas_damage_after_clear ---");
     StylePool pool;
     Canvas canvas(10, 5, &pool);
@@ -172,7 +231,7 @@ void test_canvas_damage_after_clear() {
     std::println("PASS\n");
 }
 
-void test_canvas_reset_damage() {
+TEST_CASE("canvas reset damage") {
     std::println("--- test_canvas_reset_damage ---");
     StylePool pool;
     Canvas canvas(10, 5, &pool);
@@ -183,7 +242,7 @@ void test_canvas_reset_damage() {
     std::println("PASS\n");
 }
 
-void test_canvas_mark_all_damaged() {
+TEST_CASE("canvas mark all damaged") {
     std::println("--- test_canvas_mark_all_damaged ---");
     StylePool pool;
     Canvas canvas(10, 5, &pool);
@@ -195,7 +254,7 @@ void test_canvas_mark_all_damaged() {
     std::println("PASS\n");
 }
 
-void test_canvas_get_packed_roundtrip() {
+TEST_CASE("canvas get packed roundtrip") {
     std::println("--- test_canvas_get_packed_roundtrip ---");
     StylePool pool;
     Canvas canvas(5, 5, &pool);
@@ -206,7 +265,7 @@ void test_canvas_get_packed_roundtrip() {
     std::println("PASS\n");
 }
 
-void test_canvas_resize() {
+TEST_CASE("canvas resize") {
     std::println("--- test_canvas_resize ---");
     StylePool pool;
     Canvas canvas(5, 5, &pool);
@@ -216,7 +275,7 @@ void test_canvas_resize() {
     std::println("PASS\n");
 }
 
-void test_canvas_cells_span_size() {
+TEST_CASE("canvas cells span size") {
     std::println("--- test_canvas_cells_span_size ---");
     StylePool pool;
     Canvas canvas(8, 4, &pool);
@@ -228,7 +287,7 @@ void test_canvas_cells_span_size() {
 // StylePool tests
 // ============================================================================
 
-void test_style_pool_intern_dedup() {
+TEST_CASE("style pool intern dedup") {
     std::println("--- test_style_pool_intern_dedup ---");
     StylePool pool;
     Style s = Style{}.with_bold();
@@ -238,7 +297,7 @@ void test_style_pool_intern_dedup() {
     std::println("PASS\n");
 }
 
-void test_style_pool_different_styles_different_ids() {
+TEST_CASE("style pool different styles different ids") {
     std::println("--- test_style_pool_different_styles_different_ids ---");
     StylePool pool;
     uint16_t id1 = pool.intern(Style{}.with_bold());
@@ -247,7 +306,7 @@ void test_style_pool_different_styles_different_ids() {
     std::println("PASS\n");
 }
 
-void test_style_pool_get_roundtrip() {
+TEST_CASE("style pool get roundtrip") {
     std::println("--- test_style_pool_get_roundtrip ---");
     StylePool pool;
     Style s = Style{}.with_bold().with_fg(Color::red());
@@ -255,11 +314,11 @@ void test_style_pool_get_roundtrip() {
     Style got = pool.get(id);
     assert(got.bold == true);
     assert(got.fg.has_value());
-    assert(got.fg->fg_sgr() == "31");
+    assert(theme::live().resolve(*got.fg).fg_sgr() == "31");
     std::println("PASS\n");
 }
 
-void test_style_pool_default_id_zero_is_empty_style() {
+TEST_CASE("style pool default id zero is empty style") {
     std::println("--- test_style_pool_default_id_zero_is_empty_style ---");
     StylePool pool;
     // Style id 0 should be the default (empty) style
@@ -272,7 +331,7 @@ void test_style_pool_default_id_zero_is_empty_style() {
 // Cell tests
 // ============================================================================
 
-void test_cell_pack_unpack_char() {
+TEST_CASE("cell pack unpack char") {
     std::println("--- test_cell_pack_unpack_char ---");
     Cell c{U'\u2603', 0, 0, 0}; // snowman ☃
     uint64_t packed = c.pack();
@@ -281,7 +340,7 @@ void test_cell_pack_unpack_char() {
     std::println("PASS\n");
 }
 
-void test_cell_pack_unpack_style_id() {
+TEST_CASE("cell pack unpack style id") {
     std::println("--- test_cell_pack_unpack_style_id ---");
     Cell c{U'A', 42, 0, 0};
     Cell got = Cell::unpack(c.pack());
@@ -290,7 +349,7 @@ void test_cell_pack_unpack_style_id() {
     std::println("PASS\n");
 }
 
-void test_cell_default_character() {
+TEST_CASE("cell default character") {
     std::println("--- test_cell_default_character ---");
     StylePool pool;
     Canvas canvas(5, 5, &pool);
@@ -300,31 +359,134 @@ void test_cell_default_character() {
     std::println("PASS\n");
 }
 
-int main() {
-    setvbuf(stdout, nullptr, _IONBF, 0);
-    test_canvas_dimensions();
-    test_canvas_set_get_char();
-    test_canvas_set_get_different_chars();
-    test_canvas_set_get_style();
-    test_canvas_set_oob_no_crash();
-    test_canvas_clear_zeroes_cells();
-    test_canvas_write_text_chars();
-    test_canvas_write_text_style();
-    test_canvas_fill_rect();
-    test_canvas_push_pop_clip();
-    test_canvas_clip_restored_after_pop();
-    test_canvas_damage_after_clear();
-    test_canvas_reset_damage();
-    test_canvas_mark_all_damaged();
-    test_canvas_get_packed_roundtrip();
-    test_canvas_resize();
-    test_canvas_cells_span_size();
-    test_style_pool_intern_dedup();
-    test_style_pool_different_styles_different_ids();
-    test_style_pool_get_roundtrip();
-    test_style_pool_default_id_zero_is_empty_style();
-    test_cell_pack_unpack_char();
-    test_cell_pack_unpack_style_id();
-    test_cell_default_character();
-    std::println("=== ALL 24 TESTS PASSED ===");
+// Wide-character orphan blit-edge repair. blit_packed_row_impl must
+// blank an orphan wide-lead at the right clip edge and an orphan
+// wide-trail at the left clip edge, otherwise the next paint sees
+// stale glyphs at those cells (the renderer would treat the orphan
+// trail's placeholder as a normal cell, or the orphan lead as a
+// normal-width char that overdraws its neighbour).
+TEST_CASE("canvas blit wide orphan right edge") {
+    std::println("--- test_canvas_blit_wide_orphan_right_edge ---");
+    StylePool pool;
+    Canvas canvas(10, 2, &pool);
+
+    // Build a 4-cell source: [A][wide-lead 'X'][wide-trail][B].
+    std::array<uint64_t, 4> src{
+        Cell{U'A', 0, 0, 0}.pack(),
+        Cell{U'X', 0, 0, 1}.pack(),     // wide lead
+        Cell{U' ', 0, 0, 2}.pack(),     // wide trail placeholder
+        Cell{U'B', 0, 0, 0}.pack(),
+    };
+
+    // Clip so the blit lands only at columns [0, 2). The wide lead
+    // at source index 1 ends up at canvas col 1 with its trail
+    // CHOPPED off (the clip ends at col 2 exclusive but the trail
+    // would have been at col 2). blit must blank the orphan lead.
+    canvas.push_clip(Rect{{Columns{0}, Rows{0}}, {Columns{2}, Rows{2}}});
+    canvas.blit_packed_row(0, 0, src.data(), 4, /*row_has_content=*/true);
+    canvas.pop_clip();
+
+    // Col 0 keeps 'A'; col 1 must be a blank cell (orphan lead
+    // repaired). The diff would otherwise emit a styled wide-lead
+    // glyph here and the renderer-side wide-trail handling would
+    // skip the next cell as a placeholder — corrupting the row.
+    Cell c0 = canvas.get(0, 0);
+    Cell c1 = canvas.get(1, 0);
+    assert(c0.character == U'A');
+    assert(c1.character == U' ');
+    assert(c1.width == 0);
+    std::println("PASS\n");
 }
+
+TEST_CASE("canvas blit wide orphan left edge") {
+    std::println("--- test_canvas_blit_wide_orphan_left_edge ---");
+    StylePool pool;
+    Canvas canvas(10, 2, &pool);
+
+    // Same source layout as above.
+    std::array<uint64_t, 4> src{
+        Cell{U'A', 0, 0, 0}.pack(),
+        Cell{U'X', 0, 0, 1}.pack(),
+        Cell{U' ', 0, 0, 2}.pack(),
+        Cell{U'B', 0, 0, 0}.pack(),
+    };
+
+    // Clip so only columns [2, 4) of the blit land on canvas.
+    // Source cell 2 (the wide trail) ends up at canvas col 2 —
+    // with its lead clipped away. blit must blank the orphan trail.
+    canvas.push_clip(Rect{{Columns{2}, Rows{0}}, {Columns{2}, Rows{2}}});
+    canvas.blit_packed_row(0, 0, src.data(), 4, /*row_has_content=*/true);
+    canvas.pop_clip();
+
+    Cell c2 = canvas.get(2, 0);
+    Cell c3 = canvas.get(3, 0);
+    assert(c2.character == U' ');
+    assert(c2.width == 0);
+    assert(c3.character == U'B');
+    std::println("PASS\n");
+}
+
+// StylePool's uint16_t id space saturates at 65535. Beyond that,
+// intern() must return id 0 (default style) and the `overflowed()`
+// flag must surface the condition. Filling 65k+ styles would be
+// slow; instead use the test-only knowledge that the cap is
+// `max_styles` and just push past it.
+TEST_CASE("style pool overflow returns default") {
+    std::println("--- test_style_pool_overflow_returns_default ---");
+    StylePool pool;
+    assert(!pool.overflowed());
+
+    // Fill the pool with distinct styles up to the cap. Use a
+    // structurally-varying color so each intern is unique.
+    auto make_style = [](uint32_t i) {
+        return Style{}.with_fg(Color::rgb(
+            (i      ) & 0xFF,
+            (i >> 8 ) & 0xFF,
+            (i >> 16) & 0xFF));
+    };
+
+    // intern up to (but not past) max_styles — 1 (id 0 is default).
+    constexpr uint32_t kCap =
+        static_cast<uint32_t>(StylePool::max_styles);
+    uint16_t last_valid = 0;
+    for (uint32_t i = 1; i < kCap; ++i) {
+        last_valid = pool.intern(make_style(i));
+    }
+    assert(!pool.overflowed());
+    assert(last_valid != 0);
+
+    // One more should trip the saturation.
+    uint16_t over = pool.intern(make_style(kCap + 1));
+    assert(over == 0);
+    assert(pool.overflowed());
+
+    // clear() resets the overflow flag.
+    pool.clear();
+    assert(!pool.overflowed());
+    std::println("PASS\n");
+}
+
+// Canvas::clear_row drains one row's cells and resets last_col_[y],
+// rescanning max_y_ if the cleared row was the previous max.
+TEST_CASE("canvas clear row") {
+    std::println("--- test_canvas_clear_row ---");
+    StylePool pool;
+    Canvas canvas(10, 4, &pool);
+    canvas.write_text(0, 0, "row0", 0);
+    canvas.write_text(0, 2, "row2", 0);
+    assert(canvas.max_content_row() == 2);
+    assert(canvas.last_content_col(0) == 3);
+    assert(canvas.last_content_col(2) == 3);
+
+    canvas.clear_row(2);
+    assert(canvas.last_content_col(2) == -1);
+    assert(canvas.max_content_row() == 0);
+    Cell c = canvas.get(0, 2);
+    assert(c.character == U' ');
+
+    canvas.clear_row(0);
+    assert(canvas.last_content_col(0) == -1);
+    assert(canvas.max_content_row() == -1);
+    std::println("PASS\n");
+}
+

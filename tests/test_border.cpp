@@ -1,6 +1,9 @@
 // Tests for border rendering: single, double, round, bold, classic styles
 #include <maya/maya.hpp>
-#include <cassert>
+// NDEBUG guard: CMake builds tests in Release (-O3 -DNDEBUG), which strips
+// assert(). Undefine it here so this file's runtime asserts actually fire.
+#undef NDEBUG
+#include "agtest.hpp"
 #include <print>
 
 using namespace maya;
@@ -30,13 +33,13 @@ static void dump(const Canvas& canvas, int rows = -1) {
 // Single border (─ │ ┌ ┐ └ ┘ — U+2500 range)
 // ============================================================================
 
-void test_border_single_corners_are_box_drawing() {
+TEST_CASE("border single corners are box drawing") {
     std::println("--- test_border_single_corners_are_box_drawing ---");
     StylePool pool;
     Canvas canvas(10, 5, &pool);
     render_tree(
         box().direction(Column).border(BorderStyle::Single)(text("hi")),
-        canvas, pool, theme::dark);
+        canvas, pool, theme::native);
     dump(canvas, 3);
     // All four corners should be box-drawing chars (U+2500+)
     assert(canvas.get(0, 0).character >= 0x2500); // top-left
@@ -47,13 +50,13 @@ void test_border_single_corners_are_box_drawing() {
     std::println("PASS\n");
 }
 
-void test_border_single_content_inside() {
+TEST_CASE("border single content inside") {
     std::println("--- test_border_single_content_inside ---");
     StylePool pool;
     Canvas canvas(10, 5, &pool);
     render_tree(
         box().direction(Column).border(BorderStyle::Single)(text("hi")),
-        canvas, pool, theme::dark);
+        canvas, pool, theme::native);
     dump(canvas, 3);
     // "hi" should appear at (1,1) — one cell inside the border
     assert(canvas.get(1, 1).character == U'h');
@@ -61,40 +64,40 @@ void test_border_single_content_inside() {
     std::println("PASS\n");
 }
 
-void test_border_single_top_left_corner() {
+TEST_CASE("border single top left corner") {
     std::println("--- test_border_single_top_left_corner ---");
     // Single border TL = ┌ (U+250C)
     StylePool pool;
     Canvas canvas(10, 5, &pool);
     render_tree(
         box().direction(Column).border(BorderStyle::Single)(text("x")),
-        canvas, pool, theme::dark);
+        canvas, pool, theme::native);
     assert(canvas.get(0, 0).character == U'\u250C'); // ┌
     std::println("  TL=U+{:04X}", (uint32_t)canvas.get(0, 0).character);
     std::println("PASS\n");
 }
 
-void test_border_single_horizontal_char() {
+TEST_CASE("border single horizontal char") {
     std::println("--- test_border_single_horizontal_char ---");
     // Single horizontal border = ─ (U+2500)
     StylePool pool;
     Canvas canvas(10, 5, &pool);
     render_tree(
         box().direction(Column).border(BorderStyle::Single)(text("x")),
-        canvas, pool, theme::dark);
+        canvas, pool, theme::native);
     // Top edge interior (between corners)
     assert(canvas.get(1, 0).character == U'\u2500'); // ─
     std::println("PASS\n");
 }
 
-void test_border_single_vertical_char() {
+TEST_CASE("border single vertical char") {
     std::println("--- test_border_single_vertical_char ---");
     // Single vertical border = │ (U+2502)
     StylePool pool;
     Canvas canvas(10, 5, &pool);
     render_tree(
         box().direction(Column).border(BorderStyle::Single)(text("x")),
-        canvas, pool, theme::dark);
+        canvas, pool, theme::native);
     // Left edge interior (between corners)
     assert(canvas.get(0, 1).character == U'\u2502'); // │
     std::println("PASS\n");
@@ -104,51 +107,51 @@ void test_border_single_vertical_char() {
 // Round border (╭ ╮ ╰ ╯ — U+256D..U+2570)
 // ============================================================================
 
-void test_border_round_top_left() {
+TEST_CASE("border round top left") {
     std::println("--- test_border_round_top_left ---");
     // Round TL = ╭ (U+256D)
     StylePool pool;
     Canvas canvas(10, 5, &pool);
     render_tree(
         box().direction(Column).border(BorderStyle::Round)(text("x")),
-        canvas, pool, theme::dark);
+        canvas, pool, theme::native);
     assert(canvas.get(0, 0).character == U'\u256D'); // ╭
     std::println("  TL=U+{:04X}", (uint32_t)canvas.get(0, 0).character);
     std::println("PASS\n");
 }
 
-void test_border_round_top_right() {
+TEST_CASE("border round top right") {
     std::println("--- test_border_round_top_right ---");
     // Round TR = ╮ (U+256E)
     StylePool pool;
     Canvas canvas(10, 5, &pool);
     render_tree(
         box().direction(Column).border(BorderStyle::Round)(text("x")),
-        canvas, pool, theme::dark);
+        canvas, pool, theme::native);
     assert(canvas.get(9, 0).character == U'\u256E'); // ╮
     std::println("PASS\n");
 }
 
-void test_border_round_bottom_left() {
+TEST_CASE("border round bottom left") {
     std::println("--- test_border_round_bottom_left ---");
     // Round BL = ╰ (U+2570)
     StylePool pool;
     Canvas canvas(10, 5, &pool);
     render_tree(
         box().direction(Column).border(BorderStyle::Round)(text("x")),
-        canvas, pool, theme::dark);
+        canvas, pool, theme::native);
     assert(canvas.get(0, 4).character == U'\u2570'); // ╰
     std::println("PASS\n");
 }
 
-void test_border_round_bottom_right() {
+TEST_CASE("border round bottom right") {
     std::println("--- test_border_round_bottom_right ---");
     // Round BR = ╯ (U+256F)
     StylePool pool;
     Canvas canvas(10, 5, &pool);
     render_tree(
         box().direction(Column).border(BorderStyle::Round)(text("x")),
-        canvas, pool, theme::dark);
+        canvas, pool, theme::native);
     assert(canvas.get(9, 4).character == U'\u256F'); // ╯
     std::println("PASS\n");
 }
@@ -157,39 +160,39 @@ void test_border_round_bottom_right() {
 // Double border (╔ ╗ ╚ ╝ ═ ║)
 // ============================================================================
 
-void test_border_double_top_left() {
+TEST_CASE("border double top left") {
     std::println("--- test_border_double_top_left ---");
     // Double TL = ╔ (U+2554)
     StylePool pool;
     Canvas canvas(10, 5, &pool);
     render_tree(
         box().direction(Column).border(BorderStyle::Double)(text("x")),
-        canvas, pool, theme::dark);
+        canvas, pool, theme::native);
     assert(canvas.get(0, 0).character == U'\u2554'); // ╔
     std::println("  TL=U+{:04X}", (uint32_t)canvas.get(0, 0).character);
     std::println("PASS\n");
 }
 
-void test_border_double_horizontal_char() {
+TEST_CASE("border double horizontal char") {
     std::println("--- test_border_double_horizontal_char ---");
     // Double horizontal = ═ (U+2550)
     StylePool pool;
     Canvas canvas(10, 5, &pool);
     render_tree(
         box().direction(Column).border(BorderStyle::Double)(text("x")),
-        canvas, pool, theme::dark);
+        canvas, pool, theme::native);
     assert(canvas.get(1, 0).character == U'\u2550'); // ═
     std::println("PASS\n");
 }
 
-void test_border_double_vertical_char() {
+TEST_CASE("border double vertical char") {
     std::println("--- test_border_double_vertical_char ---");
     // Double vertical = ║ (U+2551)
     StylePool pool;
     Canvas canvas(10, 5, &pool);
     render_tree(
         box().direction(Column).border(BorderStyle::Double)(text("x")),
-        canvas, pool, theme::dark);
+        canvas, pool, theme::native);
     assert(canvas.get(0, 1).character == U'\u2551'); // ║
     std::println("PASS\n");
 }
@@ -198,14 +201,14 @@ void test_border_double_vertical_char() {
 // Bold border (┏ ┓ ┗ ┛ ━ ┃)
 // ============================================================================
 
-void test_border_bold_top_left() {
+TEST_CASE("border bold top left") {
     std::println("--- test_border_bold_top_left ---");
     // Bold TL = ┏ (U+250F)
     StylePool pool;
     Canvas canvas(10, 5, &pool);
     render_tree(
         box().direction(Column).border(BorderStyle::Bold)(text("x")),
-        canvas, pool, theme::dark);
+        canvas, pool, theme::native);
     assert(canvas.get(0, 0).character == U'\u250F'); // ┏
     std::println("  TL=U+{:04X}", (uint32_t)canvas.get(0, 0).character);
     std::println("PASS\n");
@@ -215,13 +218,13 @@ void test_border_bold_top_left() {
 // Classic border (+ - |)
 // ============================================================================
 
-void test_border_classic_ascii_corners() {
+TEST_CASE("border classic ascii corners") {
     std::println("--- test_border_classic_ascii_corners ---");
     StylePool pool;
     Canvas canvas(10, 5, &pool);
     render_tree(
         box().direction(Column).border(BorderStyle::Classic)(text("x")),
-        canvas, pool, theme::dark);
+        canvas, pool, theme::native);
     dump(canvas, 3);
     // Classic corners are ASCII '+' (0x2B)
     assert(canvas.get(0, 0).character == U'+');
@@ -231,25 +234,25 @@ void test_border_classic_ascii_corners() {
     std::println("PASS\n");
 }
 
-void test_border_classic_horizontal_dash() {
+TEST_CASE("border classic horizontal dash") {
     std::println("--- test_border_classic_horizontal_dash ---");
     StylePool pool;
     Canvas canvas(10, 5, &pool);
     render_tree(
         box().direction(Column).border(BorderStyle::Classic)(text("x")),
-        canvas, pool, theme::dark);
+        canvas, pool, theme::native);
     // Classic horizontal = '-'
     assert(canvas.get(1, 0).character == U'-');
     std::println("PASS\n");
 }
 
-void test_border_classic_vertical_pipe() {
+TEST_CASE("border classic vertical pipe") {
     std::println("--- test_border_classic_vertical_pipe ---");
     StylePool pool;
     Canvas canvas(10, 5, &pool);
     render_tree(
         box().direction(Column).border(BorderStyle::Classic)(text("x")),
-        canvas, pool, theme::dark);
+        canvas, pool, theme::native);
     // Classic vertical = '|'
     assert(canvas.get(0, 1).character == U'|');
     std::println("PASS\n");
@@ -259,13 +262,13 @@ void test_border_classic_vertical_pipe() {
 // Border with color
 // ============================================================================
 
-void test_border_with_color() {
+TEST_CASE("border with color") {
     std::println("--- test_border_with_color ---");
     StylePool pool;
     Canvas canvas(10, 5, &pool);
     render_tree(
         box().direction(Column).border(BorderStyle::Single, Color::red())(text("x")),
-        canvas, pool, theme::dark);
+        canvas, pool, theme::native);
     // Border should still be present regardless of color
     assert(canvas.get(0, 0).character >= 0x2500);
     // The border cell should have a non-default style (red color was applied)
@@ -277,7 +280,7 @@ void test_border_with_color() {
 // Border text title
 // ============================================================================
 
-void test_border_title() {
+TEST_CASE("border title") {
     std::println("--- test_border_title ---");
     StylePool pool;
     Canvas canvas(20, 5, &pool);
@@ -285,7 +288,7 @@ void test_border_title() {
         box().direction(Column)
             .border(BorderStyle::Single)
             .border_text("Title")(text("content")),
-        canvas, pool, theme::dark);
+        canvas, pool, theme::native);
     dump(canvas, 2);
     // Title should appear in the top border row
     std::string top = get_row(canvas, 0);
@@ -297,39 +300,16 @@ void test_border_title() {
 // No border (default)
 // ============================================================================
 
-void test_no_border_no_box_chars() {
+TEST_CASE("no border no box chars") {
     std::println("--- test_no_border_no_box_chars ---");
     StylePool pool;
     Canvas canvas(10, 3, &pool);
     render_tree(
         box().direction(Column)(text("hello")),
-        canvas, pool, theme::dark);
+        canvas, pool, theme::native);
     // Without border, no box-drawing characters should appear in corners
     Cell tl = canvas.get(0, 0);
     assert(tl.character < 0x2500 || tl.character == U'h'); // first char is 'h' from text
     std::println("PASS\n");
 }
 
-int main() {
-    setvbuf(stdout, nullptr, _IONBF, 0);
-    test_border_single_corners_are_box_drawing();
-    test_border_single_content_inside();
-    test_border_single_top_left_corner();
-    test_border_single_horizontal_char();
-    test_border_single_vertical_char();
-    test_border_round_top_left();
-    test_border_round_top_right();
-    test_border_round_bottom_left();
-    test_border_round_bottom_right();
-    test_border_double_top_left();
-    test_border_double_horizontal_char();
-    test_border_double_vertical_char();
-    test_border_bold_top_left();
-    test_border_classic_ascii_corners();
-    test_border_classic_horizontal_dash();
-    test_border_classic_vertical_pipe();
-    test_border_with_color();
-    test_border_title();
-    test_no_border_no_box_chars();
-    std::println("=== ALL 19 TESTS PASSED ===");
-}

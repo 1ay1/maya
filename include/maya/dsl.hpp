@@ -41,7 +41,10 @@
 #include <utility>
 #include <vector>
 
+#include "core/scroll_state.hpp"
+#include "core/hit.hpp"
 #include "element/builder.hpp"
+#include "element/grid.hpp"
 #include "style/border.hpp"
 #include "style/color.hpp"
 #include "style/style.hpp"
@@ -119,11 +122,25 @@ inline constexpr TruncateTag  clip{};
 /// Never break text (may overflow container):  text("long...") | nowrap
 inline constexpr NoWrapTag nowrap{};
 
-template <uint8_t R, uint8_t G, uint8_t B>
-inline constexpr StyTag<CTStyle{.has_fg=true, .fg_r=R, .fg_g=G, .fg_b=B}> Fg{};
+// Funnelling the designated init through a consteval helper side-steps an
+// MSVC constexpr-evaluator bug where R/G/B appear as "outside their lifetime"
+// when used directly as designated-initializer values for a class NTTP.
+namespace detail_rgb {
+    template <uint8_t R, uint8_t G, uint8_t B>
+    consteval CTStyle make_fg() {
+        return CTStyle{.has_fg=true, .fg_r=R, .fg_g=G, .fg_b=B};
+    }
+    template <uint8_t R, uint8_t G, uint8_t B>
+    consteval CTStyle make_bg() {
+        return CTStyle{.has_bg=true, .bg_r=R, .bg_g=G, .bg_b=B};
+    }
+}
 
 template <uint8_t R, uint8_t G, uint8_t B>
-inline constexpr StyTag<CTStyle{.has_bg=true, .bg_r=R, .bg_g=G, .bg_b=B}> Bg{};
+inline constexpr StyTag<detail_rgb::make_fg<R, G, B>()> Fg{};
+
+template <uint8_t R, uint8_t G, uint8_t B>
+inline constexpr StyTag<detail_rgb::make_bg<R, G, B>()> Bg{};
 
 // ── Hex color shorthand ─────────────────────────────────────────────────────
 //
@@ -296,12 +313,23 @@ struct SpacerNode {
 };
 inline constexpr SpacerNode space{};
 
+// A horizontal rule: ONE line.
+//
+// It used to be a zero-height box with `BorderSides::horizontal()`, i.e. a top
+// AND a bottom edge — so a single `sep` painted TWO rules. Most call sites
+// never noticed, because content sitting immediately below made the pair read
+// as one thick divider; it only became visible where a `sep` had space around
+// it (under a search box), and the natural "fix" at each such site was to
+// stop using `sep`. That is how a primitive gets abandoned instead of fixed.
+//
+// `{top}` only draws the one line the name promises. Callers that genuinely
+// want a boxed band still have `box().border_sides(horizontal())`.
 struct SepNode {
     operator Element() const { return build(); }
     [[nodiscard]] Element build() const {
         return maya::detail::box()
             .border(BorderStyle::Single)
-            .border_sides(BorderSides::horizontal());
+            .border_sides(BorderSides{true, false, false, false});
     }
 };
 inline constexpr SepNode sep{};
@@ -372,10 +400,40 @@ template <FlexDirection Dir, BoxCfg Cfg, typename... Children>
 struct BoxNode {
     std::tuple<Children...> children;
 
-    operator Element() const { return build(); }
+    operator Element() const& { return build(); }
+    // Same reasoning as build(): `Element e = v(rows);` materialises from a
+    // temporary, so it should steal the children rather than duplicate them.
+    operator Element() && { return std::move(*this).build(); }
 
-    [[nodiscard]] Element build() const {
-        return std::apply([](const auto&... cs) {
+    [[nodiscard]] Element build() const& {
+        return build_impl_(children);
+    }
+
+    /// Move-out overload for a TEMPORARY node.
+    ///
+    /// `v(rows).build()` — the overwhelmingly common spelling — produces an
+    /// rvalue that dies on the next line, so the const& path's
+    /// `Element{item}` deep-copies every child of a tree that is about to
+    /// be discarded. On a 60-row column (one screen of transcript) that is
+    /// 256 allocations and 135 KB per build, against 61 and 23 KB when the
+    /// children are moved: ~4x the allocator traffic of the whole frame,
+    /// spent duplicating something nobody will read again.
+    ///
+    /// The const& overload stays for a NAMED node that is built more than
+    /// once; overload resolution picks this one only when the node is
+    /// expiring, so no existing caller changes behaviour.
+    [[nodiscard]] Element build() && {
+        return build_impl_(std::move(children));
+    }
+
+private:
+    // One implementation, instantiated for const& and && children. The
+    // forwarding is what lets the rvalue path move each child out while the
+    // lvalue path still copies — the two cannot drift apart because there
+    // is only one body.
+    template <class Tup>
+    [[nodiscard]] static Element build_impl_(Tup&& tup) {
+        return std::apply([](auto&&... cs) {
             auto b = maya::detail::box().direction(Dir);
             if constexpr (Cfg.pad_t || Cfg.pad_r || Cfg.pad_b || Cfg.pad_l)
                 b = std::move(b).padding(Cfg.pad_t, Cfg.pad_r, Cfg.pad_b, Cfg.pad_l);
@@ -398,23 +456,29 @@ struct BoxNode {
 
             // Fast path: all children are Nodes (compile-time known)
             if constexpr ((Node<std::remove_cvref_t<decltype(cs)>> && ...)) {
-                return b(cs.build()...);
+                return b(std::forward<decltype(cs)>(cs).build()...);
             } else {
                 // Mixed path: some children may be ElementRanges (vector<Element>, etc.)
                 std::vector<Element> elems;
-                auto collect = [&elems](const auto& c) {
+                auto collect = [&elems](auto&& c) {
                     using T = std::remove_cvref_t<decltype(c)>;
                     if constexpr (Node<T>) {
-                        elems.push_back(c.build());
+                        elems.push_back(std::forward<decltype(c)>(c).build());
+                    } else if constexpr (std::is_rvalue_reference_v<decltype(c)&&>
+                                         && !std::is_const_v<std::remove_reference_t<decltype(c)>>) {
+                        // The range itself is expiring: steal each Element
+                        // rather than duplicating it.
+                        for (auto& item : c)
+                            elems.push_back(std::move(item));
                     } else {
                         for (const auto& item : c)
                             elems.push_back(Element{item});
                     }
                 };
-                (collect(cs), ...);
+                (collect(std::forward<decltype(cs)>(cs)), ...);
                 return b(std::move(elems));
             }
-        }, children);
+        }, std::forward<Tup>(tup));
     }
 };
 
@@ -602,9 +666,15 @@ inline constexpr TextNode<S> t{};
 /// VStack: v(child1, child2, ...)
 /// Accepts any mix of compile-time nodes, runtime Elements, and
 /// ranges of Elements (e.g. std::vector<Element>).
+///
+/// Children are taken BY VALUE (so `v(std::move(rows))` moves into the
+/// parameter) and then MOVED into the node. The `{cs...}` copy this
+/// replaced was the first of two full duplications of every child — one
+/// here, one in build() — which together cost ~4x the allocator traffic of
+/// an entire frame on a one-screen column.
 template <DslChild... Cs>
 constexpr auto v(Cs... cs) {
-    return BoxNode<FlexDirection::Column, BoxCfg{}, Cs...>{{cs...}};
+    return BoxNode<FlexDirection::Column, BoxCfg{}, Cs...>{{std::move(cs)...}};
 }
 
 /// HStack: h(child1, child2, ...)
@@ -612,7 +682,7 @@ constexpr auto v(Cs... cs) {
 /// ranges of Elements (e.g. std::vector<Element>).
 template <DslChild... Cs>
 constexpr auto h(Cs... cs) {
-    return BoxNode<FlexDirection::Row, BoxCfg{}, Cs...>{{cs...}};
+    return BoxNode<FlexDirection::Row, BoxCfg{}, Cs...>{{std::move(cs)...}};
 }
 
 // ── BorderStyle aliases ─────────────────────────────────────────────────────
@@ -637,6 +707,36 @@ using maya::detail::hstack;
 using maya::detail::center;
 using maya::detail::zstack;
 using maya::detail::component;
+using maya::detail::fill;
+using maya::detail::paint;
+using maya::detail::adapt;
+using maya::detail::fit_row;
+using maya::detail::fit_col;
+using maya::FitItem;
+using maya::detail::pick;
+using maya::detail::clamp;
+using maya::detail::nothing;
+using maya::detail::list_ref;
+using maya::detail::ledger_ref;
+
+// Pretty + responsive toolkit
+using maya::Gradient;
+using maya::gradient;
+using maya::rainbow;
+using maya::detail::gradient_rule;
+using maya::HAlign;
+using maya::VAlign;
+using maya::detail::place;
+using maya::Bp;
+using maya::detail::responsive;
+
+// The grid — responsive layout with one number (element/grid.hpp)
+using maya::grid;
+using maya::GridOpts;
+using maya::sidebar;
+using maya::SidebarOpts;
+using maya::row;
+using maya::col;
 
 // ── User-defined literal for text nodes ─────────────────────────────────────
 //
@@ -763,6 +863,7 @@ struct RBorder { BorderStyle bs; };
 struct RBCol   { Color c; };
 struct RBText  { std::string s; BorderTextPos pos; BorderTextAlign align; };
 struct RGrow   { float g; };
+struct RShrink { float s; };
 struct RWidth  { int w; };
 struct RHeight { int h; };
 struct RFg     { Color c; };
@@ -771,6 +872,20 @@ struct RMargin { int t, r, b, l; };
 struct RAlign  { Align a; };
 struct RJust   { Justify j; };
 struct ROvf    { Overflow o; };
+
+// Scroll pipe — bundles overflow:Hidden + scroll_x/y + writeback pointer +
+// optional explicit viewport size. w/h of 0 mean "don't set" (the inner
+// box keeps whatever sizing it had / inherits from grow/parent).
+struct RScroll {
+    ScrollState* state;
+    int viewport_w = 0;
+    int viewport_h = 0;
+};
+
+// Hit pipe — tags the box as a mouse hit target (see core/hit.hpp). The
+// painter records the box's absolute painted rect under this id every
+// frame; maya::hit_test(x, y) resolves a mouse event to the topmost id.
+struct RHit { HitId id; };
 
 // -- Runtime pipe factories --
 
@@ -781,6 +896,7 @@ struct ROvf    { Overflow o; };
 [[nodiscard]] inline RBorder border(BorderStyle bs)            { return {bs}; }
 [[nodiscard]] inline RBCol   bcolor(Color c)                   { return {c}; }
 [[nodiscard]] inline RGrow   grow(float g = 1.0f)              { return {g}; }
+[[nodiscard]] inline RShrink shrink(float s = 1.0f)            { return {s}; }
 [[nodiscard]] inline RWidth  width(int w)                      { return {w}; }
 [[nodiscard]] inline RHeight height(int h)                     { return {h}; }
 [[nodiscard]] inline RFg     fgc(Color c)                      { return {c}; }
@@ -791,6 +907,23 @@ struct ROvf    { Overflow o; };
 [[nodiscard]] inline RAlign  align(Align a)                     { return {a}; }
 [[nodiscard]] inline RJust   justify(Justify j)                 { return {j}; }
 [[nodiscard]] inline ROvf    overflow(Overflow o)               { return {o}; }
+[[nodiscard]] inline RHit    hit(HitId id)                      { return {id}; }
+
+// Scroll factories. Vertical is the common case; horizontal is opt-in via
+// scrollx() or the 2-arg form. Passing 0 for a viewport size means "let
+// the box size itself" — pair with | grow or with another | height(...)
+// further down the pipe.
+//
+//   content | scroll(state, 8)            // y-axis only, viewport 8 rows tall
+//   content | scroll(state, 40, 8)        // both axes, 40 cols × 8 rows
+//   content | scrolly(state, 8)           // y-axis only
+//   content | scrollx(state, 40)          // x-axis only
+//   content | scroll(state) | grow        // 2D, fill remaining space
+[[nodiscard]] inline RScroll scroll(ScrollState& s)                  { return {&s, 0, 0}; }
+[[nodiscard]] inline RScroll scroll(ScrollState& s, int viewport_h)  { return {&s, 0, viewport_h}; }
+[[nodiscard]] inline RScroll scroll(ScrollState& s, int w, int h)    { return {&s, w, h}; }
+[[nodiscard]] inline RScroll scrolly(ScrollState& s, int h)          { return {&s, 0, h}; }
+[[nodiscard]] inline RScroll scrollx(ScrollState& s, int w)          { return {&s, w, 0}; }
 
 [[nodiscard]] inline RBText btext(std::string s,
     BorderTextPos p = BorderTextPos::Top,
@@ -805,7 +938,8 @@ struct WrappedNode {
     static constexpr bool is_wrapped_tag_ = true;
     static constexpr uint16_t PAD=1,GAP=2,BRD=4,BCOL=8,BTXT=16,
                               GRW=32,WD=64,HT=128,STY=256,
-                              MGN=512,ALN=1024,JST=2048,OVF=4096;
+                              MGN=512,ALN=1024,JST=2048,OVF=4096,
+                              SCRL=8192,HIT=16384,SHR=32768;
 
     Inner inner;
     int pt_=0, pr_=0, pb_=0, pl_=0, gap_=0;
@@ -815,12 +949,16 @@ struct WrappedNode {
     BorderTextPos btp_{};
     BorderTextAlign bta_{};
     float grw_=0;
+    float shr_=1.0f;
     int w_=0, h_=0;
     Style sty_{};
     int mt_=0, mr_=0, mb_=0, ml_=0;
     Align aln_{};
     Justify jst_{};
     Overflow ovf_{};
+    ScrollState* scrl_state_ = nullptr;
+    int scrl_vw_ = 0, scrl_vh_ = 0;
+    HitId hit_id_ = 0;
     uint16_t f_=0;
 
     operator Element() const { return build(); }
@@ -840,6 +978,7 @@ struct WrappedNode {
             if (f_&BCOL) box->border.colors = BorderColors::uniform(bcol_);
             if (f_&BTXT) box->border.text = BorderText{btxt_, btp_, bta_, 0};
             if (f_&GRW)  box->layout.grow = grw_;
+            if (f_&SHR)  box->layout.shrink = shr_;
             if (f_&WD)   box->layout.width = Dimension::fixed(w_);
             if (f_&HT)   box->layout.height = Dimension::fixed(h_);
             if (f_&STY)  box->style = box->style.merge(sty_);
@@ -847,15 +986,50 @@ struct WrappedNode {
             if (f_&ALN)  box->layout.align_items = aln_;
             if (f_&JST)  box->layout.justify = jst_;
             if (f_&OVF)  box->overflow = ovf_;
+            if (f_&HIT)  box->hit_id = hit_id_;
+            if (f_&SCRL) {
+                // Apply scroll AFTER explicit width/height pipes so the
+                // user can override the viewport size with | width/| height
+                // if they wired the pipe with viewport=0.
+                // overflow=Scroll signals to the layout engine that
+                // children should keep their natural sizes (so wider
+                // inner content can be scrolled into view) and to the
+                // renderer that paint should clip + translate by
+                // scroll_x/y. overflow=Hidden, by contrast, is plain
+                // CSS clipping with no viewport semantics — children
+                // stretch and shrink as normal.
+                box->overflow = Overflow::Scroll;
+                box->layout.scroll_x = scrl_state_->x;
+                box->layout.scroll_y = scrl_state_->y;
+                box->scroll_state    = scrl_state_;
+                box->scroll_role     = ScrollRole::Viewport;
+                // Keep the viewport at its own natural/fixed cross size — a
+                // parent whose align_items is Stretch (the CSS default for
+                // align_self=Auto) must not stretch it, or the scrolled
+                // content is constrained to the parent width and max_x/y
+                // (the scrollable extent) collapses.
+                box->layout.align_self = Align::Start;
+                if (scrl_vw_ > 0) box->layout.width  = Dimension::fixed(scrl_vw_);
+                if (scrl_vh_ > 0) box->layout.height = Dimension::fixed(scrl_vh_);
+            }
             return inner_elem;
         }
         auto b = maya::detail::box();
+        // A TextElement inner cannot receive the style from the wrapper box:
+        // paint interns the text node's own style and there is no box→text
+        // fg/bg cascade in the renderer. Merge piped style (fgc/bgc) straight
+        // into the text node so `text("x") | fgc(c)` actually colors it.
+        if (f_&STY) {
+            if (auto* t = maya::as_text(inner_elem))
+                t->style = t->style.merge(sty_);
+        }
         if (f_&PAD)  b.padding(pt_,pr_,pb_,pl_);
         if (f_&GAP)  b.gap(gap_);
         if (f_&BRD)  b.border(brd_);
         if (f_&BCOL) b.border_color(bcol_);
         if (f_&BTXT) b.border_text(btxt_,btp_,bta_);
         if (f_&GRW)  b.grow(grw_);
+        if (f_&SHR)  b.shrink(shr_);
         if (f_&WD)   b.width(Dimension::fixed(w_));
         if (f_&HT)   b.height(Dimension::fixed(h_));
         if (f_&STY)  b.style(sty_);
@@ -863,7 +1037,27 @@ struct WrappedNode {
         if (f_&ALN)  b.align_items(aln_);
         if (f_&JST)  b.justify(jst_);
         if (f_&OVF)  b.overflow(ovf_);
-        return b(std::move(inner_elem));
+        // Scroll on the wrapper case: we need to build first so we can
+        // reach into the resulting BoxElement and set the fields the
+        // builder doesn't expose. See the as_box() branch above for the
+        // mirror image.
+        Element built = b(std::move(inner_elem));
+        if (f_&HIT) {
+            if (auto* bx = maya::as_box(built)) bx->hit_id = hit_id_;
+        }
+        if (f_&SCRL) {
+            if (auto* bx = maya::as_box(built)) {
+                bx->overflow = Overflow::Scroll;
+                bx->layout.scroll_x = scrl_state_->x;
+                bx->layout.scroll_y = scrl_state_->y;
+                bx->scroll_state    = scrl_state_;
+                bx->scroll_role     = ScrollRole::Viewport;
+                bx->layout.align_self = Align::Start;   // see as_box() branch
+                if (scrl_vw_ > 0) bx->layout.width  = Dimension::fixed(scrl_vw_);
+                if (scrl_vh_ > 0) bx->layout.height = Dimension::fixed(scrl_vh_);
+            }
+        }
+        return built;
     }
 };
 
@@ -904,6 +1098,10 @@ template <Node N> [[nodiscard]] auto operator|(N n, RGrow t) {
     auto w = as_wrapped(std::move(n));
     w.grw_=t.g; w.f_ |= decltype(w)::GRW; return w;
 }
+template <Node N> [[nodiscard]] auto operator|(N n, RShrink t) {
+    auto w = as_wrapped(std::move(n));
+    w.shr_=t.s; w.f_ |= decltype(w)::SHR; return w;
+}
 template <Node N> [[nodiscard]] auto operator|(N n, RWidth t) {
     auto w = as_wrapped(std::move(n));
     w.w_=t.w; w.f_ |= decltype(w)::WD; return w;
@@ -936,6 +1134,18 @@ template <Node N> [[nodiscard]] auto operator|(N n, RJust t) {
 template <Node N> [[nodiscard]] auto operator|(N n, ROvf t) {
     auto w = as_wrapped(std::move(n));
     w.ovf_=t.o; w.f_ |= decltype(w)::OVF; return w;
+}
+template <Node N> [[nodiscard]] auto operator|(N n, RHit t) {
+    auto w = as_wrapped(std::move(n));
+    w.hit_id_=t.id; w.f_ |= decltype(w)::HIT; return w;
+}
+template <Node N> [[nodiscard]] auto operator|(N n, RScroll t) {
+    auto w = as_wrapped(std::move(n));
+    w.scrl_state_ = t.state;
+    w.scrl_vw_    = t.viewport_w;
+    w.scrl_vh_    = t.viewport_h;
+    w.f_ |= decltype(w)::SCRL;
+    return w;
 }
 
 // -- Compile-time pipe tags forwarded through WrappedNode --

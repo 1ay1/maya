@@ -21,13 +21,18 @@
 namespace maya {
 
 struct InlineDiffConfig {
-    Color add_fg      = Color::green();
-    Color del_fg      = Color::red();
-    Color add_bg      = Color::green();    // word-level highlight
-    Color del_bg      = Color::red();      // word-level highlight
-    Color add_line_bg = Color::black();    // subtle whole-line tint
-    Color del_line_bg = Color::black();    // subtle whole-line tint
-    Color same_fg     = Color::white();
+    // The fixed diff palette, not theme slots — see diff_palette in
+    // tool_body_preview.hpp for why a diff owns both sides of its pair.
+    // These were Success-on-DiffAdded and Error-on-DiffRemoved, which
+    // collapse onto the SAME ansi colour under theme::native: green text
+    // on a green band.
+    Color add_fg      = diff_palette::add_fg;
+    Color del_fg      = diff_palette::rem_fg;
+    Color add_bg      = diff_palette::add_rail;
+    Color del_bg      = diff_palette::rem_rail;
+    Color add_line_bg = diff_palette::add_bg;
+    Color del_line_bg = diff_palette::rem_bg;
+    Color same_fg     = Color::slot(ThemeSlot::Text);
     bool  show_header = true;
 };
 

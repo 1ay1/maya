@@ -107,8 +107,8 @@ inline constexpr SimdCaps simd_caps = {
 #if defined(__x86_64__) || defined(_M_X64)
     .sse2 = true,                  // x86-64 baseline
 #endif
-#if defined(__aarch64__) || defined(_M_ARM64)
-    .neon = true,                  // AArch64 baseline
+#if defined(__aarch64__) || defined(_M_ARM64) || defined(__ARM_NEON)
+    .neon = true,                  // AArch64 baseline, ARMv7+NEON build
 #endif
 #if defined(__ARM_FEATURE_SVE)
     .sve = true,
@@ -160,6 +160,20 @@ static_assert(os != Os::Unknown || arch == Arch::Wasm32,
     #define MAYA_RESTRICT __restrict
 #else
     #define MAYA_RESTRICT __restrict__
+#endif
+
+// __builtin_unreachable / __builtin_expect — GCC/Clang intrinsics the rest
+// of maya relies on. MSVC has __assume(0) for unreachability and no direct
+// equivalent for branch hinting (identity is the correct fallback — the
+// surrounding [[likely]]/[[unlikely]] attributes handle hot-path hinting
+// on C++20 compilers).
+#if defined(_MSC_VER) && !defined(__clang__)
+    #ifndef __builtin_unreachable
+        #define __builtin_unreachable() __assume(0)
+    #endif
+    #ifndef __builtin_expect
+        #define __builtin_expect(expr, val) (expr)
+    #endif
 #endif
 
 // Force-inline hint — stronger than [[nodiscard]], used in hot paths.

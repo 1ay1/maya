@@ -37,8 +37,6 @@ public:
     void set_content(std::string_view text) { content_ = std::string{text}; }
     void append(std::string_view text) { content_ += text; }
 
-    void advance(float dt) { spinner_.advance(dt); }
-
     [[nodiscard]] bool is_active() const { return active_; }
     [[nodiscard]] bool is_expanded() const { return expanded_; }
 
@@ -55,7 +53,7 @@ public:
         std::vector<Element> elems;
         elems.push_back(std::move(header));
 
-        auto gutter_style = Style{}.with_fg(Color::bright_black());
+        auto gutter_style = Style{}.with_fg(Color::slot(ThemeSlot::Muted));
         auto text_style = Style{}.with_italic().with_dim();
 
         std::string_view sv = content_;

@@ -34,7 +34,7 @@ struct UserMessage {
     [[nodiscard]] static Element build(Element content) {
         return (dsl::v(std::move(content))
             | dsl::border(BorderStyle::Round)
-            | dsl::bcolor(Color::bright_black())
+            | dsl::bcolor(Color::slot(ThemeSlot::Muted))
             | dsl::padding(0, 1, 0, 1)).build();
     }
 };

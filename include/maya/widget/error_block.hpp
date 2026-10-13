@@ -35,11 +35,11 @@ class ErrorBlock {
 
     [[nodiscard]] Color severity_color() const {
         switch (severity_) {
-            case ErrorSeverity::Error:   return Color::red();
-            case ErrorSeverity::Warning: return Color::yellow();
-            case ErrorSeverity::Info:    return Color::blue();
+            case ErrorSeverity::Error:   return Color::slot(ThemeSlot::Error);
+            case ErrorSeverity::Warning: return Color::slot(ThemeSlot::Warning);
+            case ErrorSeverity::Info:    return Color::slot(ThemeSlot::Primary);
         }
-        return Color::red();
+        return Color::slot(ThemeSlot::Error);
     }
 
     [[nodiscard]] const char* severity_icon() const {
@@ -72,7 +72,7 @@ public:
         Color sc = severity_color();
         auto msg_style = Style{};
         auto dim       = Style{}.with_dim();
-        auto hint_style = Style{}.with_fg(Color::green()).with_italic();
+        auto hint_style = Style{}.with_fg(Color::slot(ThemeSlot::Success)).with_italic();
 
         std::vector<Element> rows;
 
@@ -96,7 +96,7 @@ public:
         if (!hint_.empty()) {
             rows.push_back(h(
                 text("hint: ", hint_style),
-                text(hint_, Style{}.with_fg(Color::green()))
+                text(hint_, Style{}.with_fg(Color::slot(ThemeSlot::Success)))
             ).build());
         }
 

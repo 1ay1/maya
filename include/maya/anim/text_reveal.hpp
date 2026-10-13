@@ -1,0 +1,795 @@
+#pragma once
+// maya::anim::text_reveal — the streaming TYPEWRITER as a framework primitive
+// ============================================================================
+//
+// "Text materialising in real time" — the scramble→resolve tip, the hot→cool
+// gradient trail, the ghosted not-yet-revealed body, the bright sweep cursor
+// at the reveal front, and the pulsing end-caret — is one of the most
+// recognisable maya effects. It used to live as ~300 lines welded into the
+// markdown streaming widget, unreachable by any other widget.
+//
+// This header lifts the VISUAL ALGORITHM out into a reusable decorator that
+// operates on the trailing edge of ANY text leaf. A widget that streams text
+// (a log tail, a chat bubble, a code preview, a custom renderer) gets the
+// full effect by:
+//
+//   1. building its Element tree as normal,
+//   2. finding the rightmost TextElement leaf (the live tail),
+//   3. calling anim::decorate_text_reveal(leaf, params).
+//
+// The decorator is PURELY VISUAL and HEIGHT-STABLE: it never adds or removes
+// codepoints (the leaf's wrapped height is identical before and after), so it
+// cannot reflow the layout or push committed rows into scrollback. It only
+// rewrites the StyledRuns over the trailing window. That invariant is what
+// makes it safe to drop into any widget without re-deriving the scrollback
+// correctness work.
+//
+// Time + cursor state are INPUTS — the decorator holds no clock and no
+// cursor. The caller supplies `ms_total`, the age of the trailing edge, and
+// how many codepoints are "revealed" vs the total. Pair it with
+// anim::RateCursor (the typewriter integrator in animation.hpp) and a
+// per-frame clock read for the full self-driving experience, or feed it a
+// fixed cursor for a static one-shot.
+
+#include <algorithm>
+#include <cstddef>
+#include <cstdint>
+#include <optional>
+#include <string>
+#include <string_view>
+#include <vector>
+
+#include "../core/animation.hpp"
+// element/text.hpp also supplies word_wrap, which line_bounded's wrap-aware
+// clamp re-uses so the visual row boundary matches the renderer exactly.
+#include "../element/text.hpp"
+#include "../style/color.hpp"
+#include "../style/style.hpp"
+
+namespace maya::anim {
+
+// ============================================================================
+// TextRevealParams — what the decorator needs to know each frame
+// ============================================================================
+struct TextRevealParams {
+    // Monotonic wall-clock in ms (e.g. anim::Clock::now_ms()). Drives the
+    // scramble churn, gradient phase, sweep + caret pulses.
+    std::int64_t ms_total = 0;
+
+    // Age in ms of the NEWEST codepoint at the trailing edge — i.e. how long
+    // since the tail last grew. 0 = just arrived (full heat), large = settled
+    // (cool). Each earlier codepoint is treated as `char_step_ms` older.
+    std::int64_t edge_age_ms = 0;
+
+    // Reveal cursor, in codepoints. `revealed_cp` codepoints of the tail
+    // leaf's content are considered "typed"; the rest (up to total_cp) are
+    // ghosted (rendered invisible but space-occupying) so the text appears to
+    // materialise left-to-right. Set revealed_cp == total_cp for no ghosting
+    // (decoration only). total_cp == 0 ⇒ derive from the leaf content.
+    std::size_t revealed_cp = 0;
+    std::size_t total_cp    = 0;
+
+    // When the host clips the visible bytes mid-line (so only completed lines
+    // render full-width, scrollback-safe), pass the count of within-line
+    // codepoints PAST the cursor here; they get ghosted. When 0, the
+    // decorator falls back to (total_cp - revealed_cp).
+    std::size_t clipped_unrevealed_cp = 0;
+    bool        clip_active           = false;
+
+    // ── tunables (sensible defaults match the original markdown reveal) ──
+    std::size_t  trail_len    = 36;   // gradient band length (cp)
+    std::size_t  scramble_len = 6;    // churn window at the very tip (cp)
+    std::int64_t scramble_ms  = 220;  // a cp scrambles for this long after arrival
+    std::int64_t char_step_ms = 26;   // per-cp age increment leftward
+    std::size_t  ghost_extra  = 96;   // ghost band beyond the gradient
+
+    // The trailing edge is still churning until the freshest scrambled cp
+    // has aged past scramble_ms AND every cp in the scramble window has
+    // stepped out of it (each is char_step_ms older leftward). This is the
+    // SAME expression the decorator uses internally to decide edge
+    // "caught-up" (see decorate_text_reveal). Hosts that must hold a widget
+    // live until the tail visually resolves (StreamingMarkdown's finalize
+    // gate) MUST derive their settle threshold from HERE, not hardcode a
+    // copy — otherwise a tunable change here silently freezes scramble
+    // glyphs onto a settled message.
+    [[nodiscard]] constexpr std::int64_t settle_window_ms() const noexcept {
+        return scramble_ms +
+               static_cast<std::int64_t>(scramble_len) * char_step_ms;
+    }
+
+    // Master toggles so a caller can take just the parts it wants.
+    bool enable_scramble = true;
+    bool enable_gradient = true;
+    bool enable_ghost    = true;   // left-to-right materialise
+    bool enable_sweep    = true;   // bright cursor at the reveal front
+    bool enable_caret    = true;   // pulsing end-caret when caught up
+
+    // When set, the scramble step preserves STRUCTURAL glyphs: spaces, the
+    // multi-byte │ / ─ box-drawing borders and any wide glyph are never
+    // swapped — only single-byte printable ASCII is churned. Lets a table row
+    // morph its cell CONTENT like prose while its │ separators and column
+    // padding stay byte-identical (no border corruption / column drift).
+    // Default off so prose decoration is byte-for-byte unchanged.
+    bool protect_structure = false;
+
+    // Fraction in [0,1] of the leaf's last visual line that is "typed". When
+    // >= 0 it OVERRIDES revealed_cp: the reveal front becomes
+    // reveal_frac * (last-line cp). For an eager whole-row block (a streaming
+    // table row, a code line) the RENDERED leaf is wider than its source (cell
+    // padding, │ borders, syntax runs), so a source-codepoint cursor doesn't
+    // map onto it — the host passes the cursor's 0..1 progress through the
+    // row's SOURCE span instead and the row reveals proportionally, gliding
+    // left-to-right at the live stream's own speed exactly like a prose tail.
+    // <0 (default) ⇒ off (revealed_cp / clip drive the front), so prose
+    // decoration is byte-for-byte unchanged.
+    double reveal_frac = -1.0;
+
+    // Confine ALL effects (ghost / scramble / gradient / sweep) to the leaf's
+    // LAST visual line: the reveal window never steps back past the final
+    // '\n', and a derived total_cp counts only that last line. For a multi-
+    // line leaf (a fenced code block rendered as one TextElement) this
+    // guarantees only the bottom — the live edge — is ever rewritten, so a
+    // line that has already scrolled into native scrollback can never be
+    // recoloured/ghosted from underneath (the streaming scrollback-corruption
+    // class of bug).
+    //
+    // Default off so prose decoration is byte-for-byte unchanged.
+    bool line_bounded = false;
+
+    // Wrap width for line_bounded, in columns. 0 = don't consider wrapping.
+    //
+    // WHY THIS EXISTS. line_bounded alone bounds by the last '\n' in the
+    // SOURCE. A streaming prose paragraph is one long source line with no
+    // newline in it at all — the RENDERER wraps it across several visual
+    // rows. So rfind('\n') finds nothing, the window opens at byte 0, and
+    // every effect (gradient recolour, ghost conceal) sweeps the whole
+    // paragraph across every wrapped row, every frame. Two consequences,
+    // both observed: settled rows above the live one visibly re-render
+    // mid-glide ("it glides, goes back, glides again"), and — the reason
+    // line_bounded was introduced — an upper wrapped row that has scrolled
+    // into native scrollback still gets its style rewritten, which is
+    // exactly the corruption line_bounded was meant to prevent. The guard
+    // was a no-op for the single most common content type.
+    //
+    // Given the width, the bound becomes the last WRAP POINT rather than the
+    // last newline, so "only the bottom visual row animates" holds for
+    // unbroken prose too.
+    std::size_t wrap_width = 0;
+
+    // How the not-yet-typed (ghost) cp render. The leaf must stay
+    // HEIGHT/WIDTH-stable (the markdown streaming path commits rows to native
+    // scrollback), so unrevealed cp can't simply be deleted. Two modes:
+    //   • ghost_blank = true  (default): keep the REAL glyph but mark it
+    //     conceal (SGR 8 — occupy the column, paint nothing). Genuinely
+    //     INVISIBLE and background-independent, and — crucially — the leaf
+    //     content bytes are UNCHANGED, so the word-wrapper computes the exact
+    //     same line breaks as the settled frame. The reveal is then a pure
+    //     paint-layer flip with zero reflow. (An earlier implementation swap-
+    //     ped in display-width-matched SPACES; the wrapper trims/skips a
+    //     trailing ghost-space run at a wrap boundary, so a wrapping line
+    //     revealed a whole WORD at a time — the "smooth then bursts" stutter.)
+    //   • ghost_blank = false: keep the real glyph but style it
+    //     default-fg + dim. Only invisible when the leaf sits on the terminal
+    //     default background; otherwise the body reads as "already there."
+    //     Retained for callers that deliberately want a fade-in look.
+    bool ghost_blank = true;
+
+    // SCROLLBACK SAFETY. The scramble effect normally SWAPS the real glyph for
+    // a random one while a codepoint is churning. That is a content edit: if
+    // the row it lives on scrolls off the viewport into the terminal's
+    // IMMUTABLE native scrollback before the churn resolves, the random glyph
+    // is frozen there forever — the user sees permanent garbage like
+    //     "… exactly like real assistan8??/%8"   (should be "…assistant prose")
+    // The overlay cannot self-guard: it is viewport-blind by construction, so
+    // it never knows the live bottom row is one frame from scrolling away.
+    //
+    // With `scramble_glyph_safe` the churn keeps its full VISUAL signature
+    // (the hot pink/orange flicker styling below) but emits the REAL glyph
+    // instead of a random one. The effect still reads as "characters heating
+    // up as they land", while every byte on screen — and therefore every byte
+    // that can ever reach scrollback — is already final. Cheap: it only drops
+    // the glyph substitution, and it also removes the scramble's re-wrap
+    // (a swapped glyph could change column width; the real one can't).
+    bool scramble_glyph_safe = false;
+
+    // Result flag: set true by the decorator when the trailing bytes were
+    // rewritten (scramble substituted glyphs of different byte width), so the
+    // caller knows to invalidate the leaf's wrap cache. Ghost/recolor frames
+    // (including conceal ghosting, which leaves content bytes intact) leave
+    // it false (cheap path — no re-wrap).
+};
+
+namespace reveal_detail {
+
+// Eased ping-pong pulse in [0,1] over `period_ms`, routed through smoothstep
+// so it decelerates at both ends. (Same helper the original overlay used.)
+[[nodiscard]] inline double pulse01(std::int64_t ms_total,
+                                    std::int64_t period_ms) noexcept {
+    if (period_ms <= 0) return 0.0;
+    const double phase =
+        static_cast<double>(((ms_total % period_ms) + period_ms) % period_ms) /
+        static_cast<double>(period_ms);
+    const double tri = phase < 0.5 ? (phase * 2.0) : (2.0 - phase * 2.0);
+    return ease::smoothstep(tri);
+}
+
+// Step back `n` UTF-8 codepoints from the end of `s`. Returns the byte offset.
+[[nodiscard]] inline std::size_t utf8_step_back(std::string_view s,
+                                                std::size_t n) noexcept {
+    std::size_t i = s.size();
+    while (n > 0 && i > 0) {
+        --i;
+        while (i > 0 && (static_cast<unsigned char>(s[i]) & 0xC0) == 0x80) --i;
+        --n;
+    }
+    return i;
+}
+
+// Curated "digital noise" glyph set for the scramble tip. STRICTLY width-1
+// (single terminal column) — a scramble glyph swap MUST preserve the leaf's
+// display width or it reflows the line (and in a streaming context can push
+// committed rows into scrollback). Do NOT add wide (CJK / emoji) glyphs here;
+// the sparkle (✨, width 2) was removed for exactly this reason.
+inline constexpr const char* kScrambleGlyphs[] = {
+    "#", "$", "%", "&", "*", "+", "=", "?", "@",
+    "!", "~", "^", "<", ">", "|", "/", "\\",
+    "\xe2\x96\x91", "\xe2\x96\x92", "\xe2\x96\x93",        // ░▒▓
+    "\xe2\x96\xa0", "\xe2\x96\xa1",                        // ■□
+    "\xe2\x97\x86", "\xe2\x97\x87", "\xe2\x97\x8f", "\xe2\x97\x8b",  // ◆◇●○
+    "\xe2\x9c\xa6",                                        // ✦ (width-1 star)
+    "\xce\xb1", "\xce\xb2", "\xce\xb3", "\xce\xb4",        // αβγδ
+    "\xce\xbb", "\xcf\x80", "\xcf\x83", "\xcf\x86",        // λπσφ
+    "0", "1", "7", "8", "X", "Z",
+};
+inline constexpr std::size_t kScrambleN =
+    sizeof(kScrambleGlyphs) / sizeof(kScrambleGlyphs[0]);
+
+[[nodiscard]] inline std::string_view scramble_pick(std::size_t cp_idx,
+                                                    std::int64_t age_ms,
+                                                    std::int64_t ms_total) noexcept {
+    const std::uint64_t time_bucket = static_cast<std::uint64_t>(ms_total / 45);
+    std::uint64_t h = 0x9e3779b97f4a7c15ull;
+    h ^= cp_idx + 0x9e3779b9 + (h << 6) + (h >> 2);
+    h ^= time_bucket + 0x9e3779b9 + (h << 6) + (h >> 2);
+    h ^= static_cast<std::uint64_t>(age_ms) + 0x9e3779b9 + (h << 6) + (h >> 2);
+    return std::string_view{kScrambleGlyphs[h % kScrambleN]};
+}
+
+// Age-banded hot→cool trail colour via the central anim::lerp(Color) so the
+// channel math matches the rest of the UI. Returns nullopt past the trail.
+//
+// The bands are THEME SLOTS, not literals. A hardcoded ramp is the reveal
+// stating its own palette over the user's, which under theme::native (all
+// Named/Default, so the terminal's own colours show through) meant a
+// freshly-streamed line arrived in pink-to-grey regardless of what the
+// user picked — and a blend of two literals is still a literal, so the
+// #45 channel guard could not see it.
+//
+// accent -> info -> muted reads as the same hot-to-cool fade in any theme,
+// because that is what those roles MEAN. On a channel-less theme lerp()
+// degrades to an endpoint, so the fade becomes three honest steps instead
+// of a computed wrong colour.
+[[nodiscard]] inline std::optional<Style> trail_style(std::int64_t age_ms) {
+    if (age_ms >= 700) return std::nullopt;
+    const Theme& th = theme::live();
+    const LitColor hot  = th.resolve(Color::slot(ThemeSlot::Accent));
+    const LitColor warm = th.resolve(Color::slot(ThemeSlot::Info));
+    const LitColor cool = th.resolve(Color::slot(ThemeSlot::Muted));
+    Color col;
+    bool bold = false, dim = false;
+    if (age_ms < 120) {
+        const double t = ease::smoothstep(age_ms / 120.0);
+        col  = lerp(hot, warm, t);
+        bold = true;
+    } else if (age_ms < 320) {
+        const double t = ease::smoothstep((age_ms - 120) / 200.0);
+        col  = lerp(warm, cool, t);
+        bold = t < 0.5;
+    } else {
+        const double t = ease::smoothstep((age_ms - 320) / 380.0);
+        col  = lerp(cool, th.resolve(Color::slot(ThemeSlot::Text)), t);
+        dim  = true;
+    }
+    Style s = Style{}.with_fg(col);
+    if (bold) s = s.with_bold();
+    if (dim)  s = s.with_dim();
+    return s;
+}
+
+// True for the box-drawing / block-element codepoints a table or panel FRAME
+// is built from (U+2500..U+259F: ─ │ ┌ ┐ └ ┘ ├ ┤ ┬ ┴ ┼ ┈ and the block
+// shades). This is the NARROW "is this chrome?" test used to decide what may
+// never be ghosted. Deliberately distinct from the broad "may I scramble
+// this?" test — see the two-flag split in decorate_text_reveal.
+[[nodiscard]] inline bool is_frame_cp(char32_t c) noexcept {
+    return c >= 0x2500u && c <= 0x259Fu;
+}
+
+// Decode the first codepoint of `s` (already a single-codepoint slice).
+// Returns 0 on a malformed/truncated sequence — callers treat 0 as "not a
+// frame glyph", which fails SAFE (the cp ghosts like content).
+[[nodiscard]] inline char32_t first_cp(std::string_view s) noexcept {
+    if (s.empty()) return 0;
+    const unsigned char b0 = static_cast<unsigned char>(s[0]);
+    if (b0 < 0x80) return static_cast<char32_t>(b0);
+    const auto cont = [&](std::size_t i) -> char32_t {
+        return i < s.size()
+                   ? static_cast<char32_t>(
+                         static_cast<unsigned char>(s[i]) & 0x3Fu)
+                   : 0u;
+    };
+    if ((b0 & 0xE0u) == 0xC0u && s.size() >= 2)
+        return (static_cast<char32_t>(b0 & 0x1Fu) << 6) | cont(1);
+    if ((b0 & 0xF0u) == 0xE0u && s.size() >= 3)
+        return (static_cast<char32_t>(b0 & 0x0Fu) << 12) | (cont(1) << 6)
+             | cont(2);
+    if ((b0 & 0xF8u) == 0xF0u && s.size() >= 4)
+        return (static_cast<char32_t>(b0 & 0x07u) << 18) | (cont(1) << 12)
+             | (cont(2) << 6) | cont(3);
+    return 0;
+}
+
+} // namespace reveal_detail
+
+// ============================================================================
+// clip_text_to_cursor — the TRUE typewriter: cut content at the reveal front
+// ============================================================================
+// The ghost band in decorate_text_reveal renders not-yet-typed codepoints in
+// Color::default_color()+dim. That is genuinely INVISIBLE only when the leaf
+// sits on the terminal default background (the markdown streaming path clips
+// its content in build(), so unrevealed text is never in the leaf at all). A
+// GENERIC caller handing the decorator a FULL-content leaf instead sees the
+// not-yet-typed body rendered dimly-but-readable — the text "is already
+// there" and the effect runs on top of it.
+//
+// For a true left-to-right typewriter on a full-content leaf, call this FIRST
+// to physically truncate the content to the first `revealed_cp` codepoints,
+// then decorate the (now shorter) leaf with revealed_cp == total_cp (i.e. no
+// ghost band — there is nothing past the cursor to ghost). The leaf grows a
+// codepoint at a time exactly as a real stream would.
+//
+// HEIGHT NOTE: unlike decorate_text_reveal this CHANGES the leaf height as
+// the cursor advances (by design — that is what "typing" looks like). It is
+// therefore for INTERACTIVE / one-shot UI (a generic widget), NOT for the
+// scrollback-committed streaming markdown path, which must stay height-stable
+// and does its own clipping upstream. Returns the surviving byte length.
+inline std::size_t clip_text_to_cursor(TextElement& leaf,
+                                       std::size_t revealed_cp) {
+    if (leaf.content.empty()) return 0;
+    // Walk forward revealed_cp codepoints from the start.
+    std::size_t i = 0, seen = 0;
+    while (i < leaf.content.size() && seen < revealed_cp) {
+        ++i;
+        while (i < leaf.content.size() &&
+               (static_cast<unsigned char>(leaf.content[i]) & 0xC0) == 0x80)
+            ++i;
+        ++seen;
+    }
+    if (i >= leaf.content.size()) return leaf.content.size();  // fully typed
+    leaf.content.resize(i);
+    // Drop any runs that fell past the cut; clip the straddling one.
+    if (!leaf.runs.empty()) {
+        std::vector<StyledRun> kept;
+        kept.reserve(leaf.runs.size());
+        for (const auto& r : leaf.runs) {
+            if (r.byte_offset >= i) break;
+            const std::size_t end = std::min(r.byte_offset + r.byte_length, i);
+            kept.push_back(StyledRun{r.byte_offset, end - r.byte_offset, r.style});
+        }
+        leaf.runs = std::move(kept);
+    }
+    leaf.cached_width = -1;
+    return i;
+}
+
+// ============================================================================
+// decorate_text_reveal — apply the typewriter trailing-edge effect in place
+// ============================================================================
+// Rewrites the StyledRuns over the trailing window of `leaf` to produce the
+// scramble / gradient / ghost / sweep effect. HEIGHT-STABLE: the leaf's
+// content byte length is preserved except for scramble glyph substitution
+// (same display width). Returns true if bytes changed (caller should
+// invalidate the wrap cache via `leaf.cached_width = -1`).
+//
+// This is the EXACT algorithm the markdown streaming widget uses, now
+// callable by any widget on any text leaf.
+[[nodiscard]] inline bool decorate_text_reveal(TextElement& leaf,
+                                               const TextRevealParams& p) {
+    if (leaf.content.empty()) return false;
+
+    const std::int64_t ms_total = p.ms_total;
+    const std::int64_t edge_age = p.edge_age_ms;
+
+    const std::string_view orig = leaf.content;
+
+    // line_bounded: restrict every effect to the LAST visual line so a multi-
+    // line leaf (a code block rendered as one TextElement) only ever animates
+    // its bottom — the live edge. line_start is the byte just past the final
+    // '\n' (or 0); a derived total_cp counts that last line only and the trail
+    // window below is clamped to start there.
+    std::size_t line_start = 0;
+    if (p.line_bounded) {
+        const std::size_t nl = orig.rfind('\n');
+        if (nl != std::string_view::npos) line_start = nl + 1;
+    }
+
+    // WRAP-AWARE clamp for the EFFECT WINDOW only (see paint_start below).
+    //
+    // Deliberately kept separate from line_start: line_start also defines the
+    // region total_cp / revealed_cp are counted over, i.e. the reveal cursor's
+    // own coordinate system. Moving it to the last wrapped row would renormal-
+    // ise the reveal FRACTION onto a handful of codepoints, so one frame's
+    // advance covers a whole row and the typewriter pops blocks whole instead
+    // of gliding (caught by reveal_smoothness_probe's per-frame cell cap).
+    //
+    // The pacing math must keep seeing the entire logical line; only the
+    // rewriting is confined to the bottom visual row.
+    std::size_t paint_start = line_start;
+    if (p.line_bounded && p.wrap_width > 0) {
+        const std::string_view bounded = orig.substr(line_start);
+        const auto rows = word_wrap(bounded, static_cast<int>(p.wrap_width));
+        if (rows.size() > 1)
+            paint_start =
+                line_start
+                + static_cast<std::size_t>(rows.back().data() - bounded.data());
+    }
+
+    // Resolve total / revealed codepoint counts over the bounded region.
+    std::size_t total_cp = p.total_cp;
+    if (total_cp == 0) {
+        for (std::size_t i = line_start; i < orig.size(); ++i)
+            if ((static_cast<unsigned char>(orig[i]) & 0xC0) != 0x80)
+                ++total_cp;
+    }
+    std::size_t revealed_cp;
+    if (p.reveal_frac >= 0.0) {
+        // Fraction front: the host mapped the reveal cursor's progress through
+        // the row's SOURCE onto 0..1, so a leaf whose rendered width differs
+        // from its source (a padded/bordered table row) still reveals
+        // proportionally — gliding left-to-right at the stream's own speed.
+        const double f = p.reveal_frac > 1.0 ? 1.0 : p.reveal_frac;
+        revealed_cp =
+            static_cast<std::size_t>(f * static_cast<double>(total_cp) + 0.5);
+    } else {
+        revealed_cp = p.revealed_cp ? p.revealed_cp : total_cp;
+    }
+
+    const std::size_t unrevealed_cp =
+        p.clip_active ? p.clipped_unrevealed_cp
+                      : (total_cp > revealed_cp ? total_cp - revealed_cp : 0u);
+
+    auto age_for = [&](std::size_t i_from_tail) -> std::int64_t {
+        // Age is measured from the REVEAL FRONT (the cursor), not the content
+        // end: the cp at the cursor is "just typed" (age == edge_age), and
+        // each cp further left is char_step_ms older. cp to the RIGHT of the
+        // cursor (not yet typed) are ghosted, so their age is irrelevant. In
+        // i_from_tail terms the cursor front is at i_from_tail == unrevealed_cp
+        // (or the content end when the cursor has caught up, unrevealed_cp==0).
+        // dist = how many revealed cp left of the front this cp sits.
+        const std::size_t front = unrevealed_cp;  // first revealed cp
+        const std::int64_t dist =
+            static_cast<std::int64_t>(i_from_tail) - static_cast<std::int64_t>(front);
+        return edge_age + (dist > 0 ? dist : 0) * p.char_step_ms;
+    };
+
+    // Trail window: max(gradient band, unrevealed + ghost extension).
+    const std::size_t trail_cp_target =
+        std::max(p.trail_len,
+                 (p.enable_ghost ? unrevealed_cp + p.ghost_extra : 0u));
+    std::size_t trail_byte_start =
+        reveal_detail::utf8_step_back(orig, trail_cp_target);
+    // Clamp the window to the bottom VISUAL row — but never at the cost of
+    // the GHOST region. The ghost band is what conceals the not-yet-revealed
+    // codepoints; if the clamp cuts into it, that text renders in its final
+    // visible style immediately and the block "pops" instead of gliding (the
+    // per-frame cell cap in reveal_smoothness_probe catches exactly this).
+    //
+    // So the clamp may only ever move the START of the window forward past
+    // SETTLED text — the region left of the reveal front, which is the part
+    // that must not be restyled once it has scrolled away. Compute the first
+    // byte the ghost still needs and never clamp beyond it.
+    if (p.line_bounded && trail_byte_start < paint_start) {
+        const std::size_t ghost_floor =
+            p.enable_ghost
+                ? reveal_detail::utf8_step_back(orig, unrevealed_cp)
+                : orig.size();
+        trail_byte_start = std::min(paint_start, ghost_floor);
+    }
+    const std::string_view trail_slice = orig.substr(trail_byte_start);
+
+    // Codepoint boundaries within the trail slice.
+    //
+    // The three per-frame working buffers (cp_offs, new_trail, new_runs) are
+    // THREAD-LOCAL scratch, not fresh locals. decorate_text_reveal is called
+    // once per animating leaf EVERY frame (60fps) for the whole reveal; fresh
+    // std::vector/std::string here would heap-alloc+free 3x/frame/leaf. A
+    // thread-local reused across calls keeps the grown capacity, so after the
+    // first frame the steady state is allocation-free — matching the anim
+    // framework's "allocation-free on the steady-state path" contract.
+    // Thread-local (not static) keeps it safe if a host ever ticks widgets
+    // from more than one thread; the buffers carry no state between calls
+    // (cleared on entry), so reuse is purely an allocation cache.
+    thread_local std::vector<std::size_t> cp_offs;
+    cp_offs.clear();
+    for (std::size_t i = 0; i < trail_slice.size();) {
+        cp_offs.push_back(i);
+        ++i;
+        while (i < trail_slice.size() &&
+               (static_cast<unsigned char>(trail_slice[i]) & 0xC0) == 0x80)
+            ++i;
+    }
+    cp_offs.push_back(trail_slice.size());
+    const std::size_t trail_n = cp_offs.empty() ? 0 : cp_offs.size() - 1;
+    if (trail_n == 0) return false;
+
+    const std::size_t scramble_n =
+        p.enable_scramble ? std::min(trail_n, p.scramble_len) : 0;
+
+    thread_local std::string new_trail;
+    new_trail.clear();
+    new_trail.reserve(trail_slice.size() + scramble_n * 3);
+    thread_local std::vector<StyledRun> new_runs;
+    new_runs.clear();
+    new_runs.reserve((leaf.runs.empty() ? 1 : leaf.runs.size()) + trail_n + 2);
+
+    // Carry forward original runs before the trail window.
+    if (trail_byte_start > 0) {
+        if (leaf.runs.empty()) {
+            new_runs.push_back(StyledRun{0, trail_byte_start, leaf.style});
+        } else {
+            for (const auto& r : leaf.runs) {
+                if (r.byte_offset >= trail_byte_start) break;
+                const std::size_t end = r.byte_offset + r.byte_length;
+                const std::size_t clipped = std::min(end, trail_byte_start);
+                new_runs.push_back(StyledRun{r.byte_offset,
+                                             clipped - r.byte_offset, r.style});
+                if (end > trail_byte_start) break;
+            }
+        }
+    }
+
+    constexpr std::int64_t kSweepMs = 280;
+
+    for (std::size_t k = 0; k < trail_n; ++k) {
+        const std::size_t i_from_tail = trail_n - 1 - k;
+        const std::int64_t age = age_for(i_from_tail);
+
+        std::string_view real_cp{trail_slice.data() + cp_offs[k],
+                                 cp_offs[k + 1] - cp_offs[k]};
+        // Scramble the few cp JUST BEHIND the reveal front — the chars that
+        // were most recently "typed". In i_from_tail terms the reveal front
+        // sits at i_from_tail == unrevealed_cp (the first REVEALED cp); the
+        // scramble window is the scramble_n revealed cp immediately left of
+        // it: [unrevealed_cp, unrevealed_cp + scramble_n). When the cursor
+        // has caught up (unrevealed_cp == 0) this falls on the trailing edge
+        // — the freshest arrivals — matching the original clipped behaviour.
+        // Anchoring to the cursor (not content END) is what makes a
+        // full-content leaf type left-to-right instead of churning glyphs at
+        // the far end past the cursor.
+        const bool in_scramble =
+            scramble_n > 0 &&
+            i_from_tail >= unrevealed_cp &&
+            i_from_tail <  unrevealed_cp + scramble_n;
+        // Structure guard (protect_structure, e.g. table rows): only single-
+        // byte printable ASCII may be swapped for a scramble glyph. Spaces,
+        // the multi-byte │ / ─ box borders and any wide glyph are left byte-
+        // identical so column alignment and cell separators never shift — the
+        // churn morphs only the cell CONTENT, exactly like prose typing.
+        // Structure guard for protect_structure (e.g. table rows). TWO
+        // DISTINCT protections, deliberately split — they used to be one
+        // `structural` flag, and conflating them was a real rendering bug:
+        // "multi-byte ⇒ structural" is a fine proxy for "don't scramble"
+        // (borders are multi-byte) but it also caught every non-ASCII
+        // CONTENT codepoint — em-dashes, curly quotes, ellipses, arrows,
+        // accented letters, CJK, emoji. Those were then exempted from
+        // ghosting too, so they rendered in the settled base style while
+        // still BEHIND the reveal cursor: glyphs visibly popped in ahead of
+        // the glide, intermittently (only on rows containing non-ASCII).
+        //
+        //   • scramble_protected — never SWAP this glyph for a churn glyph.
+        //     BROAD on purpose: any multi-byte or non-printable cp.
+        //     Scrambling a wide glyph or a border would shift the row's
+        //     width/frame, so the conservative test is exactly right here.
+        //   • frame_protected — never GHOST this glyph. Must be NARROW: only
+        //     true chrome (box-drawing/block glyphs, and spaces = column
+        //     padding / indentation) reads as "already there". Ghosting is
+        //     byte-preserving (conceal-by-STYLE; `emitted` is still the real
+        //     cp below), so ghosting a wide content glyph carries zero
+        //     width/reflow risk — the frame stays byte-identical either way.
+        bool scramble_protected = false;
+        bool frame_protected    = false;
+        if (p.protect_structure) {
+            if (real_cp.size() != 1) {
+                scramble_protected = true;
+                frame_protected    = reveal_detail::is_frame_cp(
+                    reveal_detail::first_cp(real_cp));
+            } else {
+                const unsigned char ch = static_cast<unsigned char>(real_cp[0]);
+                const bool printable = ch >= 0x21 && ch <= 0x7e;
+                scramble_protected = !printable;
+                frame_protected    = !printable;  // space = padding: chrome
+            }
+        }
+        const bool scrambleable = !scramble_protected;
+        const bool scrambling  =
+            in_scramble && scrambleable && age < p.scramble_ms;
+
+        std::string scramble_owned;
+        std::string_view emitted;
+        // FRAME glyphs are never ghosted: the table frame stays fully
+        // present so only cell content materialises out of (concealed) space.
+        // Note this uses frame_protected, NOT scramble_protected — non-ASCII
+        // content must ghost like any other character or it paints ahead of
+        // the reveal cursor.
+        const bool is_ghost =
+            p.enable_ghost && i_from_tail < unrevealed_cp && !frame_protected;
+        const bool is_sweep_head =
+            is_ghost && p.enable_sweep && i_from_tail == unrevealed_cp - 1;
+        // Ghost cells now keep their REAL glyph and are made invisible via
+        // the conceal STYLE (below), not by swapping the content to spaces.
+        // Why: the word-wrapper sees the leaf's content bytes to decide line
+        // breaks and to trim/skip trailing whitespace at a wrap point. A run
+        // of ghost-SPACES gets skipped as "leading whitespace on the next
+        // line", so a wrapping line's visible width did not advance as the
+        // reveal front swept through the ghost run — then a whole WORD popped
+        // in at once when its first real glyph un-ghosted (the "smooth then
+        // bursts" stutter). Keeping the real glyphs means the wrap geometry
+        // is byte-for-byte the settled layout every frame; the reveal is a
+        // pure paint-layer flip (conceal → visible) with zero reflow.
+        const bool ghost_conceal = is_ghost && p.ghost_blank && !is_sweep_head;
+        if (scrambling && !p.scramble_glyph_safe) {
+            scramble_owned = std::string{reveal_detail::scramble_pick(
+                trail_byte_start + cp_offs[k], age, ms_total)};
+            emitted = scramble_owned;
+        } else {
+            // Either not churning, or churning in GLYPH-SAFE mode: emit the
+            // real codepoint. In safe mode `scrambling` stays true below so
+            // the cell still gets the hot flicker STYLE — the effect reads the
+            // same, but nothing that can reach immutable scrollback is fake.
+            emitted = real_cp;
+        }
+
+        const std::size_t out_off = trail_byte_start + new_trail.size();
+        new_trail.append(emitted.data(), emitted.size());
+        const std::size_t out_len = (trail_byte_start + new_trail.size()) - out_off;
+        if (out_len == 0) continue;  // zero-width emit contributes no run
+
+        // Style priority: scramble > ghost(+sweep) > gradient > base.
+        //
+        // The literals below were the reveal's own palette, invented before
+        // the theme existed. Under theme::native — which states no RGB so
+        // the user's own colours reach the screen — they painted amber on
+        // brown over whatever the user had actually chosen, and a blend of
+        // two literals is still a literal, so the #45 guard could not catch
+        // them. Slots make the effect the THEME's, and on a channel-less
+        // theme lerp() now degrades to an endpoint rather than inventing a
+        // triple.
+        Style s;
+        if (scrambling) {
+            const bool flick = ((ms_total / 60 + k) & 1) == 0;
+            s = Style{}.with_fg(flick ? Color::slot(ThemeSlot::Accent)
+                                      : Color::slot(ThemeSlot::Warning))
+                       .with_bold();
+        } else if (is_ghost) {
+            // Ghost cell. ghost_conceal keeps the REAL glyph but conceals it
+            // (paints nothing, holds the column) — stable wrap geometry, no
+            // pop. Non-conceal ghosts (ghost_blank off) fall back to a dim
+            // subdued glyph. The sweep head overrides with the bright cursor.
+            s = Style{}.with_fg(Color::default_color()).with_dim();
+            if (ghost_conceal) s = s.with_conceal();
+            if (p.enable_sweep && i_from_tail == unrevealed_cp - 1) {
+                const double pp = reveal_detail::pulse01(ms_total, kSweepMs);
+                s = Style{}
+                    .with_fg(lerp(theme::live().resolve(
+                                      Color::slot(ThemeSlot::Warning)),
+                                  theme::live().resolve(
+                                      Color::slot(ThemeSlot::Info)), pp))
+                    .with_bg(theme::live().resolve(
+                                 Color::slot(ThemeSlot::Surface)))
+                    .with_bold();
+            }
+        } else if (i_from_tail < unrevealed_cp) {
+            // Not-yet-revealed but kept VISIBLE — a frame-protected glyph
+            // (│/─ table border, column padding) that ghosting skipped. Render
+            // in the leaf's settled base style so the frame reads as "already
+            // there" and the hot reveal front sweeps INTO it.
+            s = leaf.style;
+        } else if (auto ts = p.enable_gradient ? reveal_detail::trail_style(age)
+                                               : std::nullopt) {
+            s = *ts;
+        } else {
+            s = leaf.style;
+        }
+        // COALESCE: the trail band emits one logical cell per codepoint, but
+        // whole stretches share a byte-identical Style — the ghost band is a
+        // run of identical dim spaces, the visible base/structural cells all
+        // carry leaf.style, and the gradient re-bands only every few cp. A
+        // naive push-per-cp produced ~1 run/cp (hundreds on a long tail),
+        // which every downstream layout+paint+wrap pass then re-walks EACH
+        // frame for the whole reveal. Extending the previous run when it is
+        // byte-contiguous and carries the same Style is provably output-
+        // identical (the painter maps byte->style; merged equal-style spans
+        // yield the same cells) and collapses the run count to the handful of
+        // genuinely-distinct style bands.
+        if (!new_runs.empty()) {
+            StyledRun& prev = new_runs.back();
+            if (prev.byte_offset + prev.byte_length == out_off &&
+                prev.style == s) {
+                prev.byte_length += out_len;
+                continue;
+            }
+        }
+        new_runs.push_back(StyledRun{out_off, out_len, s});
+    }
+
+    leaf.content.resize(trail_byte_start);
+    leaf.content.append(new_trail);
+    // SWAP (not move) so the leaf's prior runs buffer returns to the
+    // thread-local scratch for reuse next frame — keeps both allocations warm.
+    leaf.runs.swap(new_runs);
+
+    // Re-wrap ONLY when the DISPLAY WIDTH of the content could have changed.
+    // Scramble can swap a glyph for one of a different column width, so it may
+    // force a re-wrap while active. ghost_blank, by contrast, replaces each
+    // unrevealed glyph with width-MATCHED spaces — the column layout is
+    // byte-for-byte identical, so wrapping is provably unchanged and we must
+    // NOT invalidate the wrap cache (doing so re-wraps the whole tail every
+    // frame for the entire reveal — a 60fps CPU sink). Recolor/byte-swap that
+    // preserves width is the cheap path: leave cached_width intact.
+    const bool scramble_active =
+        scramble_n > 0 &&
+        edge_age < p.scramble_ms +
+                   static_cast<std::int64_t>(scramble_n) * p.char_step_ms;
+    if (scramble_active) {
+        leaf.cached_width = -1;
+        return true;
+    }
+    return false;
+}
+
+// ============================================================================
+// decorate_end_caret — pulsing "awaiting next byte" caret on the last glyph
+// ============================================================================
+// Recolours the final codepoint of `leaf` with a magenta↔cyan pulse. Height-
+// and width-stable (no bytes added when the leaf is non-empty). Call this
+// INSTEAD of the sweep cursor when the reveal cursor has caught up to the
+// edge (nothing left to type) — the two would otherwise compete for the eye.
+inline void decorate_end_caret(TextElement& leaf, std::int64_t ms_total,
+                               std::int64_t period_ms = 650) {
+    const double pp = reveal_detail::pulse01(ms_total, period_ms);
+    // Theme slots, not literals: a hardcoded pulse is the caret stating its
+    // own palette over the user's, invisible to the #45 channel guard
+    // because a blend of two literals is still a literal.
+    const Theme& th = theme::live();
+    const LitColor fg = lerp(th.resolve(Color::slot(ThemeSlot::Accent)),
+                             th.resolve(Color::slot(ThemeSlot::Info)), pp);
+    // The quarter-brightness backdrop is real arithmetic, so it needs real
+    // channels — which a themed fg may not have. Surface is the slot that
+    // MEANS "a shade behind the text", and on native it is Default, i.e.
+    // the terminal's own background, which is the honest answer.
+    const LitColor bg = fg.has_channels()
+        ? LitColor::rgb(fg.r() / 4, fg.g() / 4, fg.b() / 4)
+        : th.resolve(Color::slot(ThemeSlot::Surface));
+    const Style caret = Style{}
+        .with_fg(fg)
+        .with_bg(bg)
+        .with_bold();
+
+    if (!leaf.content.empty()) {
+        const std::size_t off = reveal_detail::utf8_step_back(leaf.content, 1);
+        if (off < leaf.content.size()) {
+            if (leaf.runs.empty())
+                leaf.runs.push_back(StyledRun{0, off, leaf.style});
+            leaf.runs.push_back(
+                StyledRun{off, leaf.content.size() - off, caret});
+            return;
+        }
+    }
+    // Empty leaf: emit a single block caret.
+    constexpr std::string_view kBlock = "\xe2\x96\x8a"; // ▊
+    leaf.content.append(kBlock);
+    leaf.runs.push_back(StyledRun{0, kBlock.size(), caret});
+    leaf.cached_width = -1;
+}
+
+} // namespace maya::anim

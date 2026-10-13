@@ -115,6 +115,33 @@ public:
     [[nodiscard]] RenderPipeline<stage::Cleared>
     clear() && requires std::same_as<S, stage::Idle> {
         back_.clear();
+        // Refresh theme-derived SGR before anything is interned this frame.
+        //
+        // A bg-less style renders the canvas background (build_sgr), so its
+        // cached bytes belong to a specific theme. Doing this at the frame
+        // boundary means no caller anywhere has to remember to invalidate
+        // after a swap — the pool notices for itself, once, at the only
+        // point where a frame can begin. It is a no-op pointer compare on
+        // every frame but the one after a theme actually changes.
+        //
+        // The bool return ("the theme really did change") is deliberately
+        // discarded, but NOT because there is no shadow here — write_diff()
+        // compares the back canvas against the presented front one, which is
+        // exactly the kind of cell-level shadow that hides a retheme on the
+        // inline path.
+        //
+        // It is safe for a different reason: clear() has just zeroed every
+        // back cell to style 0, so the frame is repainted from nothing and
+        // each cell is re-interned under the new theme. A cell whose content
+        // is unchanged still differs from front in the only way diff() looks
+        // at, so it is re-emitted with the new background. Verified by
+        // probe: an identical tree rendered across a swap emits the new
+        // canvas colour and none of the old.
+        //
+        // If this stage ever stops clearing (an incremental fullscreen
+        // repaint), that reasoning dies with it and this call must start
+        // honouring its return value the way the inline path does.
+        (void)pool_.retheme();
         return {back_, pool_, theme_, out_};
     }
 
@@ -141,13 +168,16 @@ public:
 
     // =========================================================================
     // δ(Painted, open_frame()) → Opened
-    // Effect: appends hide_cursor + sync_start to out_.
-    //         The terminal will not display partial updates until close_frame().
+    // Effect: appends hide_cursor (+ sync_start when sync_output is true)
+    //         to out_. With sync_output, the terminal won't display partial
+    //         updates until close_frame() (DEC mode 2026 BSU/ESU). On
+    //         terminals that don't honor 2026 the wrapper is silently
+    //         ignored — pass false to skip sending the bytes at all.
     // =========================================================================
     [[nodiscard]] RenderPipeline<stage::Opened>
-    open_frame() && requires std::same_as<S, stage::Painted> {
+    open_frame(bool sync_output = true) && requires std::same_as<S, stage::Painted> {
         out_ += ansi::hide_cursor;
-        out_ += ansi::sync_start;
+        if (sync_output) out_ += ansi::sync_start;
         return {back_, pool_, theme_, out_};
     }
 
@@ -199,13 +229,16 @@ public:
 
     // =========================================================================
     // δ(Opened, close_frame()) → Closed
-    // Effect: appends SGR-reset + sync_end to out_.
-    //         After this, out_ is a complete, self-contained ANSI frame.
+    // Effect: appends SGR-reset (+ sync_end when sync_output is true) to
+    //         out_. After this, out_ is a complete, self-contained ANSI
+    //         frame. `sync_output` MUST match the value passed to
+    //         open_frame() — sending sync_end without a matching sync_start
+    //         is harmless but pointless.
     // =========================================================================
     RenderPipeline<stage::Closed>
-    close_frame() && requires std::same_as<S, stage::Opened> {
+    close_frame(bool sync_output = true) && requires std::same_as<S, stage::Opened> {
         out_ += ansi::reset;
-        out_ += ansi::sync_end;
+        if (sync_output) out_ += ansi::sync_end;
         return {back_, pool_, theme_, out_};
     }
 };

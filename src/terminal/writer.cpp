@@ -1,6 +1,7 @@
 #include "maya/terminal/writer.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <format>
 #include <ranges>
@@ -11,6 +12,10 @@
 #include <variant>
 #include <vector>
 
+#if MAYA_PLATFORM_POSIX || MAYA_PLATFORM_MACOS
+    #include <fcntl.h>     // F_GETFL, F_SETFL, O_NONBLOCK
+#endif
+
 #include "maya/core/expected.hpp"
 #include "maya/core/overload.hpp"
 #include "maya/core/types.hpp"
@@ -18,6 +23,167 @@
 #include "maya/terminal/ansi.hpp"
 
 namespace maya {
+
+namespace detail {
+
+[[nodiscard]] std::size_t safe_break_len(std::string_view data) noexcept {
+    const std::size_t n = data.size();
+    std::size_t pos  = 0;
+    std::size_t safe = 0;
+    while (pos < n) {
+        const auto b = static_cast<unsigned char>(data[pos]);
+        if (b == 0x1B) {
+            // ESC — need at least the next byte to classify.
+            if (pos + 1 >= n) break;
+            const auto c = static_cast<unsigned char>(data[pos + 1]);
+            if (c == '[') {
+                // CSI … final-byte 0x40–0x7E. Parameter bytes 0x30–0x3F,
+                // intermediate 0x20–0x2F, final 0x40–0x7E.
+                std::size_t k = pos + 2;
+                bool found_final = false;
+                while (k < n) {
+                    const auto cb = static_cast<unsigned char>(data[k]);
+                    if (cb >= 0x40 && cb <= 0x7E) { ++k; found_final = true; break; }
+                    ++k;
+                }
+                if (!found_final) {
+                    // Reached end of buffer (or the bare "\x1b[" prefix with
+                    // no bytes after it) without a CSI final byte — the
+                    // sequence is incomplete. Stop here so the writer never
+                    // ships a CSI split across the wire.
+                    break;
+                }
+                pos = k;
+                safe = pos;
+                continue;
+            }
+            if (c == ']' || c == 'P' || c == '^' || c == '_' || c == 'X') {
+                // OSC ']'/DCS 'P'/PM '^'/APC '_'/SOS 'X' — terminated by
+                // ST (\x1b\\) or, by convention, BEL (\x07) for OSC.
+                std::size_t k = pos + 2;
+                bool terminated = false;
+                while (k < n) {
+                    const auto cb = static_cast<unsigned char>(data[k]);
+                    if (cb == 0x07) { ++k; terminated = true; break; }
+                    if (cb == 0x1B && k + 1 < n
+                        && static_cast<unsigned char>(data[k + 1]) == '\\')
+                    {
+                        k += 2; terminated = true; break;
+                    }
+                    ++k;
+                }
+                if (!terminated) break;
+                pos = k;
+                safe = pos;
+                continue;
+            }
+            // Two-byte ESC sequence: ESC + <final>. The final byte was
+            // already in range above. Consume both.
+            pos += 2;
+            safe = pos;
+            continue;
+        }
+        if (b == 0x18 || b == 0x1A) {
+            // CAN / SUB cancel any in-flight control sequence. Treat
+            // as a complete unit.
+            ++pos;
+            safe = pos;
+            continue;
+        }
+        if (b < 0x80) {
+            // Plain ASCII / C0.
+            ++pos;
+            safe = pos;
+            continue;
+        }
+        // UTF-8 lead: determine sequence length from the top bits.
+        std::size_t seqlen = 1;
+        if      ((b & 0xE0) == 0xC0) seqlen = 2;
+        else if ((b & 0xF0) == 0xE0) seqlen = 3;
+        else if ((b & 0xF8) == 0xF0) seqlen = 4;
+        // Continuation byte without a lead, or 5/6-byte sequences (illegal
+        // in modern UTF-8): treat as a single byte to make progress.
+        if (pos + seqlen > n) break;     // incomplete codepoint
+        pos += seqlen;
+        safe = pos;
+    }
+    return safe;
+}
+
+} // namespace detail
+
+// ============================================================================
+// Construction / move / destruction
+// ============================================================================
+// The output fd is put into non-blocking mode at Writer construction so
+// a slow tty's full kernel buffer surfaces as EAGAIN rather than blocking
+// the event loop. The prior flags are stashed and restored in the dtor
+// so the user's shell — which shares the open file description with us —
+// doesn't inherit O_NONBLOCK on stdout after agentty exits.
+
+Writer::Writer(platform::NativeHandle h, bool nonblocking) noexcept : handle_(h) {
+    ops_.reserve(kOpsReserveHint);
+#if MAYA_PLATFORM_POSIX || MAYA_PLATFORM_MACOS
+    if (nonblocking && h >= 0) {
+        int prev = ::fcntl(h, F_GETFL);
+        if (prev >= 0 && (prev & O_NONBLOCK) == 0) {
+            if (::fcntl(h, F_SETFL, prev | O_NONBLOCK) == 0) {
+                prior_output_flags_ = prev;
+            }
+        }
+    }
+#endif
+}
+
+Writer::~Writer() {
+#if MAYA_PLATFORM_POSIX || MAYA_PLATFORM_MACOS
+    if (prior_output_flags_ >= 0 && handle_ >= 0) {
+        (void)::fcntl(handle_, F_SETFL, prior_output_flags_);
+    }
+#endif
+}
+
+// Suspend/resume the O_NONBLOCK adjustment across a TUI suspend. The
+// child spawned during suspend shares this open file description; a
+// pager (less) or any bulk writer that doesn't handle EAGAIN on stdout
+// would malfunction with O_NONBLOCK inherited. prior_output_flags_ >= 0
+// doubles as "we own the flag change" — when the ctor never adjusted
+// (Windows, fcntl failure, nonblocking=false) both calls are no-ops.
+void Writer::suspend_nonblocking() noexcept {
+#if MAYA_PLATFORM_POSIX || MAYA_PLATFORM_MACOS
+    if (prior_output_flags_ >= 0 && handle_ >= 0)
+        (void)::fcntl(handle_, F_SETFL, prior_output_flags_);
+#endif
+}
+
+void Writer::resume_nonblocking() noexcept {
+#if MAYA_PLATFORM_POSIX || MAYA_PLATFORM_MACOS
+    if (prior_output_flags_ >= 0 && handle_ >= 0)
+        (void)::fcntl(handle_, F_SETFL, prior_output_flags_ | O_NONBLOCK);
+#endif
+}
+
+Writer::Writer(Writer&& other) noexcept
+    : handle_(other.handle_)
+    , ops_(std::move(other.ops_))
+    , flush_buf_(std::move(other.flush_buf_))
+    , reserve_hint_(other.reserve_hint_)
+    , ns_per_byte_ema_(other.ns_per_byte_ema_)
+    , residue_(std::move(other.residue_))
+    , residue_head_(std::exchange(other.residue_head_, 0))
+    , residue_safe_(std::exchange(other.residue_safe_, 0))
+    , prior_output_flags_(std::exchange(other.prior_output_flags_, -1))
+{
+    other.handle_ = platform::invalid_handle;
+}
+
+Writer& Writer::operator=(Writer&& other) noexcept {
+    if (this != &other) {
+        this->~Writer();
+        new (this) Writer(std::move(other));
+    }
+    return *this;
+}
 
 // ============================================================================
 // Operation submission
@@ -104,6 +270,93 @@ auto Writer::write_raw(std::string_view data) -> Status {
     return write_all(data);
 }
 
+// ============================================================================
+// Non-blocking + residue-buffered path
+// ============================================================================
+//
+// On a tty with O_NONBLOCK set, every `::write` either succeeds in
+// emitting some bytes (possibly fewer than asked) or returns EAGAIN.
+// We never block. The "would have blocked" suffix lands in `residue_`
+// and the next render's first action is to retry it. While residue is
+// non-empty the caller is forbidden from running compose_inline_frame —
+// the cell-state shadow update inside that function assumes the wire
+// has actually accepted the emitted bytes, which would be a lie while
+// part of the previous frame sits in our buffer.
+
+auto Writer::try_drain_residue() -> Status {
+    if (residue_head_ >= residue_.size()) { residue_.clear(); residue_head_ = residue_safe_ = 0; return ok(); }
+    // Cap the physical write at the longest safe-ending prefix of what's
+    // left, so even a 1-byte kernel accept can't leave the wire mid-CSI.
+    //
+    // The safe end is scanned INCREMENTALLY: `residue_safe_` remembers how
+    // far the bytes are known to end on a unit boundary, so each drain
+    // scans only bytes it hasn't seen. It used to rescan the whole residue
+    // on every drain, and the kernel takes a tty's bytes 1 KB at a time:
+    // a 50 KB frame drained in 50 writes rescanned ~1.3 MB, which put
+    // safe_break_len at the top of a 2.5 MB/s animation's profile.
+    if (residue_safe_ < residue_head_) residue_safe_ = residue_head_;
+    residue_safe_ += detail::safe_break_len(
+        std::string_view{residue_}.substr(residue_safe_));
+    const std::size_t safe = residue_safe_ - residue_head_;
+    if (safe == 0) {
+        // The rest starts mid-sequence and has no safe breakpoint yet:
+        // nothing to ship without risking a split. Appended bytes will
+        // complete it.
+        return err(Error::would_block());
+    }
+    std::string_view head{residue_.data() + residue_head_, safe};
+    auto r = write_some(head);   // already loops on EINTR, stops on EAGAIN
+    if (!r) return std::unexpected{r.error()};
+    residue_head_ += *r;
+    if (residue_head_ >= residue_.size()) {
+        residue_.clear();
+        residue_head_ = residue_safe_ = 0;
+        return ok();
+    }
+    // Compact rarely: erasing the consumed prefix on every drain is itself
+    // O(residue) per call. Once more than half is consumed, shift once.
+    if (residue_head_ > residue_.size() / 2) {
+        residue_.erase(0, residue_head_);
+        residue_safe_ -= residue_head_;
+        residue_head_ = 0;
+    }
+    return err(Error::would_block());
+}
+
+auto Writer::write_or_buffer(std::string_view data) -> Status {
+    // Drain old residue first so the new bytes don't get reordered
+    // around bytes from a prior frame that haven't shipped yet.
+    if (!has_residue()) {
+        // Nothing backed up: this is the fresh-write path below.
+    } else {
+        auto d = try_drain_residue();
+        if (!d && d.error().kind != ErrorKind::WouldBlock) {
+            return d;   // hard I/O error — caller handles
+        }
+        if (has_residue()) {
+            // Wire still backed up. Queue the new bytes behind the
+            // residue so order is preserved when the buffer drains.
+            residue_.append(data);
+            return ok();
+        }
+    }
+    if (data.empty()) return ok();
+    // Cap the physical write at the longest safe-ending prefix of
+    // `data`. Without this cap, a partial accept can leave the wire
+    // mid-sequence and the next bytes (whether from this same call
+    // or a future drain) join mid-stream, producing garbage. The
+    // bytes beyond `safe` go straight to residue_ — they're a
+    // well-formed continuation that the next drain will ship as a
+    // unit.
+    const std::size_t safe = detail::safe_break_len(data);
+    std::string_view head = data.substr(0, safe);
+    auto r = write_some(head);
+    if (!r) return std::unexpected{r.error()};
+    const std::size_t n = *r;
+    if (n < data.size()) residue_.append(data.substr(n));
+    return ok();
+}
+
 auto Writer::write_some(std::string_view data) const -> Result<std::size_t> {
     if (data.empty()) return ok(std::size_t{0});
 
@@ -142,8 +395,10 @@ void Writer::optimize() {
         if (write > 0 && try_merge(ops_[write - 1], ops_[read])) {
             continue;
         }
-        if (write > 0 && try_cancel_cursor(ops_[write - 1], ops_[read])) {
-            --write;
+        if (write > 0 && try_collapse_cursor(ops_[write - 1], ops_[read])) {
+            // Adjacent Show/Hide (either order): the SECOND op wins —
+            // replace the first with it and drop the duplicate slot.
+            ops_[write - 1] = ops_[read];
             continue;
         }
         if (write != read)
@@ -176,10 +431,21 @@ bool Writer::try_merge(RenderOp& existing, const RenderOp& incoming) {
     }, existing, incoming);
 }
 
-bool Writer::try_cancel_cursor(const RenderOp& existing, const RenderOp& incoming) {
+bool Writer::try_collapse_cursor(const RenderOp& existing, const RenderOp& incoming) {
+    // An adjacent CursorHide/CursorShow pair (either order) collapses to
+    // its SECOND op — the terminal's cursor-visibility state is just the
+    // last DECTCEM it received, so only the final op in a run matters.
+    //
+    // The previous peephole DELETED both ops ("they cancel"), which is
+    // only correct if the terminal already happened to be in the pair's
+    // final state. Hide,Show starting from a hidden cursor must end
+    // VISIBLE; annihilating the pair left it hidden. Same-op runs
+    // (Show,Show) are also collapsed — free dedup, identical semantics.
     return std::visit(overload{
         [](const render_op::CursorHide&, const render_op::CursorShow&) { return true; },
         [](const render_op::CursorShow&, const render_op::CursorHide&) { return true; },
+        [](const render_op::CursorShow&, const render_op::CursorShow&) { return true; },
+        [](const render_op::CursorHide&, const render_op::CursorHide&) { return true; },
         [](const auto&, const auto&) { return false; }
     }, existing, incoming);
 }
@@ -248,14 +514,38 @@ auto Writer::write_all(std::string_view data) const -> Status {
     std::size_t remaining = data.size();
     bool wrote_any   = false;
 
+    // Measure wire time for the bandwidth-budget EMA. Sampled only on
+    // fully-successful writes — partial / would-block cases skew the
+    // average because the timer captures the blocked wait too.
+    const auto t0 = std::chrono::steady_clock::now();
+
     while (remaining > 0) {
         auto result = platform::io_write(handle_, ptr, remaining);
         if (!result) {
             if (result.error().kind == ErrorKind::WouldBlock) {
                 if (!wrote_any) return err(Error::would_block());
-                // Partial write: BSU frame open. Send recovery so terminal
-                // doesn't stall waiting for sync-end.
-                static constexpr std::string_view recovery = "\x1b[?2026l\x1b[0m";
+                // Partial write of `data` left the wire mid-sequence: the
+                // accepted prefix can end inside a CSI (\x1b[12), an OSC
+                // (\x1b]0;par), a UTF-8 codepoint (\xe2\x96), a DCS, etc.
+                // The old recovery emitted a bare ESC next, relying on
+                // the VT spec's "new ESC cancels pending CSI". Real
+                // terminals (older VTE, conhost) instead PRINT the
+                // orphan parameter bytes as literal cells before honouring
+                // the new ESC — those cells then sit in the live frame
+                // invisible to the renderer's shadow and become permanent
+                // scrollback corruption when the row scrolls off.
+                //
+                // Use the byte-level cancellation codes from ECMA-48 §5.7
+                // first: 0x18 CAN and 0x1A SUB. Spec-compliant terminals
+                // discard the in-flight CS on either; non-compliant ones
+                // render a visible substitute glyph instead of consuming
+                // the orphan bytes as text — strictly better failure mode.
+                // ST (\x1b\\) closes any in-flight OSC/DCS/APC/PM string
+                // (which CAN/SUB don't terminate per §8.3.143). Then
+                // close any open synchronized-output bracket and drop
+                // residual SGR.
+                static constexpr std::string_view recovery =
+                    "\x18\x1a\x1b\\\x1b[?2026l\x1b[0m";
                 (void)platform::io_write(handle_, recovery.data(), recovery.size());
                 return err(Error::would_block());
             }
@@ -267,6 +557,18 @@ auto Writer::write_all(std::string_view data) const -> Status {
         wrote_any  = true;
         ptr       += n;
         remaining -= n;
+    }
+
+    // Update EMA. alpha = 0.125 — a single slow frame doesn't lock the
+    // budget for many seconds, while a streak of slow frames still moves
+    // the EMA toward the slow estimate in ~8 frames.
+    if (const std::size_t total = data.size(); total > 0) {
+        const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - t0).count();
+        const double sample = static_cast<double>(ns) / static_cast<double>(total);
+        if (ns_per_byte_ema_ == 0.0) ns_per_byte_ema_ = sample;
+        else                         ns_per_byte_ema_ = 0.125 * sample
+                                                      + 0.875 * ns_per_byte_ema_;
     }
     return ok();
 }

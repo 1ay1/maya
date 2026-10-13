@@ -4,7 +4,21 @@
 // no content garbling, overflow, or crashes after resize.
 
 #include <maya/maya.hpp>
-#include <cassert>
+#include <maya/widget/badge.hpp>
+#include <maya/widget/breadcrumb.hpp>
+#include <maya/widget/divider.hpp>
+#include <maya/widget/input.hpp>
+#include <maya/widget/markdown.hpp>
+#include <maya/widget/modal.hpp>
+#include <maya/widget/progress.hpp>
+#include <maya/widget/select.hpp>
+#include <maya/widget/spinner.hpp>
+#include <maya/widget/table.hpp>
+#include <maya/widget/toast.hpp>
+// NDEBUG guard: CMake builds tests in Release (-O3 -DNDEBUG), which strips
+// assert(). Undefine it here so this file's runtime asserts actually fire.
+#undef NDEBUG
+#include "agtest.hpp"
 #include <print>
 #include <string>
 #include <vector>
@@ -15,7 +29,7 @@ using namespace maya;
 // Helpers
 // ============================================================================
 
-std::string get_row(const Canvas& canvas, int y) {
+static std::string get_row(const Canvas& canvas, int y) {
     std::string s;
     for (int x = 0; x < canvas.width(); ++x) {
         Cell c = canvas.get(x, y);
@@ -40,7 +54,7 @@ RR render_elem(const Element& elem, int w, int h = 500,
     StylePool pool;
     Canvas canvas(std::max(1, w - 1), h, &pool);
     canvas.clear();
-    render_tree(elem, canvas, pool, theme::dark, auto_h);
+    render_tree(elem, canvas, pool, theme::native, auto_h);
     int ch = content_height(canvas);
     std::vector<std::string> rows;
     for (int y = 0; y < ch; ++y)
@@ -86,7 +100,7 @@ void cycle(const Element& elem, int w1, int w2, const char* ctx) {
 // ============================================================================
 // Test: Every standalone widget survives resize cycle
 // ============================================================================
-void test_all_widgets_resize() {
+TEST_CASE("all widgets resize") {
     std::println("=== test_all_widgets_resize ===");
 
     // Table
@@ -121,7 +135,7 @@ void test_all_widgets_resize() {
 
     // Badge
     {
-        auto b = tool_badge("read_file");
+        auto b = Badge::tool("read_file");
         cycle(b, 80, 20, "badge");
         std::println("  badge: ok");
     }
@@ -131,16 +145,6 @@ void test_all_widgets_resize() {
         Breadcrumb bc({"project", "src", "widget", "table.hpp"});
         cycle(bc, 80, 30, "breadcrumb");
         std::println("  breadcrumb: ok");
-    }
-
-    // StatusBar
-    {
-        StatusBar bar;
-        bar.set_left({" ready ", "main"});
-        bar.set_right({"3 files", "UTF-8"});
-        cycle(bar, 80, 40, "statusbar-80-40");
-        cycle(bar, 120, 30, "statusbar-120-30");
-        std::println("  statusbar: ok");
     }
 
     // Select
@@ -157,13 +161,6 @@ void test_all_widgets_resize() {
         toasts.push("Deprecated API", ToastLevel::Warning);
         cycle(toasts, 80, 30, "toast");
         std::println("  toast: ok");
-    }
-
-    // Confirm
-    {
-        Confirm dialog("Delete this file?");
-        cycle(dialog, 80, 30, "confirm");
-        std::println("  confirm: ok");
     }
 
     // Spinner
@@ -208,8 +205,3 @@ void test_all_widgets_resize() {
     std::println("  PASS\n");
 }
 
-int main() {
-    test_all_widgets_resize();
-    std::println("All resize tests passed!");
-    return 0;
-}

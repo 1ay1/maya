@@ -1,4 +1,7 @@
-// widgets.cpp — Showcase of visualization widgets
+// examples/widgets.cpp — a showcase of visualization widgets.
+//
+// view() is a pure function of the model (no widget reads the clock); a
+// 50 ms Tick changes the model, so it redraws 20 times a second.
 //
 // Demonstrates 7 data visualization widgets in a single dashboard:
 //   ContextWindow, FlameChart, GitGraph, InlineDiff,
@@ -10,6 +13,7 @@
 //   r          reset to initial state
 //   q/Esc      quit
 
+#include <maya/host/run.hpp>
 #include <maya/maya.hpp>
 #include <maya/widget/context_window.hpp>
 #include <maya/widget/flame_chart.hpp>
@@ -56,50 +60,51 @@ struct Widgets {
     struct Quit {};
     using Msg = std::variant<Tick, ToggleStream, NextPanel, ResetState, Quit>;
 
-    static Model init() {
-        Model m;
+    using Cmd = jaal::Cmd<Msg>;
+    using Sub = jaal::Sub<Msg, on_key>;
+
+    static Cmd init(Model& m) {
         m.rate_history.resize(32, 0.f);
-        return m;
+        return {};
     }
 
-    static auto update(Model m, Msg msg) -> std::pair<Model, Cmd<Msg>> {
-        return std::visit(overload{
-            [&](Tick) {
-                m.frame++;
-                m.elapsed += 0.05f;
+    static Cmd update(Model& m, Tick) {
+        m.frame++;
+        m.elapsed += 0.05f;
 
-                if (m.streaming) {
-                    float base = 60.f + 30.f * std::sin(m.elapsed * 0.8f);
-                    float noise = randf(-10.f, 10.f);
-                    m.tokens_per_sec = std::max(5.f, base + noise);
-                    m.total_tokens += static_cast<int>(m.tokens_per_sec * 0.05f);
-                    if (m.tokens_per_sec > m.peak_rate)
-                        m.peak_rate = m.tokens_per_sec;
+        if (m.streaming) {
+            float base = 60.f + 30.f * std::sin(m.elapsed * 0.8f);
+            float noise = randf(-10.f, 10.f);
+            m.tokens_per_sec = std::max(5.f, base + noise);
+            m.total_tokens += static_cast<int>(m.tokens_per_sec * 0.05f);
+            if (m.tokens_per_sec > m.peak_rate)
+                m.peak_rate = m.tokens_per_sec;
 
-                    m.rate_history.push_back(m.tokens_per_sec);
-                    if (m.rate_history.size() > 32)
-                        m.rate_history.erase(m.rate_history.begin());
-                }
+            m.rate_history.push_back(m.tokens_per_sec);
+            if (m.rate_history.size() > 32)
+                m.rate_history.erase(m.rate_history.begin());
+        }
 
-                return std::pair{m, Cmd<Msg>{}};
-            },
-            [&](ToggleStream) {
-                m.streaming = !m.streaming;
-                return std::pair{m, Cmd<Msg>{}};
-            },
-            [&](NextPanel) {
-                m.panel = (m.panel + 1) % 7;
-                return std::pair{m, Cmd<Msg>{}};
-            },
-            [&](ResetState) {
-                auto fresh = init();
-                fresh.panel = m.panel;
-                return std::pair{fresh, Cmd<Msg>{}};
-            },
-            [](Quit) {
-                return std::pair{Model{}, Cmd<Msg>::quit()};
-            },
-        }, msg);
+        return {};
+    }
+    static Cmd update(Model& m, ToggleStream) {
+        m.streaming = !m.streaming;
+        return {};
+    }
+    static Cmd update(Model& m, NextPanel) {
+        m.panel = (m.panel + 1) % 7;
+        return {};
+    }
+    static Cmd update(Model& m, ResetState) {
+        Model fresh;
+        (void)init(fresh);
+        fresh.panel = m.panel;
+        m = std::move(fresh);
+        return {};
+    }
+    static Cmd update(Model& m, Quit) {
+        m = Model{};
+        return Cmd::quit(0);
     }
 
     // ── Colors ────────────────────────────────────────────────────────────
@@ -288,8 +293,8 @@ struct Widgets {
 
     // ── subscribe ────────────────────────────────────────────────────────
 
-    static auto subscribe(const Model& m) -> Sub<Msg> {
-        auto keys = key_map<Msg>({
+    static Sub subscribe(const Model& m) {
+        auto on_keys = keys<Sub>({
             {'q',                Quit{}},
             {SpecialKey::Escape, Quit{}},
             {' ',                ToggleStream{}},
@@ -297,9 +302,9 @@ struct Widgets {
             {'r',                ResetState{}},
         });
 
-        return Sub<Msg>::batch(
-            std::move(keys),
-            Sub<Msg>::every(std::chrono::milliseconds(50), Tick{})
+        return Sub::batch(
+            std::move(on_keys),
+            Sub::every(std::chrono::milliseconds(50), Tick{})
         );
     }
 };
@@ -307,5 +312,5 @@ struct Widgets {
 static_assert(Program<Widgets>);
 
 int main() {
-    run<Widgets>({.title = "widgets", .fps = 20});
+    return run<Widgets>({.title = "widgets"});
 }

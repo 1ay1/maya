@@ -28,6 +28,7 @@
 #include <vector>
 
 #include "../core/focus.hpp"
+#include "../core/function.hpp"
 #include "../core/overload.hpp"
 #include "../core/signal.hpp"
 #include "../dsl.hpp"
@@ -56,7 +57,7 @@ struct TreeConfig {
     std::string collapsed_icon = "\xe2\x96\xb8 ";   // "▸ "
     std::string leaf_prefix    = "  ";
     int indent_width           = 2;
-    Style active_style   = Style{}.with_bold().with_fg(Color::blue());
+    Style active_style   = Style{}.with_bold().with_fg(Color::slot(ThemeSlot::Primary));
     Style branch_style   = Style{};
     Style leaf_style     = Style{};
     Style count_style    = Style{}.with_dim();
@@ -72,7 +73,7 @@ class Tree {
     FocusNode focus_;
     TreeConfig cfg_;
 
-    std::move_only_function<void(std::string_view)> on_select_;
+    MoveOnlyFunction<void(std::string_view)> on_select_;
 
     // A flattened row for rendering
     struct FlatRow {

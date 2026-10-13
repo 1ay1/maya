@@ -4,6 +4,10 @@
 // Arrow-key navigable tab bar with focus integration.
 // Supports Left/Right, h/l, and 1-9 number keys.
 //
+// Responsive via maya's pick() (ViewThatFits): the full label row renders
+// while its measured width fits; on a slot too narrow for every label the
+// bar falls back to ‹ active-label  i/n › — always readable, never sheared.
+//
 // Usage:
 //   Tabs tabs({"General", "Editor", "Keybindings"});
 //   tabs.on_change([](int idx) { /* switch content */ });
@@ -17,6 +21,7 @@
 #include <vector>
 
 #include "../core/focus.hpp"
+#include "../core/function.hpp"
 #include "../core/overload.hpp"
 #include "../core/signal.hpp"
 #include "../dsl.hpp"
@@ -30,7 +35,7 @@ class Tabs {
     Signal<int> active_{0};
     FocusNode focus_;
 
-    std::move_only_function<void(int)> on_change_;
+    MoveOnlyFunction<void(int)> on_change_;
 
 public:
     explicit Tabs(std::vector<std::string> labels)
@@ -100,7 +105,7 @@ public:
         int cur = active_();
 
         auto active_style = Style{}.with_bold().with_underline()
-                                   .with_fg(Color::blue());
+                                   .with_fg(Color::slot(ThemeSlot::Primary));
         auto inactive_style = Style{}.with_dim();
         auto sep_style = Style{}.with_dim();
 
@@ -125,8 +130,34 @@ public:
         auto tab_row = Element{TextElement{
             .content = std::move(content),
             .style = inactive_style,
+            .wrap = TextWrap::NoWrap,
             .runs = std::move(runs),
         }};
+
+        // Compact fallback for slots too narrow for every label:
+        // ‹ active-label  i/n ›. pick() measures the REAL full row — the
+        // fallback only renders when the labels genuinely don't fit.
+        Element compact = [&]() -> Element {
+            std::string ct;
+            std::vector<StyledRun> cruns;
+            auto add = [&](std::string_view s, const Style& st) {
+                cruns.push_back(StyledRun{ct.size(), s.size(), st});
+                ct += s;
+            };
+            add("\xe2\x80\xb9 ", sep_style);                     // ‹
+            if (cur >= 0 && cur < static_cast<int>(labels_.size()))
+                add(labels_[static_cast<size_t>(cur)], active_style);
+            add("  " + std::to_string(cur + 1) + "/" +
+                    std::to_string(labels_.size()),
+                inactive_style);
+            add(" \xe2\x80\xba", sep_style);                     // ›
+            return Element{TextElement{
+                .content = std::move(ct),
+                .style = inactive_style,
+                .wrap = TextWrap::NoWrap,
+                .runs = std::move(cruns),
+            }};
+        }();
 
         // Full-width separator line below tabs
         auto separator = Element{ComponentElement{
@@ -135,13 +166,14 @@ public:
                 for (int i = 0; i < w; ++i) line += "\xe2\x94\x80"; // "─"
                 return Element{TextElement{
                     .content = std::move(line),
-                    .style = Style{}.with_fg(Color::bright_black()),
+                    .style = Style{}.with_fg(Color::slot(ThemeSlot::Muted)),
                 }};
             },
             .layout = {},
         }};
 
-        return dsl::v(std::move(tab_row), std::move(separator)).build();
+        return dsl::v(detail::pick({std::move(tab_row), std::move(compact)}),
+                      std::move(separator)).build();
     }
 
 private:

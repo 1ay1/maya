@@ -1,4 +1,4 @@
-// agent.cpp — Simulated Claude Code agent session
+// examples/agent.cpp — a simulated Claude-Code-style agent session, inline.
 //
 // Demonstrates all agent UX widgets in a realistic conversation flow:
 //   User prompt → thinking → tool calls → streaming response → summary
@@ -10,6 +10,7 @@
 //   r          restart simulation
 //   q/Esc      quit
 
+#include <maya/host/run.hpp>
 #include <maya/maya.hpp>
 
 // Agent UX widgets
@@ -103,6 +104,9 @@ struct Agent {
     struct Quit {};
     using Msg = std::variant<Tick, Advance, Send, ToggleTool, Restart, Quit>;
 
+    using Cmd = jaal::Cmd<Msg>;
+    using Sub = jaal::Sub<Msg, on_key>;
+
     // ── The full response text the agent "types out" ─────────────────────
 
     static constexpr const char* full_response =
@@ -128,15 +132,10 @@ struct Agent {
         "errors in expiry checks are a common source of auth bugs. Let me check "
         "the comparison operators and boundary conditions.";
 
-    // ── init ─────────────────────────────────────────────────────────────
-
-    static Model init() { return {}; }
-
     // ── update ───────────────────────────────────────────────────────────
 
-    static auto update(Model m, Msg msg) -> std::pair<Model, Cmd<Msg>> {
-        return std::visit(overload{
-            [&](Tick) {
+    static Cmd update(Model& m, Tick) {
+            {
                 float dt = 0.05f;
                 m.frame++;
                 m.phase_time += dt;
@@ -250,9 +249,11 @@ struct Agent {
                     break;
                 }
 
-                return std::pair{m, Cmd<Msg>{}};
-            },
-            [&](Advance) {
+                return {};
+            }
+    }
+
+    static Cmd update(Model& m, Advance) {
                 if (m.phase == Phase::PermissionAsk) {
                     m.phase = Phase::PermissionGrant;
                     m.phase_time = 0.f;
@@ -262,9 +263,10 @@ struct Agent {
                     // Speed through current phase
                     m.phase_time += 5.f;
                 }
-                return std::pair{m, Cmd<Msg>{}};
-            },
-            [&](Send) {
+                return {};
+    }
+
+    static Cmd update(Model& m, Send) {
                 if (m.phase == Phase::Idle) {
                     m.phase = Phase::UserSent;
                     m.phase_time = 0.f;
@@ -273,19 +275,18 @@ struct Agent {
                     m.context_used += 1240;
                     // Auto-advance to thinking after brief pause
                 }
-                return std::pair{m, Cmd<Msg>{}};
-            },
-            [&](ToggleTool) {
+                return {};
+    }
+
+    static Cmd update(Model& m, ToggleTool) {
                 m.tool_expanded = !m.tool_expanded;
-                return std::pair{m, Cmd<Msg>{}};
-            },
-            [&](Restart) {
-                return std::pair{init(), Cmd<Msg>{}};
-            },
-            [](Quit) {
-                return std::pair{Model{}, Cmd<Msg>::quit()};
-            },
-        }, msg);
+                return {};
+    }
+
+    static Cmd update(Model& m, Restart) { m = Model{}; return {}; }
+
+    static Cmd update(Model&, Quit) {
+        return Cmd::quit(0);
     }
 
     // ── Colors ───────────────────────────────────────────────────────────
@@ -304,7 +305,7 @@ struct Agent {
     // ── View helpers ─────────────────────────────────────────────────────
 
     static Element build_header(const Model& m) {
-        ModelBadge badge("claude-opus-4-6");
+        ModelBadge badge({.label = "Opus 4.6"});
 
         GitStatusWidget git;
         git.set_branch("fix/auth-bug");
@@ -682,8 +683,8 @@ struct Agent {
 
     // ── subscribe ────────────────────────────────────────────────────────
 
-    static auto subscribe(const Model& m) -> Sub<Msg> {
-        auto keys = key_map<Msg>({
+    static Sub subscribe(const Model& m) {
+        auto on_keys = keys<Sub>({
             {'q',                Quit{}},
             {SpecialKey::Escape, Quit{}},
             {' ',                Advance{}},
@@ -700,17 +701,17 @@ struct Agent {
         bool auto_advance = (m.phase == Phase::UserSent && m.phase_time > 0.5f);
 
         if (needs_tick || auto_advance) {
-            return Sub<Msg>::batch(
-                std::move(keys),
-                Sub<Msg>::every(std::chrono::milliseconds(50), Tick{})
+            return Sub::batch(
+                std::move(on_keys),
+                Sub::every(std::chrono::milliseconds(50), Tick{})
             );
         }
-        return keys;
+        return on_keys;
     }
 };
 
 static_assert(Program<Agent>);
 
 int main() {
-    run<Agent>({.title = "agent", .fps = 20, .mode = Mode::Inline});
+    return run<Agent>({.title = "agent", .fps = 20, .mode = Mode::Inline});
 }

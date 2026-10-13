@@ -26,6 +26,7 @@
 #include <vector>
 
 #include "../core/focus.hpp"
+#include "../core/function.hpp"
 #include "../core/overload.hpp"
 #include "../core/signal.hpp"
 #include "../dsl.hpp"
@@ -50,8 +51,8 @@ class TextArea {
     int                 scroll_offset_ = 0;
     TextAreaConfig      cfg_;
 
-    std::move_only_function<void(std::string_view)> on_change_;
-    std::move_only_function<void(std::string_view)> on_submit_;
+    MoveOnlyFunction<void(std::string_view)> on_change_;
+    MoveOnlyFunction<void(std::string_view)> on_submit_;
 
     std::string placeholder_;
 
@@ -77,7 +78,10 @@ public:
     void handle_paste(const PasteEvent& pe) {
         for (std::size_t pos = 0; pos < pe.content.size(); ) {
             char32_t cp = decode_utf8(pe.content, pos);
-            if (cp >= 0x20 || cp == '\n') insert_char(cp);
+            // Scrub control codepoints from pasted (untrusted) text — not just
+            // C0 but DEL and the C1 block, which are terminal escape
+            // introducers. Keep '\n' since this is a multi-line editor.
+            if (cp == '\n' || !maya::unicode::is_control(cp)) insert_char(cp);
         }
     }
 
@@ -139,9 +143,15 @@ public:
         int cursor_line = 0, cursor_col = 0;
         find_cursor_pos(val, cur, cursor_line, cursor_col);
 
-        // Compute visible window
+        // Compute visible window.  Use the pure (no-mutation) variant
+        // so render is idempotent — the framework's auto-measure path
+        // calls render twice per frame (once for height, once for
+        // paint), and a const_cast-mutating compute_scroll left them
+        // disagreeing about scroll offset → first row of the textarea
+        // would silently shift between measure and paint.
         int vis = cfg_.visible_lines > 0 ? cfg_.visible_lines : total_lines;
-        int scroll = const_cast<TextArea*>(this)->compute_scroll(cursor_line, total_lines, vis);
+        int scroll = compute_scroll_pure(cursor_line, total_lines, vis,
+                                         scroll_offset_);
 
         int start = scroll;
         int end = std::min(scroll + vis, total_lines);
@@ -158,7 +168,7 @@ public:
         auto text_style    = Style{};
         auto dim_style     = Style{}.with_dim();
         auto cursor_style  = Style{}.with_inverse();
-        auto gutter_sep    = Style{}.with_fg(Color::bright_black());
+        auto gutter_sep    = Style{}.with_fg(Color::slot(ThemeSlot::Muted));
 
         // Empty state
         if (val.empty() && !placeholder_.empty() && !focused) {
@@ -166,7 +176,7 @@ public:
                 .content = placeholder_,
                 .style = dim_style,
             }};
-            auto border_color = Color::bright_black();
+            auto border_color = Color::slot(ThemeSlot::Muted);
             return (dsl::v(std::move(inner))
                 | dsl::border(BorderStyle::Round) | dsl::bcolor(border_color)
                 | dsl::padding(0, 1, 0, 1)).build();
@@ -258,8 +268,8 @@ public:
 
         auto inner = dsl::v(std::move(rows)).build();
         auto border_color = focused
-            ? Color::blue()
-            : Color::bright_black();
+            ? Color::slot(ThemeSlot::Primary)
+            : Color::slot(ThemeSlot::Muted);
 
         return (dsl::v(std::move(inner))
             | dsl::border(BorderStyle::Round) | dsl::bcolor(border_color)
@@ -321,12 +331,26 @@ private:
     }
 
     int compute_scroll(int cursor_line, int total_lines, int visible) {
+        // Stateful variant — mutates scroll_offset_.  Called from
+        // event handlers / public mutators when the textarea is
+        // actively edited.  NOT called from build().
         if (visible >= total_lines) { scroll_offset_ = 0; return 0; }
         if (cursor_line < scroll_offset_) scroll_offset_ = cursor_line;
         if (cursor_line >= scroll_offset_ + visible)
             scroll_offset_ = cursor_line - visible + 1;
         scroll_offset_ = std::clamp(scroll_offset_, 0, total_lines - visible);
         return scroll_offset_;
+    }
+
+    // Pure variant — used by build() so render() is idempotent under
+    // the framework's measure-then-paint contract.
+    static int compute_scroll_pure(int cursor_line, int total_lines,
+                                   int visible, int saved_offset) noexcept {
+        if (visible >= total_lines) return 0;
+        int off = saved_offset;
+        if (cursor_line < off) off = cursor_line;
+        if (cursor_line >= off + visible) off = cursor_line - visible + 1;
+        return std::clamp(off, 0, total_lines - visible);
     }
 
     static size_t utf8_char_len(const std::string& s, size_t pos) {

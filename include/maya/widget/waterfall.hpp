@@ -26,7 +26,7 @@ struct WaterfallEntry {
     std::string label;
     float       start    = 0.f;
     float       duration = 0.f;
-    Color       color    = Color::blue();
+    Color       color    = Color::slot(ThemeSlot::Primary);
     TaskStatus  status   = TaskStatus::Completed;
 };
 

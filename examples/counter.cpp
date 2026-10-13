@@ -1,69 +1,42 @@
-// counter.cpp — minimal Program example
+// examples/counter.cpp — the smallest maya app.
 //
-// Demonstrates the type-theoretic architecture:
-//   - Model is plain data (no signals, no shared state)
-//   - update() is a pure function: (Model, Msg) → (Model, Cmd)
-//   - view() is a pure function: Model → Element (using the DSL)
-//   - subscribe() maps keys to messages declaratively
-//   - Effects are data (Cmd), never performed directly
-//   - Cmd<Msg>{} is shorthand for Cmd<Msg>::none() (no effects)
+// maya is to jaal what Ink is to React: jaal runs the program (model,
+// update, effects, subscriptions), maya draws it. This is the README's
+// quickstart, verbatim.
+//
+//   +/-   change the count      q   quit
 
-#include <maya/maya.hpp>
+#include <maya/host/run.hpp>
+
+#include <string>
+#include <variant>
 
 using namespace maya;
 using namespace maya::dsl;
 
 struct Counter {
-    // ── Model: plain value type ───────────────────────────────────────────
     struct Model { int count = 0; };
 
-    // ── Msg: closed sum type (every possible event) ──────────────────────
-    struct Increment {};
-    struct Decrement {};
-    struct Reset {};
-    struct Quit {};
-    using Msg = std::variant<Increment, Decrement, Reset, Quit>;
+    struct Inc {}; struct Dec {}; struct Quit {};
+    using Msg = std::variant<Inc, Dec, Quit>;
 
-    // ── init: just a Model (no startup effects needed) ───────────────────
-    static Model init() { return {}; }
+    using Cmd = jaal::Cmd<Msg>;
+    using Sub = jaal::Sub<Msg, on_key>;
 
-    // ── update: pure state transition ────────────────────────────────────
-    // Returns {new_model, cmd}. Use {} for no effects (Cmd defaults to none).
-    static auto update(Model m, Msg msg) -> std::pair<Model, Cmd<Msg>> {
-        return std::visit(overload{
-            [&](Increment) { return std::pair{Model{m.count + 1}, Cmd<Msg>{}}; },
-            [&](Decrement) { return std::pair{Model{m.count - 1}, Cmd<Msg>{}}; },
-            [&](Reset)     { return std::pair{Model{0}, Cmd<Msg>{}}; },
-            [](Quit)       { return std::pair{Model{}, Cmd<Msg>::quit()}; },
-        }, msg);
-    }
+    static Cmd update(Model& m, Inc)  { ++m.count; return {}; }
+    static Cmd update(Model& m, Dec)  { --m.count; return {}; }
+    static Cmd update(Model&,   Quit) { return Cmd::quit(0); }
 
-    // ── view: pure rendering with the DSL ────────────────────────────────
     static Element view(const Model& m) {
         return v(
-            t<"Counter"> | Bold | Fg<100, 180, 255>,
-            blank_,
-            text(m.count) | Bold,
-            blank_,
-            t<"+/- to change, r to reset, q to quit"> | Dim
-        ) | pad<1> | border_<Round>;
+            text("Count: " + std::to_string(m.count)) | Bold | Fg<100, 200, 255>,
+            t<"[+/-] change  [q] quit"> | Dim
+        ) | border_<Round> | bcol<50, 55, 70> | pad<1>;
     }
 
-    // ── subscribe: declarative key→message mapping ───────────────────────
-    static auto subscribe(const Model&) -> Sub<Msg> {
-        return key_map<Msg>({
-            {'q', Quit{}},
-            {'+', Increment{}},  {'=', Increment{}},
-            {'-', Decrement{}},  {'r', Reset{}},
-            {SpecialKey::Up,   Increment{}},
-            {SpecialKey::Down, Decrement{}},
-        });
+    static Sub subscribe(const Model&) {
+        return keys<Sub>({{'+', Inc{}}, {'-', Dec{}}, {'q', Quit{}}});
     }
 };
 
-// Compile-time proof: Counter satisfies Program.
-static_assert(Program<Counter>, "Counter must satisfy the Program concept");
-
-int main() {
-    run<Counter>({.title = "counter"});
-}
+int main() { return run<Counter>({.title = "counter"}); }

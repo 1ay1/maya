@@ -1,0 +1,279 @@
+// Golden-value tests for the generated Unicode width table.
+//
+// These cases exercise:
+//   - ASCII / Latin-1 (always 1 column)
+//   - East Asian Wide / Fullwidth (always 2 columns, matches every terminal)
+//   - Emoji_Presentation (2 columns under WidthMode::Modern, 1 under Legacy)
+//   - C0 control codes (always 0)
+//   - Boundary code points around the most complex range — Misc Symbols /
+//     Dingbats — where the per-codepoint Emoji_Presentation property
+//     creates non-trivial holes in the wide table.
+//
+// The values come from the official Unicode 16.0 UCD; bumping the table
+// to a newer revision should not regress any of these.
+
+#include "agtest.hpp"
+#include <print>
+
+#include <maya/text/unicode_width.hpp>
+
+namespace {
+
+constexpr int W(char32_t cp,
+                maya::unicode::WidthMode m = maya::unicode::WidthMode::Modern) {
+    return maya::unicode::char_width(cp, m);
+}
+
+TEST_CASE("ascii and latin") {
+    std::println("--- test_ascii_and_latin ---");
+    static_assert(W('A')      == 1);
+    static_assert(W('z')      == 1);
+    static_assert(W('0')      == 1);
+    static_assert(W(' ')      == 1);
+    static_assert(W('.')      == 1);  // the dot the user kept losing
+    static_assert(W(0x00E9)   == 1);  // é
+    static_assert(W(0x03B1)   == 1);  // α (Greek alpha — narrow)
+    std::println("PASS");
+}
+
+TEST_CASE("control codes") {
+    std::println("--- test_control_codes ---");
+    static_assert(W(0x00) == 0);
+    static_assert(W(0x09) == 0);  // tab
+    static_assert(W(0x1F) == 0);  // last C0
+    static_assert(W(0x20) == 1);  // first non-control: space
+    std::println("PASS");
+}
+
+TEST_CASE("box drawing and block elements are width-1 (fast path)") {
+    std::println("--- test_box_drawing_block ---");
+    // U+2500..U+259F (box-drawing + block elements) take char_width's second
+    // fast path: all width-1, no binary search. These glyphs fill every
+    // bordered TUI (tables, code fences, progress bars), so this range is
+    // hot every layout pass. Pin the whole block AND its boundaries so the
+    // fast path can never diverge from the underlying tables.
+    static_assert(W(0x2500) == 1);  // ─ first box-drawing
+    static_assert(W(0x250C) == 1);  // ┌ corner
+    static_assert(W(0x2502) == 1);  // │ vertical
+    static_assert(W(0x253C) == 1);  // ┼ cross
+    static_assert(W(0x257F) == 1);  // last box-drawing
+    static_assert(W(0x2580) == 1);  // ▀ first block element
+    static_assert(W(0x2588) == 1);  // █ full block
+    static_assert(W(0x2591) == 1);  // ░ light shade
+    static_assert(W(0x259F) == 1);  // last cell of the fast-path block
+    // Just BELOW the range still resolves via the normal path.
+    static_assert(W(0x24FF) == 1);
+    // Just ABOVE the fast path: U+25A0+ geometric shapes — the wide neighbours
+    // U+25FD/U+25FE MUST still measure as width-2 (proves the fast path stops
+    // before them and doesn't blanket the geometric block).
+    static_assert(W(0x25A0) == 1);  // ■ black square (narrow)
+    static_assert(W(0x25FC) == 1);  // narrow
+    static_assert(W(0x25FD) == 2);  // ◽ white medium-small square (WIDE)
+    static_assert(W(0x25FE) == 2);  // ◾ black medium-small square (WIDE)
+    std::println("PASS");
+}
+
+TEST_CASE("is control") {
+    std::println("--- test_is_control ---");
+    using maya::unicode::is_control;
+    // is_control() is the SECURITY predicate: a renderer drops these before
+    // emitting text so untrusted input (process names, filenames, pasted
+    // blobs) can't inject a terminal escape sequence. It must catch C0, DEL,
+    // AND the C1 block — the last is the part naive `< 0x20` filters miss,
+    // and it contains the 8-bit CSI/OSC/DCS/ST introducers.
+    static_assert(is_control(0x00));
+    static_assert(is_control(0x1B));  // ESC
+    static_assert(is_control(0x07));  // BEL
+    static_assert(is_control(0x0A));  // newline (a control; callers keep it explicitly)
+    static_assert(is_control(0x1F));  // last C0
+    static_assert(is_control(0x7F));  // DEL
+    static_assert(is_control(0x80));  // first C1
+    static_assert(is_control(0x90));  // DCS
+    static_assert(is_control(0x9B));  // CSI (8-bit)
+    static_assert(is_control(0x9C));  // ST
+    static_assert(is_control(0x9D));  // OSC
+    static_assert(is_control(0x9F));  // last C1
+    // Printable / legitimate text must NOT be flagged — no false positives
+    // that would mangle real names. U+00A0 (nbsp) sits just past C1.
+    static_assert(!is_control(0x20));    // space
+    static_assert(!is_control('A'));
+    static_assert(!is_control(0x7E));    // ~
+    static_assert(!is_control(0xA0));    // no-break space (NOT a control)
+    static_assert(!is_control(0x00E9));  // é
+    static_assert(!is_control(0x4E2D));  // 中
+    static_assert(!is_control(0x1F680)); // 🚀
+    std::println("PASS");
+}
+
+TEST_CASE("combining marks") {
+    std::println("--- test_combining_marks ---");
+    // Combining marks stack on the preceding base glyph and add NO columns.
+    // Counting them as 1 over-measures every accented string and shoves
+    // following content (and any border) one cell right — the bug that made
+    // \vec{v} / \hat{x} leak past a math block's border.
+    static_assert(W(0x0300) == 0);  // combining grave
+    static_assert(W(0x0301) == 0);  // combining acute (é = e + this)
+    static_assert(W(0x0302) == 0);  // circumflex (x̂)
+    static_assert(W(0x0304) == 0);  // macron / overline (\bar)
+    static_assert(W(0x0307) == 0);  // dot above (\dot)
+    static_assert(W(0x030C) == 0);  // caron (\check)
+    static_assert(W(0x036F) == 0);  // last Combining Diacritical Marks
+    static_assert(W(0x20D7) == 0);  // combining right arrow above (\vec)
+    static_assert(W(0x20D0) == 0);  // first Combining Marks for Symbols
+    // U+20F0 is the LAST ASSIGNED codepoint in that block; U+20F1..U+20FF
+    // are unassigned (glibc returns -1 for them). This used to assert
+    // W(0x20FF) == 0, which only held because the old hand-written list
+    // zeroed the whole block range including the holes. The generated
+    // table follows the actual category data, so an unassigned codepoint
+    // measures 1 like any other unknown.
+    static_assert(W(0x20F0) == 0);  // last ASSIGNED of that block
+    static_assert(W(0x1DC0) == 0);  // Combining Diacritical Marks Supplement
+    static_assert(W(0xFE20) == 0);  // Combining Half Marks
+    static_assert(W(0x200B) == 0);  // zero-width space
+    static_assert(W(0x200D) == 0);  // zero-width joiner
+    static_assert(W(0xFEFF) == 0);  // BOM / zero-width no-break space
+    // The base characters around them stay width 1.
+    static_assert(W(0x02FF) == 1);  // just before the combining block
+    static_assert(W(0x0370) == 1);  // just after (Greek)
+    std::println("PASS");
+}
+
+TEST_CASE("east asian wide") {
+    std::println("--- test_east_asian_wide ---");
+    // CJK Unified — every terminal in existence renders these as 2 cols.
+    static_assert(W(U'中')    == 2);  // U+4E2D
+    static_assert(W(U'文')    == 2);  // U+6587
+    static_assert(W(0x4E00)   == 2);  // first CJK
+    static_assert(W(0x9FFF)   == 2);
+    static_assert(W(0x1100)   == 2);  // Hangul Jamo
+    static_assert(W(0xAC00)   == 2);  // Hangul syllable 가
+    static_assert(W(0x3000)   == 2);  // Ideographic space
+    static_assert(W(0xFF21)   == 2);  // Fullwidth Latin A
+
+    // Legacy mode also returns 2 — these are W/F in EAW, not just emoji.
+    static_assert(W(U'中', maya::unicode::WidthMode::Legacy) == 2);
+    std::println("PASS");
+}
+
+TEST_CASE("emoji presentation") {
+    std::println("--- test_emoji_presentation ---");
+    // The bug-of-record. ⚡ is in Misc Symbols (U+2600 block) but
+    // Unicode 16.0 EAW classifies it as Wide, so it's 2 cols on Windows
+    // Terminal / Kitty / iTerm 3.5+ / WezTerm / Alacritty / Ghostty /
+    // vte 0.62+. (Older terminals that ignored the EAW=W classification
+    // are simply non-conformant — the mismatch was never our bug.)
+    static_assert(W(0x26A1)   == 2);  // ⚡
+    static_assert(W(0x2705)   == 2);  // ✅
+    static_assert(W(0x274C)   == 2);  // ❌
+    static_assert(W(0x2728)   == 2);  // ✨
+    static_assert(W(0x231A)   == 2);  // ⌚
+    static_assert(W(0x1F600)  == 2);  // 😀
+    static_assert(W(0x1F680)  == 2);  // 🚀
+    static_assert(W(0x1F9E0)  == 2);  // 🧠
+
+    // Codepoints in the same blocks WITHOUT Emoji_Presentation AND
+    // without EAW=W stay narrow.
+    static_assert(W(0x2600)   == 1);  // ☀ — Emoji but not Emoji_Presentation
+    static_assert(W(0x2603)   == 1);  // ☃ snowman — same story
+    static_assert(W(0x26A0)   == 1);  // ⚠ — Emoji but not Emoji_Presentation
+
+    // The Modern-vs-Legacy split: Regional Indicators (flag halves) are
+    // Emoji_Presentation but Unicode classifies them EAW=Neutral. Modern
+    // terminals render them as 2 cols (they pair into flag glyphs);
+    // Legacy renders as 1.
+    static_assert(W(0x1F1E6, maya::unicode::WidthMode::Modern) == 2);
+    static_assert(W(0x1F1E6, maya::unicode::WidthMode::Legacy) == 1);
+    std::println("PASS");
+}
+
+TEST_CASE("no off by one") {
+    std::println("--- test_no_off_by_one ---");
+    // Boundary checks on the most common wide ranges.
+    static_assert(W(0x10FF) == 1);  // just before Hangul Jamo
+    static_assert(W(0x1100) == 2);  // first Hangul Jamo LEADING (wide)
+    static_assert(W(0x115F) == 2);  // last Hangul Jamo LEADING
+    // U+1160.. are the conjoining MEDIAL and FINAL jamo. They compose onto
+    // the leading consonant to make one syllable block, so they take no
+    // columns of their own -- this line used to assert 1, which measured an
+    // IME-decomposed Korean syllable (U+1112 U+1161 U+11AB) as 4 columns
+    // instead of 2. glibc wcwidth reports 0 for the whole range.
+    //
+    // These jamo are general category Lo, NOT Mn, so the generated table
+    // can't get them from the category alone -- gen_unicode_width.py adds
+    // the two Hangul_Syllable_Type V/T spans explicitly. That makes this
+    // the assertion most likely to break if someone regenerates the table
+    // without that step, which is exactly why it's spelled out here.
+    static_assert(W(0x1160) == 0);  // first medial vowel
+    static_assert(W(0x11A7) == 0);  // last medial vowel
+    static_assert(W(0x11A8) == 0);  // first final consonant
+    static_assert(W(0x11FF) == 0);  // last final consonant
+    static_assert(W(0x1200) == 1);  // just after -- Ethiopic, narrow
+    static_assert(W(0xD7B0) == 0);  // Jamo Extended-B, medial
+    static_assert(W(0xD7FF) == 0);  // Jamo Extended-B, final
+
+    // A decomposed syllable must measure exactly what the precomposed one
+    // does, or Korean text drifts a cell per character.
+    static_assert(maya::unicode::str_width("\u1112\u1161\u11AB")
+                  == maya::unicode::str_width("\uD55C"));
+
+    // Yijing Hexagrams (U+4DC0..4DFF) are EAW=W per Unicode 16.0.
+    static_assert(W(0x4DBF) == 2);  // last CJK Ext A
+    static_assert(W(0x4DC0) == 2);  // first Yijing
+    static_assert(W(0x4DFF) == 2);  // last Yijing
+    static_assert(W(0x4E00) == 2);  // first CJK Unified
+    static_assert(W(0x9FFF) == 2);  // last CJK Unified
+
+    // Single-codepoint Emoji_Presentation island around ⚡.
+    static_assert(W(0x26A0) == 1);  // ⚠ — Emoji but not Emoji_Presentation
+    static_assert(W(0x26A1) == 2);  // ⚡ — the one
+    static_assert(W(0x26A2) == 1);  // just past ⚡ — narrow
+
+    std::println("PASS");
+}
+
+TEST_CASE("real text in scripts that use combining marks") {
+    std::println("--- test_combining_scripts ---");
+    using maya::unicode::str_width;
+    // agentty#55, and the class of bug behind it. is_zero_width() used to be
+    // a hand-written list of ranges covering Latin, Cyrillic, Hebrew and
+    // Arabic. Every script it forgot measured one column too wide per mark,
+    // so the text drifted right and overwrote whatever followed it.
+    //
+    // The table is generated from UnicodeData.txt's general categories now,
+    // so these assertions are about the PROPERTY (a mark adds no columns),
+    // not about a range someone remembered to add.
+
+    // KOREAN. An IME delivers the decomposed form, so the two spellings of
+    // the same word MUST measure the same. This is the reported bug: the
+    // decomposed form came out at 4 columns per syllable instead of 2.
+    static_assert(str_width("\uD55C\uAD6D") == 4);                       // 한국 precomposed
+    static_assert(str_width("\u1112\u1161\u11AB\u1100\u116E\u11A8") == 4); // 한국 decomposed
+    static_assert(str_width("\uD55C\uAD6D")
+                  == str_width("\u1112\u1161\u11AB\u1100\u116E\u11A8"));
+
+    // THAI. Vowels and tone marks stack above/below the consonant.
+    // สวัสดี is 6 codepoints, 2 of them marks -> 4 columns.
+    static_assert(str_width("\u0E2A\u0E27\u0E31\u0E2A\u0E14\u0E35") == 4);
+
+    // ARABIC. Harakat (fatha, sukun) are non-spacing.
+    static_assert(str_width("\u0645\u064E\u0631\u0652\u062D\u064E\u0628\u0627") == 5);
+
+    // HEBREW. Niqqud (qamats, shin dot, holam) are non-spacing.
+    static_assert(str_width("\u05E9\u05B8\u05C1\u05DC\u05D5\u05B9\u05DD") == 4);
+
+    // DEVANAGARI is the counter-case that keeps the rule honest: U+093F and
+    // U+0940 are Mc (SPACING marks) and DO take a column, unlike the Mn
+    // marks above. हिन्दी = 4 spacing glyphs + 1 virama(Mn, 0) -> 5.
+    // A fix that blanket-zeroed "anything that looks like a mark" would get
+    // this wrong in the other direction.
+    static_assert(str_width("\u0939\u093F\u0928\u094D\u0926\u0940") == 5);
+
+    // And the cases that must not regress.
+    static_assert(str_width("e\u0301") == 1);                  // e + acute
+    static_assert(str_width("\u3053\u3093\u306B\u3061\u306F") == 10); // こんにちは
+    static_assert(str_width("hello") == 5);
+    std::println("PASS");
+}
+
+} // namespace
+

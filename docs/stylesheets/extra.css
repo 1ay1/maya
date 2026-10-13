@@ -1,0 +1,21 @@
+/* maya docs — minimal tweaks on top of stock Material for MkDocs. */
+
+/* Mermaid edge / subgraph labels can render low-contrast on the dark theme;
+   pin them to the page foreground so diagrams stay readable in both schemes.
+   (Node label colors are set per-diagram and left alone.) */
+.md-typeset .mermaid .edgeLabel,
+.md-typeset .mermaid .edgeLabel p,
+.md-typeset .mermaid span.edgeLabel {
+  color: var(--md-default-fg-color) !important;
+  background-color: var(--md-default-bg-color) !important;
+}
+.md-typeset .mermaid .edgeLabel rect,
+.md-typeset .mermaid .labelBkg {
+  fill: var(--md-default-bg-color) !important;
+  opacity: 0.85;
+}
+.md-typeset .mermaid .cluster-label,
+.md-typeset .mermaid .cluster-label p {
+  color: var(--md-default-fg-color) !important;
+  fill: var(--md-default-fg-color) !important;
+}

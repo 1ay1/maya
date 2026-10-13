@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "../core/focus.hpp"
+#include "../core/function.hpp"
 #include "../core/overload.hpp"
 #include "../core/signal.hpp"
 #include "../dsl.hpp"
@@ -69,8 +70,8 @@ class Input {
     History history_{};
 
     // Callbacks
-    std::move_only_function<void(std::string_view)> on_submit_;
-    std::move_only_function<void(std::string_view)> on_change_;
+    MoveOnlyFunction<void(std::string_view)> on_submit_;
+    MoveOnlyFunction<void(std::string_view)> on_change_;
 
     // Placeholder text
     std::string placeholder_;
@@ -97,10 +98,18 @@ public:
     // -- Paste event handling --
     /// Handle a paste event — insert pasted text at cursor position.
     void handle_paste(const PasteEvent& pe) {
-        // Insert each character from the pasted text
+        // Insert each character from the pasted text. Control bytes are
+        // scrubbed, but a newline is kept when this Input is multiline —
+        // otherwise a pasted multi-line block silently collapses onto one
+        // line (0x0A < 0x20 would drop it). Single-line inputs still strip
+        // newlines, matching the textarea's handle_paste policy.
         for (std::size_t pos = 0; pos < pe.content.size(); ) {
             char32_t cp = decode_utf8(pe.content, pos);
-            if (cp >= 0x20) insert_char(cp);  // skip control chars
+            // Scrub control codepoints from pasted (untrusted) text — not just
+            // C0 but DEL and the C1 block, which are terminal escape
+            // introducers. Keep '\n' only when this Input is multiline.
+            if (cp == '\n') { if (Cfg.multiline) insert_char('\n'); }
+            else if (!maya::unicode::is_control(cp)) insert_char(cp);
         }
     }
 
@@ -201,15 +210,15 @@ public:
 
         // Zed style: wrap in a bordered box with prompt indicator
         auto border_color = is_focused
-            ? Color::blue()           // blue when focused
-            : Color::bright_black();  // muted when blurred
+            ? Color::slot(ThemeSlot::Primary)           // blue when focused
+            : Color::slot(ThemeSlot::Muted);  // muted when blurred
 
         return (dsl::v(
                 dsl::h(
                     Element{TextElement{
                         .content = "\xe2\x9d\xaf ",  // "❯ "
                         .style = is_focused
-                            ? Style{}.with_fg(Color::blue())
+                            ? Style{}.with_fg(Color::slot(ThemeSlot::Primary))
                             : Style{}.with_dim(),
                     }},
                     std::move(inner)

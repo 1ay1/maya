@@ -7,11 +7,28 @@
 // sequences for terminal rendering.
 
 #include "color.hpp"
+#include "binding.hpp"   // MAYA_ASSERT_LATE_BOUND — Style is the late-binding seam
 
 #include <optional>
 #include <string>
 
 namespace maya {
+
+// The live theme's resolver, as a function pointer.
+//
+// style.hpp sits BELOW theme.hpp and must not include it, but to_sgr() has to
+// turn a slot into something paintable. So the dependency is inverted: this
+// hook is declared here, defined in theme.hpp, and installed at static-init.
+// Until then it is null and to_sgr() treats a slot as "terminal default",
+// which is the honest answer for a colour whose theme has not loaded yet.
+//
+// Only to_sgr() uses it — the hot path (StylePool) calls theme::live()
+// directly, because it is above the layering line and can.
+using ColorResolver = LitColor (*)(Color) noexcept;
+inline ColorResolver& live_color_resolver() noexcept {
+    static ColorResolver r = nullptr;
+    return r;
+}
 
 // ============================================================================
 // Style - Immutable, composable text style descriptor
@@ -36,6 +53,46 @@ struct Style {
     bool underline     = false;
     bool strikethrough = false;
     bool inverse       = false;
+
+    /// SGR 8 (conceal / hidden). The cell still occupies its column(s) but
+    /// paints NO glyph, independent of the terminal background. This is the
+    /// true "occupy width, show nothing" primitive the streaming reveal's
+    /// ghost band needs: it lets the not-yet-typed tail keep the REAL text
+    /// in the leaf (so word-wrap geometry is byte-for-byte identical to the
+    /// settled frame) while rendering invisibly. Substituting spaces
+    /// instead — the old ghost path — made the wrapper trim/skip the ghost
+    /// run at a wrap boundary, so a wrapping line revealed a WHOLE WORD at a
+    /// time (the "starts smooth then bursts" stutter).
+    bool conceal       = false;
+
+    /// Hardware-caret anchor (META-attribute — never emitted as SGR).
+    /// A widget that wants the REAL terminal cursor at its caret cell
+    /// styles that one cell with caret_anchor; the renderer records the
+    /// cell's absolute canvas position into Canvas::set_cursor_hint at
+    /// paint time, and the inline serializer moves + shows the hardware
+    /// cursor there in the frame epilogue. Marking travels in the STYLE
+    /// so it survives every paint path uniformly — run splitting, word
+    /// wrap, truncation, and the component cache's packed-cell blit
+    /// (the bit lives in the interned style, and blitted cells carry
+    /// their style_id) — without any widget→layout coordinate plumbing.
+    /// Typically combined with with_conceal(): the anchor cell keeps
+    /// real glyph bytes for stable wrap geometry but paints nothing,
+    /// letting the terminal's own cursor render on top.
+    /// Participates in hashing/equality (two styles differing only in
+    /// caret_anchor must not alias in the StylePool) but build_sgr
+    /// ignores it — zero bytes on the wire.
+    bool caret_anchor  = false;
+
+    /// DECSCUSR cursor shape for the hardware caret (META — never SGR).
+    /// Only meaningful on a caret_anchor style; the inline serializer
+    /// emits `CSI <n> SP q` when it shows the cursor at this cell and
+    /// the shape differs from what is already on the wire. 0 = leave
+    /// the terminal's configured shape alone. Codes per DECSCUSR:
+    /// 1/2 block (blink/steady), 3/4 underline, 5/6 bar. The anchor
+    /// style's `fg` doubles as the caret COLOR (OSC 12; emitted only
+    /// for Rgb colors, reset via OSC 112 at finalize) — the glyph is
+    /// concealed anyway, so fg is free to carry it.
+    uint8_t caret_shape = 0;
 
     // -- Fluent builder (each returns a new Style) ---------------------------
 
@@ -95,11 +152,43 @@ struct Style {
         return s;
     }
 
+    /// Return a copy with conceal (SGR 8) enabled — occupy width, paint
+    /// nothing. See the `conceal` field.
+    [[nodiscard]] constexpr Style with_conceal(bool v = true) const noexcept {
+        Style s = *this;
+        s.conceal = v;
+        return s;
+    }
+
+    /// Return a copy with the hardware-caret anchor set — see the
+    /// `caret_anchor` field. Layout-only; never emitted as SGR.
+    [[nodiscard]] constexpr Style with_caret_anchor(bool v = true) const noexcept {
+        Style s = *this;
+        s.caret_anchor = v;
+        return s;
+    }
+
+    /// Return a copy with the DECSCUSR caret shape set — see the
+    /// `caret_shape` field. Layout-only; never emitted as SGR.
+    [[nodiscard]] constexpr Style with_caret_shape(uint8_t v) const noexcept {
+        Style s = *this;
+        s.caret_shape = v;
+        return s;
+    }
+
     // -- SGR generation ------------------------------------------------------
 
     /// Build the full ANSI SGR escape sequence for this style.
     /// Returns an empty string when no properties are set (no-op style).
-    [[nodiscard]] std::string to_sgr() const {
+    ///
+    /// `resolve` maps a Color to the LitColor it paints as — explicit, because
+    /// a caller emitting SGR bytes has to say which theme they are in. The
+    /// zero-argument overload below uses the live theme.
+    ///
+    /// The hot path does not come through here (StylePool pre-builds and
+    /// caches SGR runs); this is for tests, logs and one-shot prints.
+    template <class Resolve>
+    [[nodiscard]] std::string to_sgr(Resolve&& resolve) const {
         std::string params;
 
         auto append = [&](const std::string& code) {
@@ -113,13 +202,29 @@ struct Style {
         if (italic)        append("3");
         if (underline)     append("4");
         if (inverse)       append("7");
+        // NB: conceal (SGR 8) is deliberately NOT emitted here. It is
+        // resolved at PAINT time (emit_cell_run substitutes a space) so it
+        // works on every terminal regardless of SGR-8 support and stays
+        // background-independent. Emitting \e[8m too would be redundant and
+        // could double-hide on terminals that honour it.
         if (strikethrough) append("9");
 
-        if (fg.has_value()) append(fg->fg_sgr());
-        if (bg.has_value()) append(bg->bg_sgr());
+        if (fg.has_value()) append(resolve(*fg).fg_sgr());
+        if (bg.has_value()) append(resolve(*bg).bg_sgr());
 
         if (params.empty()) return {};
         return "\x1b[" + params + "m";
+    }
+
+    /// As above, resolving against the live theme.
+    [[nodiscard]] std::string to_sgr() const {
+        return to_sgr([](Color c) noexcept -> LitColor {
+            if (const auto r = live_color_resolver()) return r(c);
+            // No theme installed yet. A literal still paints correctly; a
+            // slot has no meaning without a theme, so it reads as the
+            // terminal's own ink rather than an invented colour.
+            return LitColor::try_literal(c).value_or(LitColor::default_color());
+        });
     }
 
     /// The universal SGR reset sequence.
@@ -144,6 +249,9 @@ struct Style {
         if (other.underline)     out.underline     = true;
         if (other.strikethrough) out.strikethrough = true;
         if (other.inverse)       out.inverse       = true;
+        if (other.conceal)       out.conceal       = true;
+        if (other.caret_anchor)  out.caret_anchor  = true;
+        if (other.caret_shape)   out.caret_shape   = other.caret_shape;
 
         return out;
     }
@@ -152,7 +260,8 @@ struct Style {
     [[nodiscard]] constexpr bool empty() const noexcept {
         return !fg.has_value() && !bg.has_value()
             && !bold && !dim && !italic && !underline
-            && !strikethrough && !inverse;
+            && !strikethrough && !inverse && !conceal && !caret_anchor
+            && caret_shape == 0;
     }
 
     constexpr auto operator<=>(const Style&) const = default;
@@ -214,6 +323,13 @@ inline constexpr Style bg_white   = Style{}.with_bg(Color::white());
 // Compile-time validation
 // ============================================================================
 
+// THE load-bearing one. Style is the seam every stored Element carries, so a
+// resolved colour here freezes the palette of everything ever built — which
+// is the shipped bug this assertion exists to make unrepeatable. See
+// maya/style/binding.hpp for the full argument.
+MAYA_ASSERT_LATE_BOUND(decltype(Style::fg));
+MAYA_ASSERT_LATE_BOUND(decltype(Style::bg));
+
 static_assert(Style{}.empty(), "Default style must be empty");
 static_assert(!bold_style.empty(), "Bold style must not be empty");
 static_assert(bold_style.bold, "bold_style must have bold set");
@@ -248,5 +364,43 @@ inline constexpr Style bold      = bold_style;
 inline constexpr Style dim       = dim_style;
 inline constexpr Style italic    = italic_style;
 inline constexpr Style underline = underline_style;
+
+// ── A filled band, with ink that is actually readable on it ────────────
+//
+// Use this for ANY element that paints text on a coloured background — a
+// chip, a status banner, a diff row, an active tab. It picks the ink by a
+// different rule depending on what the band actually is, because only one
+// of the two cases is knowable:
+//
+//   Rgb    we chose the colour and can read its channels, so measure the
+//          luminance and use black or white.
+//
+//   Named  the terminal owns those 16 entries and will not tell us what
+//   Indexed  they are. theme::native's diff green is ANSI 2, whose STANDARD
+//          value is dark (#008000) but which a Catppuccin-style palette
+//          remaps to #a6d189 — light. Measuring the standard table picks
+//          white ink and the text vanishes on the user's actual green.
+//          So don't guess: SGR 7 asks the TERMINAL to swap its own
+//          foreground and background, which is the one party that knows.
+//
+//   Default  no band at all; leave the style alone.
+//
+// Reverse video also degrades correctly — it is older than colour itself,
+// so it survives 16-colour terminals, monochrome ones, and `TERM=dumb`,
+// where a hardcoded black-on-green would have nothing to fall back to.
+[[nodiscard]] inline Style on_band(LitColor band) noexcept {
+    switch (band.kind()) {
+        case ColorKind::Rgb:
+            return Style{}.with_bg(band).with_fg(ink_for(band));
+        case ColorKind::Named:
+        case ColorKind::Indexed:
+            // fg = the band colour, then reverse: the terminal paints that
+            // colour as the BACKGROUND and its own background as the ink.
+            // Same rectangle, and the contrast is the terminal's own.
+            return Style{}.with_fg(band).with_inverse();
+        default:
+            return Style{};
+    }
+}
 
 } // namespace maya

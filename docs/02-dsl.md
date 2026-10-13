@@ -206,6 +206,43 @@ v(t<"Title">, blank_, t<"Body">)   // Empty line between title and body
 
 `blank_` is an empty `TextElement` — a visual spacer that takes one line.
 
+### Scroll Pipes — Viewports
+
+Wrap any node in a scroll viewport backed by a caller-owned `ScrollState`
+(the host stores it, typically `mutable` on the Model). The renderer applies
+the offset and writes `max_x`/`max_y` back after layout, so scroll clamping is
+automatic — you never compute bounds yourself.
+
+```cpp
+ScrollState st;                          // owned by the host
+
+v(long_log) | scroll(st)                 // both axes, viewport = allotted size
+v(long_log) | scrolly(st, 20)            // vertical only, 20-row window
+h(wide_row) | scrollx(st, 60)            // horizontal only, 60-col window
+v(grid)     | scroll(st, 60, 20)         // both axes, fixed 60×20 window
+```
+
+| Pipe | Axes | Viewport |
+|------|------|----------|
+| `scroll(st)` | both | allocated size |
+| `scroll(st, h)` | vertical | fixed height `h` |
+| `scroll(st, w, h)` | both | fixed `w`×`h` |
+| `scrolly(st, h)` | vertical | fixed height `h` |
+| `scrollx(st, w)` | horizontal | fixed width `w` |
+
+See [Signals & Scroll](09-signals.md) for `ScrollState` and the `scrollbar`
+widget that visualises it.
+
+### Text-Wrap Tags — `clip` / `nowrap`
+
+By default `text()` word-wraps at the container width. Two tags override that
+per node:
+
+```cpp
+text(long_path) | clip      // TextWrap::TruncateEnd — hard-truncate at the edge
+text(banner)    | nowrap    // TextWrap::NoWrap — overflow past the edge, no wrap
+```
+
 ## Style Pipe Operators
 
 Styles compose left-to-right with `|`:
@@ -478,6 +515,19 @@ bg<0x1A1A2E>   // hex background
 These are compile-time pipe tags just like `Fg` / `Bg`, but take a single
 24-bit hex value instead of three separate `uint8_t` parameters.
 
+> **Gotcha — `fg<>` / `bg<>` are ambiguous under `using namespace maya;`.**
+> The root `maya` namespace also defines free functions `maya::fg(Color)` /
+> `maya::bg(Color)` (the `Style` builders). If you pull in **both**
+> `using namespace maya;` **and** `using namespace maya::dsl;` (the common
+> setup), an unqualified `fg<0xFFFFFF>` fails to compile with *“reference
+> to ‘fg’ is ambiguous”*. Fixes, any one of:
+> ```cpp
+> Bold | dsl::fg<0xFFFFFF>     // qualify the tag
+> Bold | Fg<0xFF, 0xFF, 0xFF>  // use the capital RGB tag (never ambiguous)
+> ```
+> The capital `Fg<R,G,B>` / `Bg<R,G,B>` tags have no free-function twin, so
+> they are always unambiguous. This only affects the lowercase hex tags.
+
 ## Style Presets
 
 Compose style tags into reusable presets with `constexpr`:
@@ -541,28 +591,13 @@ renders as zero-size.
 
 ## Using DSL Trees in Applications
 
-DSL trees integrate the same way regardless of which application API you use —
-the render side always produces an `Element` via `.build()`.
-
-### Simple `run()`
-
-The render closure returns an `Element` directly. Just build the tree:
-
-```cpp
-maya::run(cfg,
-    [](const maya::Event& e) { /* handle input */ },
-    [] {
-        return v(
-            t<"Hello"> | Bold,
-            text("frame " + std::to_string(frame))
-        ) | border_<Round> | pad<1>;
-    }
-);
-```
+A DSL tree is an `Element` (via `.build()`, or implicitly where an `Element`
+is expected). There are two places one goes: a program's `view()`, and
+`print()` for one-shot output.
 
 ### Program `run<P>()`
 
-The `view` function receives the model and returns an `Element`. Same pattern:
+The `view` function receives the model and returns an `Element`:
 
 ```cpp
 struct MyProgram {
@@ -575,20 +610,18 @@ struct MyProgram {
     }
 };
 
-maya::run<MyProgram>(cfg);
+maya::run<MyProgram>({.title = "my program"});
 ```
 
-### `live()` and `print()`
+For continuously updating output, add a `Sub::every(...)` tick in
+`subscribe()`; for output that stays in scrollback, run with
+`.mode = Mode::Inline`.
 
-`live()` works like simple `run()` — the render closure returns an `Element`.
-`print()` renders once and exits; just call `.build()` directly:
+### `print()`
+
+`print()` renders once and returns; just call `.build()` directly:
 
 ```cpp
-// live(): continuous rendering
-maya::live([] {
-    return v(t<"Status"> | Bold, text(current_status));
-});
-
 // print(): one-shot
 maya::print(v(t<"Report"> | Bold, map(rows, row_fn)).build());
 ```

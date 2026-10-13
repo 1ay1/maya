@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <concepts>
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -18,9 +19,12 @@
 #include <utility>
 #include <vector>
 
+#include "function.hpp"
+
 // C++23: move_only_function avoids the copy overhead of std::function.
 // Reactive callbacks are never copied — they are captured once and invoked
-// in-place. move_only_function is the correct abstraction here.
+// in-place. MoveOnlyFunction (std::move_only_function where the standard
+// library provides it) is the correct abstraction here.
 
 namespace maya {
 
@@ -51,18 +55,122 @@ namespace detail {
 // Computed nodes are both (have subscribers AND dependencies).
 // Effects are pure sinks (have dependencies, no subscribers).
 
+struct ReactiveNode;
+
+// Thread-local list of nodes pending notification after a batch completes.
+// Declared ahead of ReactiveNode so ~ReactiveNode() can purge a dying node
+// from the queue. Wrapped in a function to avoid GCC's duplicate TLS-init
+// symbol bug with `inline thread_local` non-trivially-initialized types.
+inline std::vector<ReactiveNode*>& pending_notifications() {
+    thread_local std::vector<ReactiveNode*> v;
+    return v;
+}
+
+// ── Destruction-safe notification frames ────────────────────────────────
+// Every in-flight notification pass (the immediate path of
+// notify_subscribers, and flush_batch) iterates a LOCAL snapshot of raw
+// node pointers. If evaluating one node destroys another node that appears
+// later in the same snapshot (an Effect whose callback disposes another
+// Effect, a Computed dropped by a container rebuild), that snapshot entry
+// dangles and the pass would call evaluate() on freed memory.
+//
+// Each pass therefore registers its snapshot in this thread-local intrusive
+// stack; ~ReactiveNode() walks the stack and nulls every entry that points
+// at the dying node, and the passes skip null entries. Cost: one null check
+// per entry on the hot path; O(active frames × entries) only at node
+// destruction, which is rare and already O(edges) from the unlink.
+struct NotifyFrame {
+    std::vector<ReactiveNode*>* nodes;
+    NotifyFrame*                prev;
+};
+inline thread_local NotifyFrame* active_notify_frames = nullptr;
+
+// RAII registration of a snapshot vector as a notify frame. Exception-safe:
+// a throwing user callback unwinds through this and unregisters the frame.
+class NotifyFrameScope {
+    NotifyFrame frame_;
+public:
+    explicit NotifyFrameScope(std::vector<ReactiveNode*>& nodes) noexcept
+        : frame_{&nodes, active_notify_frames} {
+        active_notify_frames = &frame_;
+    }
+    ~NotifyFrameScope() { active_notify_frames = frame_.prev; }
+    NotifyFrameScope(const NotifyFrameScope&)            = delete;
+    NotifyFrameScope& operator=(const NotifyFrameScope&) = delete;
+};
+
 struct ReactiveNode {
     std::vector<ReactiveNode*> subscribers;
     std::vector<ReactiveNode*> dependencies;
+    // Dependencies are retained across evaluations. Each evaluation advances
+    // dependency_epoch; track() stamps dependencies it observes, and stale
+    // edges are removed once evaluation completes. This avoids tearing down
+    // and rebuilding unchanged subscriptions on every run.
+    std::vector<uint64_t>      dependency_epochs;
+    uint64_t                   dependency_epoch = 0;
+    // Positional cursor into `dependencies`, reset at the start of each
+    // evaluation. compute_fn almost always reads its sources in the SAME
+    // order every run, so add_dependency() matches dependencies[cursor] on
+    // the fast path — O(1) per get(), O(D) per evaluation. Only a genuine
+    // reordering (rare) falls back to a linear probe. Without this, the
+    // std::ranges::find in add_dependency made re-tracking O(D squared).
+    std::size_t                dependency_cursor = 0;
     uint64_t                   version = 0;
     // pending: O(1) batch-dedup flag — set when the node is queued in
     // pending_notifications, cleared when the batch flushes. Replaces the
     // O(n) std::ranges::find scan in notify_subscribers().
     bool                       pending = false;
+    // evaluating: set for the duration of evaluate()'s body. A node that is
+    // pulled lazily (get()) from *inside* another node's evaluation notifies
+    // its subscribers when it recomputes — but any subscriber that is itself
+    // mid-evaluation has ALREADY observed the fresh value in this same pass,
+    // so re-firing it synchronously is a redundant glitch (the classic
+    // diamond double-fire). Skipping self-and-ancestors that are `evaluating`
+    // collapses the glitch in O(1) with a single bool test — no topological
+    // sort, no per-node generation counter. Since edges are now RETAINED
+    // across evaluations (epoch tracking), the old eager clear_dependencies()
+    // no longer detaches the back-edge for us, so this guard is what keeps
+    // synchronous propagation glitch-free.
+    bool                       evaluating = false;
 
-    virtual ~ReactiveNode() = default;
+    virtual ~ReactiveNode() { unlink_all(); }
     virtual void mark_dirty() = 0;
     virtual void evaluate()   = 0;
+
+    // Fully detach this node from the reactive graph so NO raw pointer to
+    // a dead node survives anywhere. Four escape routes are closed:
+    //
+    //   1. dependencies → their subscriber lists drop us. Previously only
+    //      Effect::Node did this (in its own dtor); Computed::Node did
+    //      NOT, so a Computed destroyed before its source Signal left a
+    //      dangling subscriber pointer and the next Signal::set() called
+    //      mark_dirty()/evaluate() on freed memory.
+    //   2. subscribers → their dependency lists drop us. Previously a
+    //      Signal destroyed before its dependents left dangling
+    //      dependency pointers; the dependent's own clear_dependencies()
+    //      (at re-evaluation or destruction) then called unsubscribe()
+    //      through freed memory.
+    //   3. the batch queue — a node queued in pending_notifications() and
+    //      destroyed before the batch flushes must not be evaluated.
+    //   4. in-flight notification snapshots — see NotifyFrame above.
+    //
+    // Runs in the BASE destructor: the derived part is already gone, but
+    // nothing here touches derived state — only the intrusive edge lists.
+    void unlink_all() noexcept {
+        for (auto* dep : dependencies)
+            std::erase(dep->subscribers, this);
+        dependencies.clear();
+        for (auto* sub : subscribers)
+            sub->remove_dependency(this);
+        subscribers.clear();
+        if (pending) {
+            std::erase(pending_notifications(), this);
+            pending = false;
+        }
+        for (auto* f = active_notify_frames; f; f = f->prev)
+            for (auto*& slot : *f->nodes)
+                if (slot == this) slot = nullptr;
+    }
 
     void subscribe(ReactiveNode* node) {
         if (std::ranges::find(subscribers, node) == subscribers.end()) {
@@ -79,13 +187,68 @@ struct ReactiveNode {
             dep->unsubscribe(this);
         }
         dependencies.clear();
+        dependency_epochs.clear();
+    }
+
+    void begin_dependency_tracking() {
+        dependency_cursor = 0;
+        // Wrapping is practically unreachable, but resetting stamps keeps
+        // the matching invariant correct even then.
+        if (++dependency_epoch == 0) {
+            std::fill(dependency_epochs.begin(), dependency_epochs.end(), 0);
+            ++dependency_epoch;
+        }
+    }
+
+    void end_dependency_tracking() {
+        // Compact retained edges in one pass. Repeated vector::erase here
+        // turned a branch switch that dropped many dependencies into O(D²).
+        std::size_t keep = 0;
+        for (std::size_t i = 0; i < dependencies.size(); ++i) {
+            if (dependency_epochs[i] != dependency_epoch) {
+                dependencies[i]->unsubscribe(this);
+                continue;
+            }
+            if (keep != i) {
+                dependencies[keep] = dependencies[i];
+                dependency_epochs[keep] = dependency_epochs[i];
+            }
+            ++keep;
+        }
+        dependencies.resize(keep);
+        dependency_epochs.resize(keep);
+    }
+
+    void remove_dependency(ReactiveNode* dep) {
+        auto it = std::ranges::find(dependencies, dep);
+        if (it == dependencies.end()) return;
+        const auto index = static_cast<std::size_t>(it - dependencies.begin());
+        dependencies.erase(it);
+        dependency_epochs.erase(dependency_epochs.begin() + index);
     }
 
     void add_dependency(ReactiveNode* dep) {
-        if (std::ranges::find(dependencies, dep) == dependencies.end()) {
-            dependencies.push_back(dep);
-            dep->subscribe(this);
+        // Fast path: same source read in the same position as last run.
+        // Restamp in place and advance the cursor — O(1), no search, no
+        // allocation. This is the common case for a stable compute_fn.
+        if (dependency_cursor < dependencies.size() &&
+            dependencies[dependency_cursor] == dep) {
+            dependency_epochs[dependency_cursor] = dependency_epoch;
+            ++dependency_cursor;
+            return;
         }
+        // Slow path: order changed or a new dep. If it already exists
+        // elsewhere, just restamp it (leave compaction to reorder later);
+        // do NOT advance the cursor, so the next in-order read can still hit
+        // the fast path.
+        auto it = std::ranges::find(dependencies, dep);
+        if (it != dependencies.end()) {
+            dependency_epochs[static_cast<std::size_t>(it - dependencies.begin())] = dependency_epoch;
+            return;
+        }
+        dependencies.push_back(dep);
+        dependency_epochs.push_back(dependency_epoch);
+        dep->subscribe(this);
     }
 };
 
@@ -112,13 +275,31 @@ inline thread_local ReactiveScope* current_scope = nullptr;
 // Thread-local batch depth counter. When > 0, notifications are deferred.
 inline thread_local int batch_depth = 0;
 
-// Thread-local list of nodes pending notification after batch completes.
-// Wrapped in a function to avoid GCC's duplicate TLS-init symbol bug
-// with `inline thread_local` non-trivially-initialized types.
-inline std::vector<ReactiveNode*>& pending_notifications() {
-    thread_local std::vector<ReactiveNode*> v;
-    return v;
-}
+class DependencyTrackingScope {
+    ReactiveNode* owner_;
+public:
+    explicit DependencyTrackingScope(ReactiveNode* node) noexcept : owner_(node) {
+        owner_->begin_dependency_tracking();
+    }
+    ~DependencyTrackingScope() { owner_->end_dependency_tracking(); }
+    DependencyTrackingScope(const DependencyTrackingScope&)            = delete;
+    DependencyTrackingScope& operator=(const DependencyTrackingScope&) = delete;
+};
+
+// Marks a node `evaluating` for the duration of its evaluate() body so that a
+// nested lazy recompute (a Computed pulled via get() from inside this body)
+// cannot synchronously re-fire an ancestor that is already mid-evaluation.
+// One bool set/clear — the whole diamond-glitch fix costs two stores.
+class EvaluationScope {
+    ReactiveNode* owner_;
+public:
+    explicit EvaluationScope(ReactiveNode* node) noexcept : owner_(node) {
+        owner_->evaluating = true;
+    }
+    ~EvaluationScope() { owner_->evaluating = false; }
+    EvaluationScope(const EvaluationScope&)            = delete;
+    EvaluationScope& operator=(const EvaluationScope&) = delete;
+};
 
 inline ReactiveScope::ReactiveScope(ReactiveNode* node) noexcept
     : owner(node), previous(current_scope) {
@@ -137,6 +318,17 @@ inline void notify_subscribers(ReactiveNode* source) {
     if (batch_depth > 0) {
         // Defer: enqueue each subscriber once using the O(1) pending flag.
         // This replaces the old O(n) std::ranges::find scan.
+        //
+        // No NotifyFrameScope here (unlike the immediate branch and
+        // flush_batch): this loop performs NO evaluation — it only sets
+        // `pending` and appends to the queue, neither of which can run user
+        // code, re-track edges, or destroy nodes. `source->subscribers` is
+        // therefore stable for the duration of the loop. The actual
+        // evaluation (where a node can die and invalidate the list) happens
+        // later in flush_batch, which DOES install a frame; and a subscriber
+        // destroyed while merely sitting in the queue is purged by
+        // ~ReactiveNode()::unlink_all() (erases from pending_notifications +
+        // clears its pending flag). So the deferred path is race-free as-is.
         for (auto* sub : source->subscribers) {
             if (!sub->pending) {
                 sub->pending = true;
@@ -145,10 +337,19 @@ inline void notify_subscribers(ReactiveNode* source) {
         }
     } else {
         // Immediate: mark all subscribers dirty then evaluate.
-        // Copy the subscriber list — evaluation may modify it.
+        // Copy the subscriber list — evaluation may MUTATE it (re-tracking
+        // adds/removes edges) — and register the copy as a notify frame —
+        // evaluation may DESTROY nodes in it (an effect disposing another
+        // effect), which nulls their entry via ~ReactiveNode().
         auto subs = source->subscribers;
-        for (auto* sub : subs) sub->mark_dirty();
-        for (auto* sub : subs) sub->evaluate();
+        NotifyFrameScope frame(subs);
+        for (auto* sub : subs) if (sub) sub->mark_dirty();
+        // Skip any subscriber already mid-evaluation: it was pulled lazily
+        // higher in this same synchronous pass and has already observed the
+        // fresh value. Re-evaluating it now is the diamond double-fire. It
+        // stays dirty only transiently — its own in-flight evaluate() clears
+        // the flag when it completes.
+        for (auto* sub : subs) if (sub && !sub->evaluating) sub->evaluate();
     }
 }
 
@@ -159,14 +360,20 @@ inline void notify_subscribers(ReactiveNode* source) {
 inline void flush_batch() {
     // Take ownership of the pending list so re-entrant batches work.
     auto nodes = std::move(pending_notifications());
+    // Register the local list as a notify frame BEFORE touching any node:
+    // evaluating nodes[i] may destroy nodes[j>i]. The dying node's dtor
+    // can't purge it from pending_notifications() (we already moved the
+    // entries out) — the frame nulling is what keeps the loop safe.
+    NotifyFrameScope frame(nodes);
     // Clear pending flags before evaluating so re-entrant signal sets
     // during evaluation can re-enqueue nodes correctly.
     for (auto* node : nodes) {
+        if (!node) continue;
         node->pending = false;
         node->mark_dirty();
     }
     for (auto* node : nodes) {
-        node->evaluate();
+        if (node && !node->evaluating) node->evaluate();
     }
 }
 
@@ -282,11 +489,11 @@ public:
 template <typename T>
 class Computed {
     struct Node final : detail::ReactiveNode {
-        std::move_only_function<T()> compute_fn;
+        MoveOnlyFunction<T()> compute_fn;
         T                            cached_value;
         bool                         dirty = true;
 
-        explicit Node(std::move_only_function<T()> fn)
+        explicit Node(MoveOnlyFunction<T()> fn)
             : compute_fn(std::move(fn)), cached_value{} {}
 
         void mark_dirty() override {
@@ -296,9 +503,13 @@ class Computed {
         void evaluate() override {
             if (!dirty) return;
 
-            // Clear old dependency edges - they will be re-established
-            // during re-evaluation via track().
-            clear_dependencies();
+            // Mark self evaluating so a dependency recomputed lazily inside
+            // compute_fn cannot synchronously re-fire us (diamond glitch).
+            detail::EvaluationScope evaluating(this);
+
+            // Retain dependencies observed again and remove only dynamic
+            // branches that were not read this time.
+            detail::DependencyTrackingScope dependencies(this);
 
             // Enter a reactive scope so that any get() calls inside
             // compute_fn register this node as a subscriber.
@@ -387,15 +598,16 @@ auto computed(F&& fn) -> Computed<std::invoke_result_t<F>> {
 
 class Effect {
     struct Node final : detail::ReactiveNode {
-        std::move_only_function<void()> effect_fn;
+        MoveOnlyFunction<void()> effect_fn;
         bool                            dirty = true;
 
-        explicit Node(std::move_only_function<void()> fn)
+        explicit Node(MoveOnlyFunction<void()> fn)
             : effect_fn(std::move(fn)) {}
 
-        ~Node() override {
-            clear_dependencies();
-        }
+        // No explicit destructor: ~ReactiveNode::unlink_all() detaches
+        // this node from the whole graph (dependencies AND subscribers,
+        // batch queue, in-flight notify frames). The old Effect-only
+        // clear_dependencies() override is subsumed by that.
 
         void mark_dirty() override {
             dirty = true;
@@ -404,8 +616,8 @@ class Effect {
         void evaluate() override {
             if (!dirty) return;
 
-            clear_dependencies();
-
+            detail::EvaluationScope evaluating(this);
+            detail::DependencyTrackingScope dependencies(this);
             detail::ReactiveScope scope(this);
             effect_fn();
 

@@ -75,6 +75,45 @@ MAYA_FORCEINLINE void write_move_to(std::string& out, int col, int row) {
     out += 'H';
 }
 
+/// DECSTBM — set the vertical scrolling region to rows [top, bottom]
+/// (1-based, inclusive). Text scrolling (LF at the bottom margin, RI at the
+/// top, IND/scroll-up/down) is confined to this band; rows outside it are
+/// frozen — the terminal will not move them. After DECSTBM the cursor homes
+/// to (top,1). This is the substrate for partial terminal updates: freeze
+/// completed content above the margin, animate only the active band below.
+MAYA_FORCEINLINE void write_scroll_region(std::string& out, int top, int bottom) {
+    out += "\x1b[";
+    detail::append_int(out, top);
+    out += ';';
+    detail::append_int(out, bottom);
+    out += 'r';
+}
+
+/// DECSTBM reset — restore the full screen as the scrolling region.
+/// (CSI r with no params.) Always pair this with write_scroll_region on
+/// teardown so the next program inherits a clean terminal.
+MAYA_FORCEINLINE void write_scroll_region_reset(std::string& out) {
+    out += "\x1b[r";
+}
+
+/// SU — scroll the active region up by n lines (text moves up, blank lines
+/// enter at the bottom margin). Confined to the current DECSTBM band.
+MAYA_FORCEINLINE void write_scroll_up(std::string& out, int n) {
+    if (n <= 0) return;
+    out += "\x1b[";
+    detail::append_int(out, n);
+    out += 'S';
+}
+
+/// SD — scroll the active region down by n lines (text moves down, blank
+/// lines enter at the top margin). Confined to the current DECSTBM band.
+MAYA_FORCEINLINE void write_scroll_down(std::string& out, int n) {
+    if (n <= 0) return;
+    out += "\x1b[";
+    detail::append_int(out, n);
+    out += 'T';
+}
+
 // ============================================================================
 // Constants - CSI / OSC / ST prefixes
 // ============================================================================
@@ -91,6 +130,12 @@ inline constexpr std::string_view show_cursor              = "\x1b[?25h";
 inline constexpr std::string_view hide_cursor              = "\x1b[?25l";
 inline constexpr std::string_view alt_screen_enter         = "\x1b[?1049h";
 inline constexpr std::string_view alt_screen_leave         = "\x1b[?1049l";
+// Kitty keyboard protocol (progressive enhancement). PUSH enables flag 1
+// "disambiguate escape codes" onto the terminal's key-encoding stack; POP
+// restores the previous mode on exit. Unsupported terminals ignore the push
+// (private `CSI > … u` / `CSI < u`), so it is safe to emit unconditionally.
+inline constexpr std::string_view kitty_keyboard_push      = "\x1b[>1u";
+inline constexpr std::string_view kitty_keyboard_pop       = "\x1b[<u";
 // Mouse reporting: 1000 (button press/release), 1002 (button + drag motion),
 // 1006 (SGR extended coordinates). 1002 is a superset of 1000 that also emits
 // motion events while a button is held — required for click-and-drag widgets.
@@ -104,6 +149,28 @@ inline constexpr std::string_view enable_bracketed_paste   = "\x1b[?2004h";
 inline constexpr std::string_view disable_bracketed_paste  = "\x1b[?2004l";
 inline constexpr std::string_view sync_start               = "\x1b[?2026h";
 inline constexpr std::string_view sync_end                 = "\x1b[?2026l";
+// Kitty Keyboard Protocol — push flag 1 ("disambiguate escape codes")
+// onto the terminal's keyboard-protocol stack. Enables CSI-u reporting
+// for keys whose default encoding doesn't carry modifier info: most
+// importantly Shift+Enter, Ctrl+Enter, Shift+Tab variants, modified
+// arrow keys, etc. Supported by Kitty, Foot, WezTerm, Ghostty, recent
+// xterm, Konsole 22.04+, iTerm2 3.5+, recent Alacritty.
+// Terminals that don't recognize the sequence ignore it silently — the
+// CSI parser there will just see plain `\r` for Enter as before, so
+// it's safe to send unconditionally.
+//
+// The matching `pop` sequence is sent on exit so we don't leave the
+// terminal in a state the next program (a shell) can't decode.
+inline constexpr std::string_view kkp_push                 = "\x1b[>1u";
+inline constexpr std::string_view kkp_pop                  = "\x1b[<u";
+// xterm modifyOtherKeys=2 — older but more widely supported keyboard
+// disambiguation protocol than KKP. Many VTE-based terminals (GNOME
+// Terminal, Tilix) and stock xterm honor this even when they don't
+// speak KKP. Format on the wire is CSI 27;<mods>;<keycode>~ so e.g.
+// Shift+Enter becomes `\x1b[27;2;13~`. Sent alongside the KKP push as
+// a belt-and-suspenders fallback. Disabled (=0) on exit.
+inline constexpr std::string_view modify_other_keys_on     = "\x1b[>4;2m";
+inline constexpr std::string_view modify_other_keys_off    = "\x1b[>4m";
 
 // ============================================================================
 // SGR attribute constants
@@ -206,6 +273,85 @@ private:
 [[nodiscard]] std::string hyperlink_start(std::string_view uri);
 [[nodiscard]] std::string hyperlink_end();
 [[nodiscard]] std::string set_clipboard(std::string_view base64_data);
+
+// OSC 52 clipboard READ query. Asks the terminal emulator to report its
+// own system clipboard back over the input stream as
+// `OSC 52 ; c ; <base64> ST`. The terminal runs on the user's local
+// machine even across SSH, so this is how clipboard paste (text or
+// image) crosses an SSH pty with no remote tool. The reply is decoded
+// by InputParser::parse_osc into a PasteEvent. Requires a terminal that
+// honours OSC 52 reads (kitty, iTerm2, WezTerm, foot, Ghostty, recent
+// xterm with allowWindowOps; tmux/screen need clipboard passthrough).
+//
+// LIMITATION: OSC 52 read replies carry the TEXT clipboard only — no
+// terminal ships image bytes through it. For images across SSH see
+// request_clipboard_image() below (kitty's OSC 5522).
+[[nodiscard]] std::string request_clipboard();
+
+// OSC 5522 clipboard READ query — kitty's multi-format clipboard
+// protocol (https://sw.kovidgoyal.net/kitty/clipboard/). Unlike OSC 52,
+// the reply can carry ARBITRARY MIME data, including images: this is
+// the only escape-code path that gets a screenshot from the user's
+// local clipboard across an SSH pty. The request asks for
+// image/png, image/jpeg, image/webp, image/gif and text/plain; the
+// terminal answers with a packet sequence
+//   OSC 5522;type=read:status=OK ST
+//   OSC 5522;type=read:status=DATA:mime=<b64>;<b64-chunk> ST   (×N)
+//   OSC 5522;type=read:status=DONE ST
+// which InputParser::parse_osc5522 reassembles into one PasteEvent
+// (image bytes preferred over text). Only kitty implements this today —
+// gate emission on env_supports_osc5522().
+[[nodiscard]] std::string request_clipboard_image();
+
+// Does the host terminal speak the OSC 5522 clipboard protocol?
+// Env-driven (no DECRQM round trip): kitty is the only implementation,
+// detected via KITTY_WINDOW_ID locally or TERM containing "kitty" —
+// TERM is the one variable ssh forwards, so this works on the far end
+// of an SSH session where KITTY_WINDOW_ID is absent.  Also returns true
+// SPECULATIVELY inside tmux (TMUX set), where kitty's fingerprints are
+// erased and the request is sent tmux-wrapped (see wrap_for_tmux).
+[[nodiscard]] bool env_supports_osc5522();
+
+// Wrap a control sequence in tmux's DCS passthrough envelope
+// (ESC P tmux ; <payload, inner ESCs doubled> ESC \) so tmux forwards it to
+// the OUTER terminal instead of swallowing it.  Returns `seq` unchanged when
+// not inside tmux, so callers can wrap unconditionally.  Needs tmux
+// `allow-passthrough on` (default since tmux 3.4).
+[[nodiscard]] std::string wrap_for_tmux(std::string_view seq);
+
+// Is a tmux/screen anywhere between us and the real terminal? Covers BOTH
+// tmux on this host ($TMUX set) AND tmux on the LOCAL side of an ssh
+// session, where $TMUX doesn't survive sshd but tmux's rewritten TERM
+// (tmux-*/screen-*) does. Any OSC emitted in either topology traverses
+// tmux and needs the DCS passthrough envelope + speculative dual-dialect
+// clipboard send.
+[[nodiscard]] bool tmux_in_path();
+
+// ============================================================================
+// Terminal capability hints
+// ============================================================================
+
+// Heuristic: does the host terminal honor DEC mode 2026 (synchronized
+// update / "BSU/ESU")? When true, an entire repaint can be wrapped in
+// CSI ?2026h … CSI ?2026l and the terminal swaps the back buffer
+// atomically — no flicker even if the update spans many bytes. When
+// false, the terminal renders bytes as they arrive, so progressive
+// repaints are visible (the source of "slow-terminal flicker").
+//
+// Sending the codes is harmless either way (unknown CSI is silently
+// dropped), but the answer is useful upstream:
+//   - Maya gates the per-frame sync wrapper on it (saves a few bytes).
+//   - Apps may reduce their tick frequency / coalesce more aggressively
+//     when sync is unavailable, since each repaint has a visible cost.
+//
+// Detection is environment-variable driven (no DA1 round-trip): we
+// recognize the markers that modern terminals leave in the environment
+// (KITTY_WINDOW_ID, WT_SESSION, GHOSTTY_RESOURCES_DIR, $TERM_PROGRAM
+// for WezTerm/iTerm/vscode, $TERM containing kitty/foot/ghostty/etc.).
+// Apple_Terminal is explicitly known to NOT support sync. Unknown ⇒
+// false, on the conservative assumption that we'd rather slow down than
+// flicker.
+[[nodiscard]] bool env_supports_synchronized_output();
 
 } // namespace ansi
 } // namespace maya

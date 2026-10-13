@@ -76,13 +76,13 @@ public:
         auto [icon, icon_style] = status_icon();
         std::string border_label = " " + icon + " " + cfg_.tool_name + " ";
 
-        auto border_color = Color::bright_black();   // themed gray; user's terminal palette
+        auto border_color = Color::slot(ThemeSlot::Muted);   // themed gray; user's terminal palette
         auto border_style = BorderStyle::Round;
         if (status_ == ToolCallStatus::Failed) {
-            border_color = Color::red();
+            border_color = Color::slot(ThemeSlot::Error);
             border_style = BorderStyle::Dashed;
         } else if (status_ == ToolCallStatus::Confirmation) {
-            border_color = Color::yellow();
+            border_color = Color::slot(ThemeSlot::Warning);
         }
 
         if (expanded_ && content_) {
@@ -139,13 +139,13 @@ private:
             case ToolCallStatus::Pending:
                 return {"\xe2\x97\x8b", Style{}.with_dim()};                       // ○
             case ToolCallStatus::Running:
-                return {"\xe2\x97\x8f", Style{}.with_fg(Color::yellow())};         // ●
+                return {"\xe2\x97\x8f", Style{}.with_fg(Color::slot(ThemeSlot::Warning))};         // ●
             case ToolCallStatus::Completed:
-                return {"\xe2\x9c\x93", Style{}.with_fg(Color::green())};          // ✓
+                return {"\xe2\x9c\x93", Style{}.with_fg(Color::slot(ThemeSlot::Success))};          // ✓
             case ToolCallStatus::Failed:
-                return {"\xe2\x9c\x97", Style{}.with_fg(Color::red())};            // ✗
+                return {"\xe2\x9c\x97", Style{}.with_fg(Color::slot(ThemeSlot::Error))};            // ✗
             case ToolCallStatus::Confirmation:
-                return {"\xe2\x9a\xa0", Style{}.with_fg(Color::yellow())};         // ⚠
+                return {"\xe2\x9a\xa0", Style{}.with_fg(Color::slot(ThemeSlot::Warning))};         // ⚠
         }
         return {"\xe2\x97\x8b", Style{}.with_dim()};
     }

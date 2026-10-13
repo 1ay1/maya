@@ -12,6 +12,7 @@
 // children that extend beyond the box boundary are silently discarded.
 
 #include <cstddef>
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -26,6 +27,32 @@
 namespace maya {
 
 namespace render_detail {
+
+// ============================================================================
+// Diagnostic: total ComponentElement render() invocations
+// ============================================================================
+// Monotone process-wide counter, bumped every time the renderer actually
+// CALLS a ComponentElement's render() closure (a cache MISS at either the
+// measure site or the paint site). A cache HIT never bumps it. Tests read
+// the delta across a window of frames to PROVE that a hash-keyed component
+// (e.g. StreamingMarkdown's collapsed head wrapper) renders O(1) times as
+// the transcript grows instead of once per frame. Not wired into any hot
+// path beyond a relaxed atomic increment on the already-slow miss branch.
+[[nodiscard]] std::uint64_t component_render_calls() noexcept;
+// Blit-path telemetry: rows skipped by the per-row write-epoch proof vs
+// rows that went through the bulk_eq/memcpy compare, and fast-path cache
+// entries walked. Monotonic totals; diff across frames to get per-frame.
+[[nodiscard]] std::uint64_t blit_rows_epoch_skip() noexcept;
+[[nodiscard]] std::uint64_t blit_rows_compared() noexcept;
+[[nodiscard]] std::uint64_t blit_entries_walked() noexcept;
+// Drop cached component canvases. Required when a StylePool is rebased:
+// cached cells contain pool-local uint16_t style ids and cannot survive it.
+void clear_component_cache() noexcept;
+// Top-level render_tree phase totals (build_layout_tree / layout::compute /
+// paint_element), nanoseconds, monotonic.
+[[nodiscard]] std::uint64_t rt_build_ns() noexcept;
+[[nodiscard]] std::uint64_t rt_layout_ns() noexcept;
+[[nodiscard]] std::uint64_t rt_paint_ns() noexcept;
 
 // ============================================================================
 // Layout tree builder
@@ -87,7 +114,7 @@ void render_tree(
 
 /// Render an element tree into a sub-region of a canvas without clearing it.
 /// This lets you mix component-based Elements with direct canvas painting
-/// in canvas_run mode — build your Element, then stamp it at (x, y, w, h).
+/// inside a paint() element — build your Element, then stamp it at (x, y, w, h).
 void render_tree_at(
     const Element& root,
     Canvas& canvas,

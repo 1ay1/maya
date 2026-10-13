@@ -1,0 +1,846 @@
+#pragma once
+// maya::core::animation — Time-driven value interpolation
+//
+// A small, allocation-free animation runtime: drive a numeric value from a
+// start to a target over wall-clock time, shaped by an easing curve OR by a
+// critically-tunable spring. Everything is computed in `double` seconds and
+// advanced explicitly via `tick(dt)` — there is no hidden clock, no thread,
+// no per-frame allocation. The host owns the frame loop; maya just integrates.
+//
+// Two flavours:
+//
+//   Tween<T>     — fixed-duration A→B interpolation through an Easing curve.
+//                  Deterministic, ends exactly at `target` after `duration`.
+//
+//   Spring<T>    — physically-modelled motion (stiffness/damping). Retargets
+//                  mid-flight without a discontinuity (velocity is preserved),
+//                  which is what makes spring motion feel "alive". Settles
+//                  asymptotically; `done()` reports rest within an epsilon.
+//
+//   Animated<T>  — ergonomic wrapper that holds either a Tween or a Spring,
+//                  exposes `value()`, `set_target()`, `tick(dt)`, `done()`.
+//
+// Easing functions are `constexpr` (usable at compile time, and trivially
+// inlined at run time). Spring parameters are validated with `consteval`
+// factories so an over-/under-damped misconfiguration is caught at the call
+// site instead of producing NaNs at run time.
+//
+// Design notes:
+//   * No heap. Tween/Spring/Animated are trivially copyable value types.
+//   * `T` may be any type that supports scalar lerp via operator+/-/*. The
+//     library ships specialisations for float/double and for maya RGB colour
+//     (componentwise, gamma-naive — adequate for UI fades).
+//   * tick(dt) is O(1) and branch-light; safe to call thousands of times per
+//     frame across many Animated<> instances without measurable cost.
+
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
+#include <type_traits>
+
+#include "../style/color.hpp"
+
+namespace maya::anim {
+
+// ============================================================================
+// constexpr math — std::sqrt / std::abs(double) are NOT standard-constexpr.
+// ============================================================================
+// libstdc++/GCC offer them as a non-conforming extension, but libc++ (clang)
+// and MSVC correctly reject them in a constant-expression context. The spring
+// presets need a sqrt at consteval time, so we ship our own constexpr ones.
+// (At run time the compiler folds these to the same code as the intrinsics.)
+namespace cmath {
+
+[[nodiscard]] constexpr double c_abs(double x) noexcept {
+    return x < 0.0 ? -x : x;
+}
+
+// Newton–Raphson sqrt. Converges quadratically; ~30 iters is overkill but
+// keeps it exact across the whole positive double range at compile time.
+[[nodiscard]] constexpr double c_sqrt(double x) noexcept {
+    if (x < 0.0) return 0.0;          // domain guard (no NaN at constexpr)
+    if (x == 0.0 || x == 1.0) return x;
+    double guess = x < 1.0 ? x : x / 2.0;
+    for (int i = 0; i < 40; ++i) {
+        const double next = 0.5 * (guess + x / guess);
+        if (c_abs(next - guess) < 1e-15 * (next < 1.0 ? 1.0 : next)) {
+            guess = next;
+            break;
+        }
+        guess = next;
+    }
+    return guess;
+}
+
+} // namespace cmath
+
+// ============================================================================
+// Easing — constexpr curve functions on a normalised parameter t ∈ [0,1]
+// ============================================================================
+// Each returns a shaped progress in [0,1]. They are pure and constexpr, so
+// `static_assert(ease::in_out_cubic(0.5) == 0.5)` works at compile time.
+
+namespace ease {
+
+[[nodiscard]] constexpr double clamp01(double t) noexcept {
+    return t < 0.0 ? 0.0 : (t > 1.0 ? 1.0 : t);
+}
+
+[[nodiscard]] constexpr double linear(double t) noexcept { return clamp01(t); }
+
+[[nodiscard]] constexpr double in_quad(double t) noexcept {
+    t = clamp01(t);
+    return t * t;
+}
+[[nodiscard]] constexpr double out_quad(double t) noexcept {
+    t = clamp01(t);
+    return t * (2.0 - t);
+}
+[[nodiscard]] constexpr double in_out_quad(double t) noexcept {
+    t = clamp01(t);
+    return t < 0.5 ? 2.0 * t * t : 1.0 - 0.5 * (2.0 * t - 2.0) * (2.0 * t - 2.0);
+}
+
+[[nodiscard]] constexpr double in_cubic(double t) noexcept {
+    t = clamp01(t);
+    return t * t * t;
+}
+[[nodiscard]] constexpr double out_cubic(double t) noexcept {
+    t = clamp01(t);
+    const double f = t - 1.0;
+    return f * f * f + 1.0;
+}
+[[nodiscard]] constexpr double in_out_cubic(double t) noexcept {
+    t = clamp01(t);
+    if (t < 0.5) return 4.0 * t * t * t;
+    const double f = 2.0 * t - 2.0;
+    return 0.5 * f * f * f + 1.0;
+}
+
+// Quintic — snappier ends, used for "settle" feel.
+[[nodiscard]] constexpr double in_out_quint(double t) noexcept {
+    t = clamp01(t);
+    if (t < 0.5) return 16.0 * t * t * t * t * t;
+    const double f = 2.0 * t - 2.0;
+    return 0.5 * f * f * f * f * f + 1.0;
+}
+
+// Smoothstep / smootherstep (Ken Perlin). C1 / C2 continuous; no overshoot.
+[[nodiscard]] constexpr double smoothstep(double t) noexcept {
+    t = clamp01(t);
+    return t * t * (3.0 - 2.0 * t);
+}
+[[nodiscard]] constexpr double smootherstep(double t) noexcept {
+    t = clamp01(t);
+    return t * t * t * (t * (t * 6.0 - 15.0) + 10.0);
+}
+
+// Back — anticipation / overshoot. in_back dips below 0 at the start
+// ("wind-up"); out_back overshoots past 1 near the end then settles
+// ("snap into place"). The classic UI "pop" curve. s = 1.70158 gives the
+// standard ~10% overshoot. NOTE: range escapes [0,1] by design — callers
+// lerping positions get the overshoot; callers lerping a CLAMPED quantity
+// (alpha, a colour mix) should prefer out_cubic.
+[[nodiscard]] constexpr double in_back(double t) noexcept {
+    t = clamp01(t);
+    constexpr double s = 1.70158;
+    return t * t * ((s + 1.0) * t - s);
+}
+[[nodiscard]] constexpr double out_back(double t) noexcept {
+    t = clamp01(t);
+    constexpr double s = 1.70158;
+    const double f = t - 1.0;
+    return f * f * ((s + 1.0) * f + s) + 1.0;
+}
+
+// Easing function pointer type — lets widgets accept a curve as a parameter.
+using Fn = double (*)(double) noexcept;
+
+} // namespace ease
+
+// ============================================================================
+// Lerp — generic linear interpolation primitive
+// ============================================================================
+// Override `lerp()` for custom T by ADL or by adding an overload here.
+
+template <typename T>
+    requires std::is_arithmetic_v<T>
+[[nodiscard]] constexpr T lerp(T a, T b, double t) noexcept {
+    return static_cast<T>(static_cast<double>(a) +
+                          (static_cast<double>(b) - static_cast<double>(a)) * t);
+}
+
+// maya truecolor — componentwise lerp on the RGB channels. Rounds to nearest.
+//
+// ── Why this checks has_channels() ──────────────────────────────────────
+//
+// This used to claim that "named/indexed degrade to their RGB projection
+// via the accessors". They do not. The accessors PROJECT NOTHING: on a
+// Named colour r() is the palette index and g()/b() are zero, so mixing
+// them produced a truecolor triple built out of an index —
+//
+//     bright_black -> Named(8) -> rgb(8, 0, 0) -> "38;2;8;0;0"
+//
+// near-black, invisible on a dark terminal, and emitted for EVERY line of
+// every reasoning block under theme::native (agentty #45). Default was
+// worse: rgb(0,0,0), literal black.
+//
+// The fix is not to project. `native` states Named and Default slots on
+// PURPOSE — that is how the user's own palette, and their own contrast
+// choices, reach the screen. Projecting bright_black through the standard
+// xterm table would paint OUR idea of grey over THEIR remapped one, and
+// projecting Default is not even well-defined (to_rgb() guesses white).
+//
+// So a blend against a channel-less endpoint degrades to NO BLEND: snap to
+// whichever endpoint the parameter is nearer. The effect is lost; the
+// colour stays honest, stays the user's, and stays visible. An effect that
+// cannot be computed must become no effect, never a computed wrong answer.
+[[nodiscard]] inline LitColor lerp(LitColor a, LitColor b, double t) noexcept {
+    if (!a.has_channels() || !b.has_channels())
+        return t < 0.5 ? a : b;
+    auto mix = [t](uint8_t x, uint8_t y) -> uint8_t {
+        const double v = static_cast<double>(x) +
+                         (static_cast<double>(y) - static_cast<double>(x)) * t;
+        return static_cast<uint8_t>(std::clamp(v + 0.5, 0.0, 255.0));
+    };
+    return LitColor::rgb(mix(a.r(), b.r()), mix(a.g(), b.g()), mix(a.b(), b.b()));
+}
+
+// ============================================================================
+// Tween<T> — fixed-duration eased interpolation
+// ============================================================================
+
+template <typename T>
+class Tween {
+    T          from_{};
+    T          to_{};
+    double     duration_ = 0.0;   // seconds; 0 ⇒ instantaneous
+    double     elapsed_  = 0.0;
+    ease::Fn   ease_     = ease::in_out_cubic;
+
+public:
+    constexpr Tween() = default;
+
+    constexpr Tween(T from, T to, double duration_secs,
+                    ease::Fn curve = ease::in_out_cubic) noexcept
+        : from_(from), to_(to),
+          duration_(duration_secs < 0.0 ? 0.0 : duration_secs),
+          ease_(curve ? curve : ease::linear) {}
+
+    // Advance by dt seconds. Returns the current (post-tick) value.
+    constexpr T tick(double dt) noexcept {
+        if (dt > 0.0) elapsed_ += dt;
+        return value();
+    }
+
+    [[nodiscard]] constexpr T value() const noexcept {
+        if (duration_ <= 0.0) return to_;
+        const double raw = elapsed_ / duration_;
+        const double t   = ease_(raw >= 1.0 ? 1.0 : raw);
+        return lerp(from_, to_, t);
+    }
+
+    [[nodiscard]] constexpr bool done() const noexcept {
+        return elapsed_ >= duration_;
+    }
+
+    // Retarget: continue from the CURRENT value toward a new target over a
+    // fresh duration. Preserves visual continuity (no jump).
+    constexpr void retarget(T new_to, double duration_secs,
+                            ease::Fn curve = nullptr) noexcept {
+        from_     = value();
+        to_       = new_to;
+        duration_ = duration_secs < 0.0 ? 0.0 : duration_secs;
+        elapsed_  = 0.0;
+        if (curve) ease_ = curve;
+    }
+
+    constexpr void reset_to(T v) noexcept {
+        from_ = to_ = v;
+        elapsed_ = duration_ = 0.0;
+    }
+
+    [[nodiscard]] constexpr T   target()   const noexcept { return to_; }
+    [[nodiscard]] constexpr double progress() const noexcept {
+        return duration_ <= 0.0 ? 1.0
+                                : ease::clamp01(elapsed_ / duration_);
+    }
+};
+
+// ============================================================================
+// SpringParams — validated spring configuration
+// ============================================================================
+// stiffness (k) pulls toward target; damping (c) bleeds velocity. The pair
+// determines the response: under-damped overshoots & oscillates, critically
+// damped reaches rest fastest without overshoot, over-damped crawls in.
+//
+// Use the consteval factories so a degenerate config is a compile error.
+
+struct SpringParams {
+    double stiffness = 170.0;  // k  — typical UI: 100..300
+    double damping   = 20.0;   // c
+    double mass      = 1.0;    // m
+    double rest_eps  = 0.001;  // |x-target| & |v| below this ⇒ settled
+
+    // Damping ratio ζ = c / (2·√(k·m)). ζ<1 underdamped, =1 critical, >1 over.
+    [[nodiscard]] constexpr double zeta() const noexcept {
+        const double denom = 2.0 * cmath::c_sqrt(stiffness * mass);
+        return denom > 0.0 ? damping / denom : 0.0;
+    }
+};
+
+namespace spring_presets {
+
+// Build a spring from intuitive "stiffness + damping ratio" knobs and validate
+// at compile time. ζ ∈ (0, 2]; stiffness > 0; mass > 0.
+[[nodiscard]] consteval SpringParams make(double stiffness, double zeta,
+                                          double mass = 1.0,
+                                          double rest_eps = 0.001) {
+    if (!(stiffness > 0.0)) throw "spring: stiffness must be > 0";
+    if (!(mass > 0.0))      throw "spring: mass must be > 0";
+    if (!(zeta > 0.0))      throw "spring: damping ratio must be > 0";
+    if (zeta > 4.0)         throw "spring: damping ratio absurdly high (>4)";
+    if (!(rest_eps > 0.0))  throw "spring: rest_eps must be > 0";
+    const double c = zeta * 2.0 * cmath::c_sqrt(stiffness * mass);
+    return SpringParams{stiffness, c, mass, rest_eps};
+}
+
+// Hand-tuned presets (Framer-Motion-ish feel).
+inline constexpr SpringParams gentle   = make(120.0, 0.90);
+inline constexpr SpringParams snappy    = make(210.0, 0.80);
+inline constexpr SpringParams wobbly    = make(180.0, 0.45);
+inline constexpr SpringParams stiff     = make(300.0, 1.00);
+inline constexpr SpringParams molasses  = make(60.0,  1.20);
+
+} // namespace spring_presets
+
+// ============================================================================
+// Spring<T> — semi-implicit Euler spring integrator
+// ============================================================================
+// Operates on the scalar projection of T (via lerp). For arithmetic T this is
+// the value itself; for colour it springs the 0→1 mix parameter between the
+// last-set base and the target, which keeps channels coupled (no hue drift).
+
+template <typename T>
+class Spring {
+    T            base_{};    // value the spring departed from
+    T            target_{};  // value the spring pulls toward
+    double       x_  = 0.0;  // position along base→target (0..1, can overshoot)
+    double       v_  = 0.0;  // velocity in the same 1-D space
+    SpringParams p_{};
+
+public:
+    constexpr Spring() = default;
+
+    explicit constexpr Spring(T initial, SpringParams params = {}) noexcept
+        : base_(initial), target_(initial), p_(params) {}
+
+    // Semi-implicit (symplectic) Euler — stable for stiff springs at the dt
+    // values a 60 fps loop produces. Sub-steps when dt is large to keep the
+    // integration well-conditioned after a dropped frame.
+    constexpr T tick(double dt) noexcept {
+        if (dt <= 0.0) return value();
+        // Cap a catch-up frame and sub-step at ≤ 1/120 s for stiff springs.
+        if (dt > 0.25) dt = 0.25;
+        constexpr double kMaxStep = 1.0 / 120.0;
+        int steps = static_cast<int>(dt / kMaxStep) + 1;
+        const double h = dt / static_cast<double>(steps);
+        for (int i = 0; i < steps; ++i) {
+            const double a = (-p_.stiffness * (x_ - 1.0) - p_.damping * v_) / p_.mass;
+            v_ += a * h;
+            x_ += v_ * h;
+        }
+        if (done()) { x_ = 1.0; v_ = 0.0; }
+        return value();
+    }
+
+    [[nodiscard]] constexpr T value() const noexcept {
+        return lerp(base_, target_, x_);
+    }
+
+    [[nodiscard]] constexpr bool done() const noexcept {
+        return cmath::c_abs(x_ - 1.0) < p_.rest_eps && cmath::c_abs(v_) < p_.rest_eps;
+    }
+
+    // Retarget mid-flight WITHOUT killing momentum. The current value becomes
+    // the new base; the velocity (in value-units/sec) is reprojected onto the
+    // new base→target span so motion stays continuous.
+    constexpr void set_target(T new_target) noexcept {
+        const T   cur          = value();
+        const double span_old  = scalar_span(base_, target_);
+        const double vel_units = v_ * span_old;          // value-units / sec
+        base_   = cur;
+        target_ = new_target;
+        const double span_new  = scalar_span(base_, target_);
+        x_ = 0.0;
+        v_ = span_new != 0.0 ? vel_units / span_new : 0.0;
+        if (span_new == 0.0) { x_ = 1.0; v_ = 0.0; }
+    }
+
+    constexpr void reset_to(T v) noexcept {
+        base_ = target_ = v;
+        x_ = 1.0; v_ = 0.0;
+    }
+
+    constexpr void set_params(SpringParams p) noexcept { p_ = p; }
+
+    [[nodiscard]] constexpr T            target()   const noexcept { return target_; }
+    [[nodiscard]] constexpr double       velocity() const noexcept { return v_; }
+    [[nodiscard]] constexpr SpringParams params()   const noexcept { return p_; }
+
+private:
+    // Magnitude of the base→target gap projected to scalar, for momentum
+    // reprojection. Arithmetic: |b-a|. Colour: max channel delta.
+    [[nodiscard]] static constexpr double scalar_span(T a, T b) noexcept {
+        if constexpr (std::is_arithmetic_v<T>) {
+            return cmath::c_abs(static_cast<double>(b) - static_cast<double>(a));
+        } else {
+            return 1.0; // non-arithmetic springs use a unit param space
+        }
+    }
+};
+
+// Colour-specialised scalar_span (max channel delta) lives as an overload so
+// momentum reprojection on a colour stays continuous. LitColor, because it
+// reads channels — a spring animates between painted colours, and a slot has
+// no channels to travel between.
+//
+// Neither does a Named/Indexed/Default colour: those bytes are a palette
+// index or nothing (see BasicColor::has_channels). Differencing them yields
+// a distance in index-space, which is not a distance at all — under
+// theme::native it makes a spring report a large span between two colours
+// that are visually adjacent, or none between two that are not. A span of
+// zero is the honest answer: with no channels there is nothing to travel
+// through, and lerp() will snap rather than blend anyway.
+template <>
+inline constexpr double Spring<LitColor>::scalar_span(LitColor a, LitColor b) noexcept {
+    if (!a.has_channels() || !b.has_channels()) return 0.0;
+    // Use the constexpr-safe cmath::c_abs (std::abs(int) is not guaranteed
+    // constexpr, and MSVC rejects the whole function as never-constant).
+    const double dr = cmath::c_abs(double(int(a.r()) - int(b.r())));
+    const double dg = cmath::c_abs(double(int(a.g()) - int(b.g())));
+    const double db = cmath::c_abs(double(int(a.b()) - int(b.b())));
+    const double m = (dr > dg ? dr : dg);
+    return (db > m ? db : m) / 255.0;
+}
+
+// ============================================================================
+// Animated<T> — one value, either tweened or sprung
+// ============================================================================
+// The public ergonomic type. Construct with `Animated<T>::tween(...)` or
+// `Animated<T>::spring(...)`. Call `tick(dt)` each frame; `done()` tells the
+// host whether to keep requesting animation frames.
+
+template <typename T>
+class Animated {
+    enum class Mode : uint8_t { Tween, Spring };
+    Mode      mode_ = Mode::Tween;
+    Tween<T>  tween_{};
+    Spring<T> spring_{};
+
+public:
+    constexpr Animated() = default;
+
+    [[nodiscard]] static constexpr Animated tween(
+        T from, T to, double duration_secs,
+        ease::Fn curve = ease::in_out_cubic) noexcept {
+        Animated a;
+        a.mode_  = Mode::Tween;
+        a.tween_ = Tween<T>(from, to, duration_secs, curve);
+        return a;
+    }
+
+    [[nodiscard]] static constexpr Animated spring(
+        T initial, SpringParams params = {}) noexcept {
+        Animated a;
+        a.mode_   = Mode::Spring;
+        a.spring_ = Spring<T>(initial, params);
+        return a;
+    }
+
+    constexpr T tick(double dt) noexcept {
+        return mode_ == Mode::Tween ? tween_.tick(dt) : spring_.tick(dt);
+    }
+
+    [[nodiscard]] constexpr T value() const noexcept {
+        return mode_ == Mode::Tween ? tween_.value() : spring_.value();
+    }
+
+    [[nodiscard]] constexpr bool done() const noexcept {
+        return mode_ == Mode::Tween ? tween_.done() : spring_.done();
+    }
+
+    [[nodiscard]] constexpr T target() const noexcept {
+        return mode_ == Mode::Tween ? tween_.target() : spring_.target();
+    }
+
+    // Retarget. For a tween, requires a duration; for a spring it preserves
+    // momentum. The duration arg is ignored in spring mode.
+    constexpr void set_target(T new_target, double duration_secs = 0.25,
+                              ease::Fn curve = nullptr) noexcept {
+        if (mode_ == Mode::Tween) tween_.retarget(new_target, duration_secs, curve);
+        else                      spring_.set_target(new_target);
+    }
+
+    constexpr void reset_to(T v) noexcept {
+        if (mode_ == Mode::Tween) tween_.reset_to(v);
+        else                      spring_.reset_to(v);
+    }
+
+    [[nodiscard]] constexpr bool is_spring() const noexcept {
+        return mode_ == Mode::Spring;
+    }
+};
+
+// ============================================================================
+// RateCursor — rate-smoothed bounded-lag typewriter integrator + ramp
+// ============================================================================
+// A monotone cursor (think "codepoints revealed so far") that chases a
+// moving target ("codepoints available") at a controlled RATE rather than a
+// fixed duration. This is the shape a typewriter reveal needs and that
+// neither Tween (duration-based) nor Spring (asymptotic, overshoots) can
+// express.
+//
+// ── DESIGN: rate-smoothed bounded-lag glide ──
+//
+// A streaming reveal has to satisfy two things that pull against each other,
+// and the pacing has historically pendulum'd between failing each:
+//
+//   • KEEP UP — track the model's speed so the reveal never falls seconds
+//     behind and then dumps the buffered remainder at end-of-stream (the
+//     "sticks then dumps on a long turn" complaint). A cruise SPEED cap can't
+//     do this: a model faster than the cap outruns the cursor for the whole
+//     turn.
+//   • DON'T TELEPORT — never paste a fat chunk in a single frame, so the
+//     typewriter keeps animating even when the wire delivers in bursts (SSE /
+//     proxy batching, slow links). A LAG cap that SNAPS the cursor to the
+//     edge does keep up, but the snap IS the teleport (the "streaming stops /
+//     text just appears" complaint).
+//
+// The resolution: the rate that holds the cursor a bounded TIME behind the
+// live edge is simply backlog / drain_secs_ — a proportional controller. At
+// steady state the backlog settles at rate * drain_secs_, so the cursor moves
+// at exactly the model's speed (KEEPS UP, any speed, with a fixed ~drain_secs_
+// lag). Applied raw it would teleport on a chunky wire (a fat delta spikes the
+// backlog → the rate spikes → the chunk dumps in one frame), so the RATE
+// itself is low-passed over rate_tau_: a burst raises the target rate but the
+// cursor accelerates toward it across a few frames, revealing the chunk as a
+// fast ANIMATED slide (DOESN'T TELEPORT). The model's speed sets the cruise;
+// the buffer (drain_secs_) absorbs jitter; the smoothing absorbs bursts.
+//
+//   * drain_secs_ is the target LAG (seconds behind the edge) and the buffer
+//     window all at once: rate = backlog / drain_secs_ tracks the wire at a
+//     ~drain_secs_ delay.
+//   * rate_tau_ is how fast the glide rate may change — the anti-teleport
+//     low-pass. Small = snappier (closer to instant on a burst), large =
+//     smears a burst into a slower slide.
+//   * floor_rate_ is a minimum reveal speed so a trickle still types out
+//     promptly instead of inching in at the wire's dribble.
+//   * an optional finalize ramp (set_deadline) still guarantees the cursor
+//     reaches the edge by a wall-clock deadline (end-of-stream settle),
+//     bypassing the smoothing because that's a hard correctness guarantee.
+//
+// Pure value type, no clock: the host passes elapsed seconds to tick().
+class RateCursor {
+    double pos_        = 0.0;   // current cursor position (units)
+    double floor_rate_ = 30.0;  // configured base glide speed (units/sec)
+    double drain_secs_ = 0.25;  // target lead window: clear backlog over this
+    double ramp_left_  = -1.0;  // seconds until finalize deadline; <0 = none
+    double smoothed_rate_ = -1.0;  // live low-passed glide rate; <0 = unset
+    // How fast the glide RATE may change (seconds). The reveal rate that
+    // holds a bounded lag is backlog / drain_secs_ — but applied raw it
+    // TELEPORTS on a chunky wire (a fat SSE / proxy-batched delta spikes the
+    // backlog, so the whole chunk dumps in one frame: the "burst / it just
+    // appears, the typewriter stops" symptom). Low-passing the rate over
+    // rate_tau_ means a burst raises the target rate but the cursor
+    // accelerates toward it over a few frames, so the chunk reveals as a fast
+    // ANIMATED slide and then drains back to the lag window — never a
+    // single-frame paste. Small enough that the reveal still feels prompt
+    // (~a few frames), large enough to smear a chunk into motion.
+    double rate_tau_   = 0.15;
+
+    // ── Adaptive floor (auto-tune the reveal speed to the wire) ──
+    // A FIXED floor_rate_ is a guess: too high for a slow model (the cursor
+    // outruns the wire and freezes at the edge, stop-and-go), too low for a
+    // fast one (text lags seconds behind). When adaptive_ is on, the cursor
+    // estimates the wire's actual delivery rate from `target` growth and sets
+    // an EFFECTIVE floor to match it, clamped to a readable band. The
+    // measured rate is an EMA over WALL time (not per-delta), so idle gaps
+    // between bursts correctly pull the estimate DOWN — the reveal paces to
+    // the model's real average throughput, whatever provider it is.
+    bool   adaptive_        = false;
+    double wire_cps_        = 0.0;   // EMA of observed delivery rate (cps)
+    double adapt_floor_min_ = 20.0;  // never crawl below this (readable min)
+    double adapt_floor_max_ = 220.0; // never sprint above this (readable max)
+    double adapt_tau_       = 1.0;   // EMA window for the wire estimate (s)
+    double last_target_     = -1.0;  // previous tick's target (for d_target)
+    // Tracks whether the finalize ramp was active on the PREVIOUS tick, so
+    // the ramp re-seed of smoothed_rate_ fires only on the rising edge
+    // (entering the ramp) rather than every ramp frame. The host arms the
+    // deadline afresh each frame (set_deadline(remaining)), so without this
+    // the smoothed rate was overwritten with the ramp rate on EVERY ramp
+    // frame and then had to re-relax — a visible speed wobble right at
+    // end-of-turn. Re-seeding once, on entry, keeps the post-ramp glide
+    // continuous.
+    bool was_ramping_ = false;
+    // False until the cursor first reaches the live edge; gates the cold-
+    // start opener easing (a tiny first backlog is paced by the drain
+    // window instead of floored, so it doesn't race-then-freeze before the
+    // provider's first burst). Latches true on the first edge touch and is
+    // re-armed only by reset(), so it costs nothing after the opening delta.
+    bool primed_ = false;
+    // Retained for the (currently unused) set_smoothing API; the rate-
+    // smoothed glide no longer applies a separate burst multiplier.
+    double max_burst_mult_ = 1.8;
+    // (Former cruise_ceiling_mult_ / max_lag_secs_ knobs removed. The old
+    // model capped the cruise SPEED (floor*2.5) and then the LAG (≈225 cp):
+    // capping speed made a fast model crawl seconds behind, and the lag cap
+    // "fixed" that by SNAPPING the cursor to the edge — an instant paste, the
+    // "streaming stops / bursts on a long turn" regression. The rate-smoothed
+    // glide replaces both: rate = backlog / drain_secs_ already tracks the
+    // model's speed with a bounded TIME lag (drain_secs_), and low-passing
+    // that rate keeps a chunky wire from teleporting.)
+
+public:
+    constexpr RateCursor() = default;
+    constexpr RateCursor(double floor_rate, double drain_secs) noexcept
+        : floor_rate_(floor_rate > 0.0 ? floor_rate : 1.0),
+          drain_secs_(drain_secs > 0.0 ? drain_secs : 0.001) {}
+
+    constexpr void set_pacing(double floor_rate, double drain_secs) noexcept {
+        if (floor_rate > 0.0) floor_rate_ = floor_rate;
+        if (drain_secs > 0.0) drain_secs_ = drain_secs;
+    }
+
+    // Enable/configure adaptive floor: auto-tune the reveal speed to the
+    // wire's observed rate instead of the fixed floor_rate_. `min`/`max`
+    // bound the readable band; pass a non-positive value to keep a default.
+    // When on, floor_rate_ becomes only the COLD-START seed (used until the
+    // wire estimate warms up).
+    constexpr void set_adaptive(bool on, double floor_min = -1.0,
+                                double floor_max = -1.0) noexcept {
+        adaptive_ = on;
+        if (floor_min > 0.0) adapt_floor_min_ = floor_min;
+        if (floor_max > 0.0) adapt_floor_max_ = floor_max;
+    }
+
+    // Tune the glide shaping. rate_tau (first arg): how quickly the glide
+    // RATE adapts (seconds) — smaller snaps to a burst harder, larger smears
+    // it into a slower slide. max_burst_mult is retained for API
+    // compatibility but no longer used. The third arg is ignored (the cruise
+    // ceiling no longer exists). Pass a non-positive value to leave a knob
+    // unchanged.
+    constexpr void set_smoothing(double rate_tau,
+                                 double max_burst_mult = -1.0,
+                                 double /*deprecated*/ = -1.0) noexcept {
+        if (rate_tau >= 0.0)      rate_tau_       = rate_tau;
+        if (max_burst_mult > 0.0) max_burst_mult_ = max_burst_mult;
+    }
+
+    // Hard-set the cursor (e.g. snap forward past already-committed units,
+    // or reset on a content rollback). Never moves the cursor backward via
+    // tick(); this is the explicit override.
+    constexpr void set_pos(double p) noexcept {
+        const double np = p < 0.0 ? 0.0 : p;
+        // A jump back to the very start means a new message is reusing this
+        // cursor (reveal_cp_ was reset to 0 on content-shrink). Re-arm the
+        // cold-start opener easing so the next message's opening delta is
+        // paced, not raced. A forward set_pos (the normal per-frame
+        // reconciliation, or a snap) leaves primed_ untouched.
+        if (np <= 0.0 && pos_ > 0.0) primed_ = false;
+        pos_ = np;
+    }
+    [[nodiscard]] constexpr double pos() const noexcept { return pos_; }
+
+    /// The current low-passed glide rate (cells/sec) the cursor is moving at,
+    /// or the effective floor before the first tick. Hosts use it to scale
+    /// time-based trailing-edge effects (scramble/gradient window) so their
+    /// SPATIAL extent stays consistent whatever the reveal speed.
+    [[nodiscard]] constexpr double effective_rate() const noexcept {
+        if (smoothed_rate_ > 0.0) return smoothed_rate_;
+        if (!adaptive_) return floor_rate_;
+        // Mirror tick()'s eff_floor derivation: a below-band estimate
+        // (cold start / post-pause decay) falls back to the seed.
+        double est = wire_cps_;
+        if (est < adapt_floor_min_) est = floor_rate_;
+        if (est < adapt_floor_min_) est = adapt_floor_min_;
+        if (est > adapt_floor_max_) est = adapt_floor_max_;
+        return est;
+    }
+
+    // Ensure the cursor is at least `floor` (snap-to-committed). Monotone.
+    constexpr void advance_floor(double floor) noexcept {
+        if (pos_ < floor) pos_ = floor;
+    }
+
+    // Arm a finalize ramp: reach `target` within `secs` no matter what.
+    constexpr void set_deadline(double secs) noexcept { ramp_left_ = secs; }
+    constexpr void clear_deadline() noexcept { ramp_left_ = -1.0; }
+    [[nodiscard]] constexpr bool ramping() const noexcept {
+        return ramp_left_ >= 0.0;
+    }
+
+    // Advance toward `target` by `dt` seconds. Returns the new position.
+    // `dt` should be pre-clamped by the host to a sane frame budget
+    // (reveal_fx clamps to 0.120 s) so a long stall doesn't teleport the
+    // cursor on the first frame back.
+    //
+    // Ramp semantics mirror reveal_fx exactly: the deadline test uses the
+    // time remaining AS OF THIS FRAME's start (ramp_left_ before dt is
+    // consumed). The host re-arms the deadline each frame via
+    // set_deadline(remaining), so ramp_left_ already reflects the current
+    // frame's remaining budget; we read it, decide the rate, THEN consume
+    // dt for the next frame's accounting.
+    constexpr double tick(double target, double dt) noexcept {
+        if (dt < 0.0) dt = 0.0;
+
+        // ── Wire-rate estimate (adaptive floor) ──
+        // Measure how fast `target` (the live edge) grows, EMA'd over WALL
+        // time so idle gaps count as zero-rate and pull the estimate down to
+        // the model's true average throughput. eff_floor is the reveal speed
+        // used everywhere below: the observed wire rate (clamped readable)
+        // when adaptive, else the fixed floor_rate_. Runs every tick,
+        // including idle-at-edge frames, so the estimate keeps tracking.
+        double eff_floor = floor_rate_;
+        if (adaptive_) {
+            if (last_target_ >= 0.0 && dt > 0.0) {
+                const double grew = target - last_target_;
+                const double inst = (grew > 0.0) ? grew / dt : 0.0;
+                const double a = dt / (dt + adapt_tau_);
+                wire_cps_ += (inst - wire_cps_) * a;
+            }
+            last_target_ = target;
+            // Track the wire directly (k=1): the drain_secs_ lag already
+            // provides the smoothing buffer, so matching the average rate
+            // keeps the cursor gliding continuously without lagging or
+            // outrunning. Clamp to the readable band.
+            //
+            // Below-band estimate → SEED, not min-clamp. Two cases land
+            // here and neither is a usable pacing signal:
+            //   • cold start (wire_cps_ still ~0 before the first delta) —
+            //     the documented contract is "floor_rate_ becomes only the
+            //     COLD-START seed", but the old code clamped 0 up to
+            //     adapt_floor_min_ and never consulted the seed, so every
+            //     message's first ~τ seconds typed at the band minimum
+            //     instead of the tuned floor;
+            //   • post-pause decay (a multi-second wire stall EMA'd the
+            //     estimate toward 0) — revealing at the band minimum until
+            //     the estimate re-warms reads as a post-pause crawl.
+            // In both, the tuned seed is the better guess; the cursor can
+            // never outrun the live edge anyway (pos_ clamps to target).
+            double est = wire_cps_;
+            if (est < adapt_floor_min_) est = floor_rate_;
+            if (est < adapt_floor_min_) est = adapt_floor_min_;
+            if (est > adapt_floor_max_) est = adapt_floor_max_;
+            eff_floor = est;
+        }
+
+        const double backlog = target - pos_;
+        if (backlog <= 0.0) {
+            pos_ = target;
+            if (ramp_left_ >= 0.0) ramp_left_ -= dt;
+            was_ramping_ = (ramp_left_ >= 0.0);
+            // Decay the low-passed rate back toward the floor while idle at
+            // the edge (see the non-adaptive rationale below).
+            if (smoothed_rate_ > eff_floor && rate_tau_ > 0.0) {
+                const double a = dt / (dt + rate_tau_);
+                smoothed_rate_ += (eff_floor - smoothed_rate_) * a;
+                if (smoothed_rate_ < eff_floor) smoothed_rate_ = eff_floor;
+            }
+            return pos_;
+        }
+
+        // ── Rate-smoothed bounded-lag glide ──
+        // The rate that holds the cursor ~drain_secs_ behind the live edge is
+        // backlog / drain_secs_ — a proportional controller that TRACKS the
+        // wire (at steady state backlog settles at rate*drain_secs_, so
+        // rate == the model's speed) with a bounded TIME lag, however fast
+        // the model streams. Raw, that controller TELEPORTS on a chunky wire:
+        // a fat SSE / proxy-batched delta spikes the backlog, so the whole
+        // chunk dumps in one frame (the "burst / it just appears, the
+        // typewriter stops on a long turn" symptom). So low-pass the RATE
+        // over rate_tau_: the burst raises the target rate, but the cursor
+        // accelerates toward it across a few frames, revealing the chunk as a
+        // fast ANIMATED slide that then settles back to the lag window.
+        // Seeding from the floor (not the first frame's spike) keeps a cold
+        // whole-reply dump from teleporting on frame one.
+        double rate_target = backlog / drain_secs_;
+        if (rate_target < eff_floor) rate_target = eff_floor;
+        // Cold-start easing (no added latency, no fake slowness). At the very
+        // start of a message the wire typically delivers a TINY opening delta
+        // (a word or two) and then pauses ~90-200 ms before the first real
+        // burst. Flooring that opener up to eff_floor races it to the edge in
+        // a blink, so the cursor then sits IDLE through the gap — the "one
+        // word, then stuck, then it flows" stutter. While the cursor has
+        // never yet reached the edge (still on the opening backlog) and that
+        // backlog is smaller than one drain window's worth at the floor, drop
+        // the floor and let the drain controller pace it: rate = backlog /
+        // drain_secs_. That spreads the opener smoothly across ~drain_secs_
+        // (text STILL starts on frame one — zero latency) so the eye is
+        // watching it glide when the burst lands, instead of a race-then-
+        // freeze. The instant real backlog builds (a burst, or the opener
+        // exceeds one window) the normal floor re-engages, and this never
+        // fires again this message (primed_ latches at the first edge touch).
+        if (!primed_) {
+            const double one_window = eff_floor * drain_secs_;
+            if (backlog <= one_window)
+                rate_target = backlog / drain_secs_;   // ease, don't floor
+        }
+        if (smoothed_rate_ < 0.0) {
+            // Cold start: seed at the eased target when priming a tiny opener
+            // (so frame one already moves at the gentle rate), else the floor
+            // (so a fat cold dump can't teleport before the low-pass warms).
+            smoothed_rate_ =
+                (!primed_ && rate_target < eff_floor) ? rate_target : eff_floor;
+        } else if (rate_tau_ > 0.0) {
+            const double a = dt / (dt + rate_tau_);
+            smoothed_rate_ += (rate_target - smoothed_rate_) * a;
+        } else {
+            smoothed_rate_ = rate_target;
+        }
+        if (smoothed_rate_ < eff_floor) smoothed_rate_ = eff_floor;
+        double rate = smoothed_rate_;
+
+        if (ramp_left_ >= 0.0) {
+            // Finalize ramp: a HARD wall-clock guarantee that the cursor
+            // reaches the edge by the deadline — bypasses the glide smoothing.
+            if (ramp_left_ <= 0.0) {
+                rate = backlog / (dt > 0.001 ? dt : 0.001);
+            } else {
+                const double ramp = backlog / ramp_left_;
+                if (ramp > rate) rate = ramp;
+            }
+            ramp_left_ -= dt;
+            // Re-seed the smoothed rate ONCE, on the rising edge of the ramp
+            // (the frame we first enter it). Re-seeding every ramp frame
+            // overwrote the low-pass state with the ever-changing ramp rate,
+            // so when the ramp cleared the glide lurched from that value back
+            // toward the wire rate — a speed wobble at end-of-turn. Seeding
+            // once lets the low-pass carry a continuous rate through and out
+            // of the ramp.
+            if (!was_ramping_) smoothed_rate_ = rate;
+            was_ramping_ = true;
+        } else {
+            was_ramping_ = false;
+        }
+
+        // Never overshoot the live edge on a tiny-backlog frame.
+        const double max_rate = backlog / (dt > 1e-9 ? dt : 1e-9);
+        if (rate > max_rate) rate = max_rate;
+
+        pos_ += rate * dt;
+        if (pos_ > target) pos_ = target;
+        // Latch primed_ once the cursor first reaches the live edge: the
+        // opening delta is out and normal floor pacing governs the rest of
+        // the stream. (epsilon absorbs FP slack around exact equality.)
+        if (!primed_ && pos_ >= target - 1e-6) primed_ = true;
+        return pos_;
+    }
+
+    constexpr void reset() noexcept {
+        pos_ = 0.0; ramp_left_ = -1.0; smoothed_rate_ = -1.0;
+        was_ramping_ = false; primed_ = false;
+    }
+};
+
+} // namespace maya::anim

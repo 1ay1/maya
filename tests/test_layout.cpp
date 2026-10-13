@@ -1,7 +1,11 @@
 // Tests for element layout, render_tree, and the builder DSL
 #include <maya/maya.hpp>
-#include <cassert>
+// NDEBUG guard: CMake builds tests in Release (-O3 -DNDEBUG), which strips
+// assert(). Undefine it here so this file's runtime asserts actually fire.
+#undef NDEBUG
+#include "agtest.hpp"
 #include <print>
+#include <random>
 
 using namespace maya;
 using namespace maya::detail;
@@ -33,34 +37,34 @@ static void dump(const Canvas& canvas, int rows = -1) {
 // Text element
 // ============================================================================
 
-void test_bare_text_renders_at_origin() {
+TEST_CASE("bare text renders at origin") {
     std::println("--- test_bare_text_renders_at_origin ---");
     StylePool pool;
     Canvas canvas(30, 3, &pool);
-    render_tree(text("hello"), canvas, pool, theme::dark);
+    render_tree(text("hello"), canvas, pool, theme::native);
     dump(canvas, 1);
     assert(get_row(canvas, 0).starts_with("hello"));
     std::println("PASS\n");
 }
 
-void test_text_with_style_renders() {
+TEST_CASE("text with style renders") {
     std::println("--- test_text_with_style_renders ---");
     StylePool pool;
     Canvas canvas(20, 3, &pool);
-    render_tree(text("styled", bold_style), canvas, pool, theme::dark);
+    render_tree(text("styled", bold_style), canvas, pool, theme::native);
     // Check the character is present and its style_id is non-zero (bold interned)
     assert(canvas.get(0, 0).character == U's');
     assert(canvas.get(0, 0).style_id != 0); // non-default style
     std::println("PASS\n");
 }
 
-void test_text_truncate_end() {
+TEST_CASE("text truncate end") {
     std::println("--- test_text_truncate_end ---");
     StylePool pool;
     Canvas canvas(5, 3, &pool);
     render_tree(
         text("hello world", Style{}, TextWrap::TruncateEnd),
-        canvas, pool, theme::dark);
+        canvas, pool, theme::native);
     dump(canvas, 1);
     std::string r = get_row(canvas, 0);
     // Content must fit within 5 columns
@@ -69,13 +73,13 @@ void test_text_truncate_end() {
     std::println("PASS\n");
 }
 
-void test_text_no_wrap_stays_on_one_row() {
+TEST_CASE("text no wrap stays on one row") {
     std::println("--- test_text_no_wrap_stays_on_one_row ---");
     StylePool pool;
     Canvas canvas(5, 5, &pool);
     render_tree(
         text("abcdefghij", Style{}, TextWrap::NoWrap),
-        canvas, pool, theme::dark);
+        canvas, pool, theme::native);
     // Row 1+ should be empty
     assert(get_row(canvas, 1).empty());
     std::println("PASS\n");
@@ -85,7 +89,7 @@ void test_text_no_wrap_stays_on_one_row() {
 // Column layout
 // ============================================================================
 
-void test_column_stacks_children_vertically() {
+TEST_CASE("column stacks children vertically") {
     std::println("--- test_column_stacks_children_vertically ---");
     StylePool pool;
     Canvas canvas(30, 5, &pool);
@@ -94,7 +98,7 @@ void test_column_stacks_children_vertically() {
             text("AAA"),
             text("BBB"),
             text("CCC")
-        ), canvas, pool, theme::dark);
+        ), canvas, pool, theme::native);
     dump(canvas, 4);
     assert(get_row(canvas, 0).find("AAA") != std::string::npos);
     assert(get_row(canvas, 1).find("BBB") != std::string::npos);
@@ -102,7 +106,7 @@ void test_column_stacks_children_vertically() {
     std::println("PASS\n");
 }
 
-void test_column_with_padding() {
+TEST_CASE("column with padding") {
     std::println("--- test_column_with_padding ---");
     StylePool pool;
     Canvas canvas(30, 8, &pool);
@@ -110,7 +114,7 @@ void test_column_with_padding() {
         box().direction(Column).padding(1)(
             text("AAA"),
             text("BBB")
-        ), canvas, pool, theme::dark);
+        ), canvas, pool, theme::native);
     dump(canvas, 5);
     assert(get_row(canvas, 0).empty()); // top padding
     assert(get_row(canvas, 1).find("AAA") != std::string::npos);
@@ -118,7 +122,7 @@ void test_column_with_padding() {
     std::println("PASS\n");
 }
 
-void test_column_gap() {
+TEST_CASE("column gap") {
     std::println("--- test_column_gap ---");
     StylePool pool;
     Canvas canvas(20, 8, &pool);
@@ -126,7 +130,7 @@ void test_column_gap() {
         box().direction(Column).gap(2)(
             text("A"),
             text("B")
-        ), canvas, pool, theme::dark);
+        ), canvas, pool, theme::native);
     dump(canvas, 6);
     auto arow = -1, brow = -1;
     for (int y = 0; y < canvas.height(); ++y) {
@@ -144,7 +148,7 @@ void test_column_gap() {
 // Row layout
 // ============================================================================
 
-void test_row_places_children_horizontally() {
+TEST_CASE("row places children horizontally") {
     std::println("--- test_row_places_children_horizontally ---");
     StylePool pool;
     Canvas canvas(30, 3, &pool);
@@ -152,7 +156,7 @@ void test_row_places_children_horizontally() {
         box().direction(Row)(
             text("LEFT"),
             text("RIGHT")
-        ), canvas, pool, theme::dark);
+        ), canvas, pool, theme::native);
     dump(canvas, 1);
     std::string r = get_row(canvas, 0);
     auto lpos = r.find("LEFT");
@@ -164,7 +168,7 @@ void test_row_places_children_horizontally() {
     std::println("PASS\n");
 }
 
-void test_row_gap() {
+TEST_CASE("row gap") {
     std::println("--- test_row_gap ---");
     StylePool pool;
     Canvas canvas(30, 3, &pool);
@@ -172,7 +176,7 @@ void test_row_gap() {
         box().direction(Row).gap(3)(
             text("A"),
             text("B")
-        ), canvas, pool, theme::dark);
+        ), canvas, pool, theme::native);
     dump(canvas, 1);
     std::string r = get_row(canvas, 0);
     auto apos = r.find("A");
@@ -183,14 +187,14 @@ void test_row_gap() {
     std::println("PASS\n");
 }
 
-void test_row_with_padding() {
+TEST_CASE("row with padding") {
     std::println("--- test_row_with_padding ---");
     StylePool pool;
     Canvas canvas(30, 5, &pool);
     render_tree(
         box().direction(Row).padding(1)(
             text("X")
-        ), canvas, pool, theme::dark);
+        ), canvas, pool, theme::native);
     dump(canvas, 3);
     assert(get_row(canvas, 0).empty()); // top padding
     std::string r = get_row(canvas, 1);
@@ -204,7 +208,7 @@ void test_row_with_padding() {
 // Flex properties
 // ============================================================================
 
-void test_spacer_pushes_content() {
+TEST_CASE("spacer pushes content") {
     std::println("--- test_spacer_pushes_content ---");
     StylePool pool;
     Canvas canvas(20, 10, &pool);
@@ -213,14 +217,14 @@ void test_spacer_pushes_content() {
             text("TOP"),
             spacer(),
             text("BOT")
-        ), canvas, pool, theme::dark);
+        ), canvas, pool, theme::native);
     dump(canvas);
     assert(get_row(canvas, 0).find("TOP") != std::string::npos);
     assert(get_row(canvas, 9).find("BOT") != std::string::npos);
     std::println("PASS\n");
 }
 
-void test_grow_fills_remaining_space() {
+TEST_CASE("grow fills remaining space") {
     std::println("--- test_grow_fills_remaining_space ---");
     StylePool pool;
     Canvas canvas(30, 3, &pool);
@@ -229,7 +233,7 @@ void test_grow_fills_remaining_space() {
             text("A"),
             box().grow(1.0f), // fills remaining width
             text("B")
-        ), canvas, pool, theme::dark);
+        ), canvas, pool, theme::native);
     dump(canvas, 1);
     std::string r = get_row(canvas, 0);
     // B should be far to the right (pushed by grow box)
@@ -240,14 +244,14 @@ void test_grow_fills_remaining_space() {
     std::println("PASS\n");
 }
 
-void test_align_items_center() {
+TEST_CASE("align items center") {
     std::println("--- test_align_items_center ---");
     StylePool pool;
     Canvas canvas(20, 10, &pool);
     render_tree(
         box().direction(Column).align_items(Align::Center)(
             text("X")
-        ), canvas, pool, theme::dark);
+        ), canvas, pool, theme::native);
     dump(canvas, 2);
     std::string r = get_row(canvas, 0);
     auto xpos = r.find("X");
@@ -258,7 +262,42 @@ void test_align_items_center() {
     std::println("PASS\n");
 }
 
-void test_justify_space_between() {
+// Regression: a Row with a DEFINITE height and an auto-height child +
+// align=center must vertically CENTER the child, not stretch it to fill
+// the cross axis. Before the fix, section 3d forced the auto-cross child
+// to the container's full height before positioning, so (cross_size -
+// item.cross)/2 == 0 and align=center was a silent no-op (the user's
+// "card just stretches to height=9" report).
+TEST_CASE("align center definite cross not stretched") {
+    std::println("--- test_align_center_definite_cross_not_stretched ---");
+    StylePool pool;
+    Canvas canvas(20, 9, &pool);
+    // Row, height 9, a single-line child. Centered vertically the child
+    // should land around row 4 (9 rows, 1-row child -> offset (9-1)/2 = 4),
+    // with blank rows above and below it.
+    render_tree(
+        box().direction(Row)
+             .height(Dimension::fixed(9))
+             .align_items(Align::Center)(
+            text("MID")
+        ), canvas, pool, theme::native);
+    dump(canvas, 9);
+    int found = -1;
+    for (int y = 0; y < 9; ++y) {
+        if (get_row(canvas, y).find("MID") != std::string::npos) { found = y; break; }
+    }
+    assert(found != -1);
+    // Must NOT be at the top edge (that's the stretch/no-op bug), and must
+    // sit near the vertical middle.
+    assert(found > 0);
+    assert(found >= 3 && found <= 5);
+    // Top row must be blank — the child is not stretched to fill.
+    assert(get_row(canvas, 0).find("MID") == std::string::npos);
+    std::println("  MID@row{}", found);
+    std::println("PASS\n");
+}
+
+TEST_CASE("justify space between") {
     std::println("--- test_justify_space_between ---");
     StylePool pool;
     Canvas canvas(20, 3, &pool);
@@ -266,7 +305,7 @@ void test_justify_space_between() {
         box().direction(Row).justify(Justify::SpaceBetween)(
             text("L"),
             text("R")
-        ), canvas, pool, theme::dark);
+        ), canvas, pool, theme::native);
     dump(canvas, 1);
     std::string r = get_row(canvas, 0);
     auto lpos = r.find("L");
@@ -279,14 +318,14 @@ void test_justify_space_between() {
     std::println("PASS\n");
 }
 
-void test_justify_center() {
+TEST_CASE("justify center") {
     std::println("--- test_justify_center ---");
     StylePool pool;
     Canvas canvas(20, 3, &pool);
     render_tree(
         box().direction(Row).justify(Justify::Center)(
             text("MID")
-        ), canvas, pool, theme::dark);
+        ), canvas, pool, theme::native);
     dump(canvas, 1);
     std::string r = get_row(canvas, 0);
     auto pos = r.find("MID");
@@ -301,7 +340,7 @@ void test_justify_center() {
 // Fixed size constraints
 // ============================================================================
 
-void test_fixed_width_box() {
+TEST_CASE("fixed width box") {
     std::println("--- test_fixed_width_box ---");
     StylePool pool;
     Canvas canvas(40, 3, &pool);
@@ -309,7 +348,7 @@ void test_fixed_width_box() {
         box().direction(Row)(
             box().width(Dimension::fixed(10)).direction(Column)(text("A")),
             text("B")
-        ), canvas, pool, theme::dark);
+        ), canvas, pool, theme::native);
     dump(canvas, 1);
     std::string r = get_row(canvas, 0);
     auto apos = r.find("A");
@@ -321,7 +360,7 @@ void test_fixed_width_box() {
     std::println("PASS\n");
 }
 
-void test_fixed_height_box() {
+TEST_CASE("fixed height box") {
     std::println("--- test_fixed_height_box ---");
     StylePool pool;
     Canvas canvas(20, 10, &pool);
@@ -329,7 +368,7 @@ void test_fixed_height_box() {
         box().direction(Column)(
             box().height(Dimension::fixed(3)).direction(Column)(text("TOP")),
             text("AFTER")
-        ), canvas, pool, theme::dark);
+        ), canvas, pool, theme::native);
     dump(canvas, 6);
     assert(get_row(canvas, 0).find("TOP")   != std::string::npos);
     assert(get_row(canvas, 3).find("AFTER") != std::string::npos);
@@ -340,7 +379,7 @@ void test_fixed_height_box() {
 // Nested layouts
 // ============================================================================
 
-void test_nested_column_inside_row() {
+TEST_CASE("nested column inside row") {
     std::println("--- test_nested_column_inside_row ---");
     StylePool pool;
     Canvas canvas(40, 5, &pool);
@@ -354,7 +393,7 @@ void test_nested_column_inside_row() {
                 text("B1"),
                 text("B2")
             )
-        ), canvas, pool, theme::dark);
+        ), canvas, pool, theme::native);
     dump(canvas, 4);
     assert(get_row(canvas, 0).find("A1") != std::string::npos);
     assert(get_row(canvas, 1).find("A2") != std::string::npos);
@@ -363,7 +402,7 @@ void test_nested_column_inside_row() {
     std::println("PASS\n");
 }
 
-void test_deeply_nested() {
+TEST_CASE("deeply nested") {
     std::println("--- test_deeply_nested ---");
     StylePool pool;
     Canvas canvas(40, 10, &pool);
@@ -374,7 +413,7 @@ void test_deeply_nested() {
                 text("A"),
                 text("B")
             )
-        ), canvas, pool, theme::dark);
+        ), canvas, pool, theme::native);
     dump(canvas, 5);
     assert(get_row(canvas, 1).find("title") != std::string::npos);
     std::string r2 = get_row(canvas, 2);
@@ -387,7 +426,7 @@ void test_deeply_nested() {
 // Margin
 // ============================================================================
 
-void test_margin_offsets_child() {
+TEST_CASE("margin offsets child") {
     std::println("--- test_margin_offsets_child ---");
     StylePool pool;
     Canvas canvas(20, 8, &pool);
@@ -396,7 +435,7 @@ void test_margin_offsets_child() {
             box().direction(Column).margin(2)(
                 text("M")
             )
-        ), canvas, pool, theme::dark);
+        ), canvas, pool, theme::native);
     dump(canvas, 5);
     // With margin=2 on all sides, content starts at row 2
     assert(get_row(canvas, 0).find("M") == std::string::npos);
@@ -405,11 +444,35 @@ void test_margin_offsets_child() {
     std::println("PASS\n");
 }
 
+// Regression: a flex CHILD's margin must consume main-axis space, pushing the
+// next sibling over by the margin extent. Before the fix, flex line-packing
+// ignored child margins, so "B" landed directly after "A" and the right margin
+// silently overlapped.
+TEST_CASE("flex child margin consumes main space") {
+    std::println("--- test_flex_child_margin_consumes_main_space ---");
+    StylePool pool;
+    Canvas canvas(20, 3, &pool);
+    render_tree(
+        box().direction(Row)(
+            box().margin(0, 3, 0, 0)(text("A")),
+            text("B")
+        ), canvas, pool, theme::native);
+    dump(canvas, 3);
+    const std::string row = get_row(canvas, 0);
+    const auto a = row.find('A');
+    const auto b = row.find('B');
+    assert(a != std::string::npos && b != std::string::npos);
+    // A at column 0; B must be at 0 + 1 (A's width) + 3 (A's right margin) = 4.
+    assert(a == 0);
+    assert(b == 4);
+    std::println("PASS\n");
+}
+
 // ============================================================================
 // Separators
 // ============================================================================
 
-void test_separator_draws_horizontal_line() {
+TEST_CASE("separator draws horizontal line") {
     std::println("--- test_separator_draws_horizontal_line ---");
     StylePool pool;
     Canvas canvas(20, 5, &pool);
@@ -418,7 +481,7 @@ void test_separator_draws_horizontal_line() {
             text("above"),
             separator(),
             text("below")
-        ), canvas, pool, theme::dark);
+        ), canvas, pool, theme::native);
     dump(canvas, 4);
     // Middle row should contain box-drawing characters (#)
     std::string sep_row = get_row(canvas, 1);
@@ -430,7 +493,7 @@ void test_separator_draws_horizontal_line() {
 // Counter-style tree (real-world pattern)
 // ============================================================================
 
-void test_counter_tree() {
+TEST_CASE("counter tree") {
     std::println("--- test_counter_tree ---");
     StylePool pool;
     Canvas canvas(40, 10, &pool);
@@ -438,7 +501,7 @@ void test_counter_tree() {
         box().direction(Column).padding(1)(
             text("Counter: 0", bold_style),
             text("[+/-] change  [q] quit", dim_style)
-        ), canvas, pool, theme::dark);
+        ), canvas, pool, theme::native);
     dump(canvas, 5);
     assert(get_row(canvas, 1).find("Counter: 0")  != std::string::npos);
     assert(get_row(canvas, 2).find("[+/-]")        != std::string::npos);
@@ -449,14 +512,14 @@ void test_counter_tree() {
 // String children (auto-wrapped as text elements)
 // ============================================================================
 
-void test_string_child_auto_text() {
+TEST_CASE("string child auto text") {
     std::println("--- test_string_child_auto_text ---");
     StylePool pool;
     Canvas canvas(20, 3, &pool);
     // Passing a string literal directly — should auto-wrap as text()
     render_tree(
         box().direction(Column)("auto wrapped"),
-        canvas, pool, theme::dark);
+        canvas, pool, theme::native);
     dump(canvas, 1);
     assert(get_row(canvas, 0).find("auto wrapped") != std::string::npos);
     std::println("PASS\n");
@@ -466,7 +529,7 @@ void test_string_child_auto_text() {
 // Dashboard-like layout: vstack(header, hstack(left_col, right_col), procs, footer)
 // ============================================================================
 
-void test_dashboard_layout() {
+TEST_CASE("dashboard layout") {
     std::println("--- test_dashboard_layout ---");
     StylePool pool;
     Canvas canvas(80, 40, &pool);
@@ -546,7 +609,7 @@ void test_dashboard_layout() {
     // Build layout tree and compute layout manually to inspect sizes
     std::vector<layout::LayoutNode> dbg_nodes;
     dbg_nodes.reserve(128);
-    render_detail::build_layout_tree(tree, dbg_nodes, theme::dark);
+    render_detail::build_layout_tree(tree, dbg_nodes, theme::native);
     dbg_nodes[0].style.width = Dimension::fixed(80);
     dbg_nodes[0].style.height = Dimension::fixed(40);
     layout::compute(dbg_nodes, 0, 80, 40);
@@ -567,7 +630,7 @@ void test_dashboard_layout() {
         }
     }
 
-    render_tree(std::move(tree), canvas, pool, theme::dark);
+    render_tree(std::move(tree), canvas, pool, theme::native);
     dump(canvas, 30);
 
     // Header should be at row 0
@@ -600,7 +663,7 @@ void test_dashboard_layout() {
 // Regression: column child's height should recompute when width changes
 // ============================================================================
 
-void test_column_child_height_recomputes() {
+TEST_CASE("column child height recomputes") {
     std::println("--- test_column_child_height_recomputes ---");
     StylePool pool;
     Canvas canvas(40, 20, &pool);
@@ -632,7 +695,7 @@ void test_column_child_height_recomputes() {
         text("BOT")
     );
 
-    render_tree(std::move(tree), canvas, pool, theme::dark);
+    render_tree(std::move(tree), canvas, pool, theme::native);
     dump(canvas, 10);
 
     // TOP should be at row 0
@@ -656,32 +719,145 @@ void test_column_child_height_recomputes() {
     std::println("PASS\n");
 }
 
-int main() {
-    setvbuf(stdout, nullptr, _IONBF, 0);
-    test_column_child_height_recomputes();
-    test_dashboard_layout();
-    test_bare_text_renders_at_origin();
-    test_text_with_style_renders();
-    test_text_truncate_end();
-    test_text_no_wrap_stays_on_one_row();
-    test_column_stacks_children_vertically();
-    test_column_with_padding();
-    test_column_gap();
-    test_row_places_children_horizontally();
-    test_row_gap();
-    test_row_with_padding();
-    test_spacer_pushes_content();
-    test_grow_fills_remaining_space();
-    test_align_items_center();
-    test_justify_space_between();
-    test_justify_center();
-    test_fixed_width_box();
-    test_fixed_height_box();
-    test_nested_column_inside_row();
-    test_deeply_nested();
-    test_margin_offsets_child();
-    test_separator_draws_horizontal_line();
-    test_counter_tree();
-    test_string_child_auto_text();
-    std::println("=== ALL 25 TESTS PASSED ===");
+
+// ── The relayout fast path is exact ──────────────────────────────────────────
+//
+// compute_node lays each child out twice at most: once to find its natural
+// size (3a), again after flex grow/shrink and stretch (3d). 3d reuses the 3a
+// result when its inputs are the same. That reuse is only correct if the
+// output is a function of exactly the inputs it compares, so this renders
+// random trees (rows and columns, grow, gaps, padding, borders, fixed and
+// auto sizes, wrapping text, every alignment) with the fast path on and off,
+// and requires every cell of every frame to be identical.
+namespace {
+struct TreeGen {
+    std::mt19937 rng;
+    int budget;
+    int pick(int n) { return static_cast<int>(rng() % static_cast<unsigned>(n)); }
+    Element leaf() {
+        static const char* words[] = {"a", "hello", "wrap me at a narrow width please",
+                                      "ok", "some longer text that will wrap", "x y z"};
+        return text(words[pick(6)]);
+    }
+    Element node(int depth) {
+        if (depth > 5 || --budget <= 0 || pick(4) == 0) return leaf();
+        auto b = box().direction(pick(2) ? Row : Column);
+        if (pick(3) == 0) b = std::move(b).grow(1.0f + float(pick(3)));
+        if (pick(3) == 0) b = std::move(b).gap(pick(3));
+        if (pick(3) == 0) b = std::move(b).padding(pick(2));
+        if (pick(4) == 0) b = std::move(b).border(BorderStyle::Single);
+        if (pick(5) == 0) b = std::move(b).width(Dimension::fixed(8 + pick(20)));
+        if (pick(6) == 0) b = std::move(b).height(Dimension::fixed(2 + pick(6)));
+        static const Align aligns[] = {Align::Stretch, Align::Start, Align::Center, Align::End};
+        if (pick(3) == 0) b = std::move(b).align_items(aligns[pick(4)]);
+        std::vector<Element> kids;
+        const int n = 1 + pick(4);
+        for (int i = 0; i < n; ++i) kids.push_back(node(depth + 1));
+        return std::move(b)(std::move(kids));
+    }
+};
+std::vector<uint64_t> render_cells(const Element& e, int w, int h) {
+    StylePool pool;
+    Canvas c(w, h, &pool);
+    render_tree(e, c, pool, theme::native);
+    std::vector<uint64_t> out;
+    for (int y = 0; y < h; ++y)
+        for (int x = 0; x < w; ++x) out.push_back(c.get(x, y).pack());
+    return out;
+}
+}  // namespace
+
+TEST_CASE("layout: the relayout fast path changes nothing") {
+    std::println("--- test_relayout_fast_path_exact ---");
+    int trees = 0;
+    for (std::uint32_t seed = 1; seed <= 400; ++seed) {
+        TreeGen g{std::mt19937(seed), 40};
+        const Element e = g.node(0);
+        for (int w : {17, 40, 83}) {
+            const int h = 30;
+            layout::detail::g_disable_relayout_fast_path = true;
+            const auto slow = render_cells(e, w, h);
+            layout::detail::g_disable_relayout_fast_path = false;
+            const auto fast = render_cells(e, w, h);
+            if (slow != fast) {
+                std::println("  MISMATCH seed={} width={}", seed, w);
+                assert(false);
+            }
+        }
+        ++trees;
+    }
+    std::println("  {} random trees x 3 widths identical", trees);
+    std::println("PASS\n");
+}
+
+// ── paint(): a canvas as an element ──────────────────────────────────────────
+TEST_CASE("paint: draws into its slot, clipped, beside ordinary widgets") {
+    std::println("--- test_paint_element ---");
+    StylePool pool;
+    Canvas canvas(20, 4, &pool);
+    int calls = 0, got_x = -1, got_y = -1, got_w = -1, got_h = -1;
+    // A 20x4 screen: a painted area that fills everything above a 1-row bar.
+    render_tree(
+        box().direction(Column).width(Dimension::fixed(20)).height(Dimension::fixed(4))(
+            paint([&](Canvas& c, int x, int y, int w, int h) {
+                ++calls; got_x = x; got_y = y; got_w = w; got_h = h;
+                // Try to paint the WHOLE screen: the clip must keep it inside.
+                for (int yy = 0; yy < 4; ++yy)
+                    for (int xx = 0; xx < 20; ++xx) c.set(xx, yy, U'#', 0);
+            }),
+            text("bar")
+        ), canvas, pool, theme::native);
+    dump(canvas);
+    assert(calls == 1);
+    assert(got_x == 0 && got_y == 0 && got_w == 20 && got_h == 3);   // grew into the slot
+    assert(get_row(canvas, 0) == std::string(20, '#'));
+    assert(get_row(canvas, 2) == std::string(20, '#'));
+    assert(get_row(canvas, 3) == "bar");                              // clip held
+    std::println("PASS\n");
+}
+
+TEST_CASE("paint: drawn every frame (never served from the component cache)") {
+    std::println("--- test_paint_every_frame ---");
+    StylePool pool;
+    int calls = 0;
+    const auto frame = [&](char32_t ch) {
+        Canvas canvas(6, 2, &pool);
+        render_tree(
+            box().direction(Column).width(Dimension::fixed(6)).height(Dimension::fixed(2))(
+                paint([&, ch](Canvas& c, int x, int y, int w, int) {
+                    ++calls;
+                    for (int xx = 0; xx < w; ++xx) c.set(x + xx, y, ch, 0);
+                })
+            ), canvas, pool, theme::native);
+        return get_row(canvas, 0);
+    };
+    assert(frame(U'a') == "aaaaaa");
+    assert(frame(U'b') == "bbbbbb");   // a cached draw would still show 'a'
+    assert(calls == 2);
+    std::println("PASS\n");
+}
+
+TEST_CASE("zstack: a growing base keeps growing with an overlay on it") {
+    std::println("--- test_zstack_grows_with_base ---");
+    // v(zstack({canvas, card}), bar) in a 5-row screen: the canvas grows to
+    // 4 rows whether or not a card is layered over it. It used to collapse
+    // to the canvas's 1-row minimum as soon as the card was there.
+    StylePool pool;
+    auto frame = [&](bool with_card) {
+        Canvas c(20, 5, &pool);
+        Element canvas = paint([](Canvas& cv, int x, int y, int w, int h) {
+            for (int yy = 0; yy < h; ++yy)
+                for (int xx = 0; xx < w; ++xx) cv.set(x + xx, y + yy, U'#', 0);
+        });
+        Element layer = with_card ? zstack({canvas, center()(text("HI"))}) : canvas;
+        render_tree(box().direction(Column).width(Dimension::fixed(20)).height(Dimension::fixed(5))(
+                        std::move(layer), text("bar")),
+                    c, pool, theme::native);
+        int rows = 0;
+        for (int y = 0; y < 5; ++y) if (get_row(c, y).starts_with("###")) ++rows;
+        return rows;
+    };
+    assert(frame(false) == 4);
+    assert(frame(true) == 4);      // the card covers 1 row's middle, not the canvas
+    std::println("PASS\n");
 }

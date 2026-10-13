@@ -32,27 +32,27 @@ struct Badge {
         : label(std::move(label_)), config(std::move(cfg)) {}
 
     static Badge success(std::string label) {
-        Config c; c.style = Style{}.with_fg(Color::green());
+        Config c; c.style = Style{}.with_fg(Color::slot(ThemeSlot::Success));
         return Badge{std::move(label), std::move(c)};
     }
 
     static Badge error(std::string label) {
-        Config c; c.style = Style{}.with_fg(Color::red());
+        Config c; c.style = Style{}.with_fg(Color::slot(ThemeSlot::Error));
         return Badge{std::move(label), std::move(c)};
     }
 
     static Badge warning(std::string label) {
-        Config c; c.style = Style{}.with_fg(Color::yellow());
+        Config c; c.style = Style{}.with_fg(Color::slot(ThemeSlot::Warning));
         return Badge{std::move(label), std::move(c)};
     }
 
     static Badge info(std::string label) {
-        Config c; c.style = Style{}.with_fg(Color::blue());
+        Config c; c.style = Style{}.with_fg(Color::slot(ThemeSlot::Primary));
         return Badge{std::move(label), std::move(c)};
     }
 
     static Badge tool(std::string label) {
-        Config c; c.style = Style{}.with_fg(Color::magenta());
+        Config c; c.style = Style{}.with_fg(Color::slot(ThemeSlot::Accent));
         return Badge{std::move(label), std::move(c)};
     }
 

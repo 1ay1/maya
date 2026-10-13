@@ -44,11 +44,11 @@ class APIUsage {
 
     // Color based on usage percentage: green→yellow→red
     static Color usage_color(int used, int limit) {
-        if (limit <= 0) return Color::bright_black();
+        if (limit <= 0) return Color::slot(ThemeSlot::Muted);
         float pct = static_cast<float>(used) / static_cast<float>(limit);
-        if (pct < 0.6f)  return Color::green();
-        if (pct < 0.85f) return Color::yellow();
-        return Color::red();
+        if (pct < 0.6f)  return Color::slot(ThemeSlot::Success);
+        if (pct < 0.85f) return Color::slot(ThemeSlot::Warning);
+        return Color::slot(ThemeSlot::Error);
     }
 
     // Mini bar: [████░░░░] style
@@ -102,9 +102,9 @@ public:
             }
             if (latency_ms_ > 0) {
                 if (!parts.empty()) parts.push_back(text("  ", dim));
-                Color lc = latency_ms_ < 500 ? Color::green()
-                         : latency_ms_ < 2000 ? Color::yellow()
-                         : Color::red();
+                Color lc = latency_ms_ < 500 ? Color::slot(ThemeSlot::Success)
+                         : latency_ms_ < 2000 ? Color::slot(ThemeSlot::Warning)
+                         : Color::slot(ThemeSlot::Error);
                 parts.push_back(text(std::to_string(latency_ms_) + "ms", Style{}.with_fg(lc)));
             }
 
@@ -136,9 +136,9 @@ public:
 
         // Latency
         if (latency_ms_ > 0) {
-            Color lc = latency_ms_ < 500 ? Color::green()
-                     : latency_ms_ < 2000 ? Color::yellow()
-                     : Color::red();
+            Color lc = latency_ms_ < 500 ? Color::slot(ThemeSlot::Success)
+                     : latency_ms_ < 2000 ? Color::slot(ThemeSlot::Warning)
+                     : Color::slot(ThemeSlot::Error);
             rows.push_back(h(
                 text("  Latency   ", lbl),
                 text(std::to_string(latency_ms_) + "ms", Style{}.with_fg(lc))
@@ -150,7 +150,7 @@ public:
             rows.push_back(h(
                 text("  Errors    ", lbl),
                 text(std::to_string(error_count_),
-                    Style{}.with_fg(Color::red()).with_bold())
+                    Style{}.with_fg(Color::slot(ThemeSlot::Error)).with_bold())
             ).build());
         }
 

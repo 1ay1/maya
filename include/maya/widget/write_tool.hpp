@@ -30,6 +30,7 @@ enum class WriteStatus : uint8_t { Pending, Writing, Written, Failed };
 
 class WriteTool {
     std::string file_path_;
+    std::string description_;
     std::string content_;
     WriteStatus status_ = WriteStatus::Pending;
     float elapsed_ = 0.0f;
@@ -41,6 +42,7 @@ public:
     explicit WriteTool(std::string path) : file_path_(std::move(path)) {}
 
     void set_file_path(std::string_view p) { file_path_ = std::string{p}; }
+    void set_description(std::string_view d) { description_ = std::string{d}; }
     void set_content(std::string_view c) { content_ = std::string{c}; }
     void set_status(WriteStatus s) { status_ = s; }
     void set_elapsed(float seconds) { elapsed_ = seconds; }
@@ -55,27 +57,42 @@ public:
 
     [[nodiscard]] Element build() const {
         auto [icon, icon_color] = status_icon();
-        std::string border_label = " " + icon + " Write ";
+        // Title-bar slot: "Write" + optional one-line description so the user
+        // sees the *intent* without breaking the file row underneath.
+        std::string border_label = " " + icon + " Write";
+        if (!description_.empty()) {
+            border_label += " \xc2\xb7 ";  // middle-dot
+            border_label += description_;
+        }
+        border_label += " ";
 
-        auto border_color = Color::bright_black();
+        auto border_color = Color::slot(ThemeSlot::Muted);
         auto border_style = BorderStyle::Round;
         if (status_ == WriteStatus::Failed) {
-            border_color = Color::red();
+            border_color = Color::slot(ThemeSlot::Error);
             border_style = BorderStyle::Dashed;
         } else if (status_ == WriteStatus::Written) {
-            border_color = Color::green();
+            border_color = Color::slot(ThemeSlot::Success);
+        } else if (status_ == WriteStatus::Writing) {
+            border_color = Color::slot(ThemeSlot::Warning);
         }
+
+        // Pre-compute byte / line stats so we can show a live counter even
+        // when there's no preview yet — this is the signal the user needs to
+        // tell "still streaming" from "stuck".
+        const auto [bytes, lines] = content_stats();
 
         std::vector<Element> rows;
 
-        // File path + elapsed + line count
+        // File path + elapsed
         {
-            std::string content = file_path_;
+            std::string content = file_path_.empty() ? std::string{"(no path)"} : file_path_;
             std::vector<StyledRun> runs;
+            runs.push_back(StyledRun{0, content.size(),
+                Style{}.with_fg(Color::slot(ThemeSlot::Info))});
 
             if (elapsed_ > 0.0f) {
                 std::string ts = "  " + format_elapsed();
-                runs.push_back(StyledRun{content.size(), 2, Style{}});
                 runs.push_back(StyledRun{content.size() + 2, ts.size() - 2, Style{}.with_dim()});
                 content += ts;
             }
@@ -103,22 +120,12 @@ public:
                 .layout = {},
             }});
 
-            auto add_prefix_style = Style{}.with_fg(Color::green()).with_dim();
-            auto code_style = Style{}.with_fg(Color::green());
+            auto add_prefix_style = Style{}.with_fg(Color::slot(ThemeSlot::Success)).with_dim();
+            auto code_style = Style{}.with_fg(Color::slot(ThemeSlot::Success));
 
             std::string_view sv = content_;
             int shown = 0;
-            int total_lines = 0;
-
-            // Count total lines first
-            {
-                std::string_view tmp = content_;
-                while (!tmp.empty()) {
-                    auto nl = tmp.find('\n');
-                    ++total_lines;
-                    tmp = (nl == std::string_view::npos) ? std::string_view{} : tmp.substr(nl + 1);
-                }
-            }
+            int total_lines = lines;
 
             while (!sv.empty()) {
                 auto nl = sv.find('\n');
@@ -155,16 +162,13 @@ public:
                 ++shown;
             }
 
-            // Line count summary
-            {
-                char buf[48];
-                std::snprintf(buf, sizeof(buf), "%d lines written", total_lines);
-                rows.push_back(Element{TextElement{
-                    .content = buf,
-                    .style = Style{}.with_dim().with_italic(),
-                }});
-            }
         }
+
+        // Live progress / outcome footer. We *always* render this for non-
+        // pending states so the user can tell "still streaming" from "stuck"
+        // without expanding the card. Bytes + lines update every frame as
+        // the SSE buffer grows.
+        rows.push_back(progress_row(bytes, lines));
 
         return (dsl::v(std::move(rows))
             | dsl::border(border_style)
@@ -176,18 +180,88 @@ public:
 private:
     struct IconInfo { std::string icon; Color color; };
 
+    // Single pass over the buffer — used by both the preview ceiling and the
+    // live progress footer, so the card hits content_ at most twice per
+    // frame regardless of how many rows want to know its size.
+    [[nodiscard]] std::pair<std::size_t, int> content_stats() const noexcept {
+        std::size_t bytes = content_.size();
+        int lines = 0;
+        if (bytes == 0) return {0, 0};
+        for (char c : content_) if (c == '\n') ++lines;
+        // Trailing line without newline still counts as a line.
+        if (content_.back() != '\n') ++lines;
+        return {bytes, lines};
+    }
+
+    [[nodiscard]] static std::string format_bytes(std::size_t n) {
+        char buf[32];
+        if (n < 1024)              std::snprintf(buf, sizeof(buf), "%zu B", n);
+        else if (n < 1024 * 1024)  std::snprintf(buf, sizeof(buf), "%.1f KB", n / 1024.0);
+        else                       std::snprintf(buf, sizeof(buf), "%.1f MB", n / (1024.0 * 1024.0));
+        return buf;
+    }
+
+    // Footer line. While Writing with no content yet, shows a quiet
+    // "awaiting content stream…" so the user knows the request reached us
+    // but the model hasn't started emitting the body. Otherwise shows a
+    // verb appropriate to status + a live "L lines · B" counter.
+    [[nodiscard]] Element progress_row(std::size_t bytes, int lines) const {
+        const char* verb = nullptr;
+        Color verb_color = Color::slot(ThemeSlot::Muted);
+        switch (status_) {
+            case WriteStatus::Pending:  verb = "queued";        break;
+            case WriteStatus::Writing:  verb = bytes == 0
+                                              ? "awaiting content stream\xe2\x80\xa6"
+                                              : "streaming\xe2\x80\xa6";
+                                        verb_color = Color::slot(ThemeSlot::Warning);
+                                        break;
+            case WriteStatus::Written:  verb = "wrote";
+                                        verb_color = Color::slot(ThemeSlot::Success);
+                                        break;
+            case WriteStatus::Failed:   verb = "failed";
+                                        verb_color = Color::slot(ThemeSlot::Error);
+                                        break;
+        }
+
+        std::string text;
+        std::vector<StyledRun> runs;
+        if (verb) {
+            text = verb;
+            runs.push_back(StyledRun{0, text.size(),
+                Style{}.with_fg(verb_color).with_italic()});
+        }
+
+        if (bytes > 0) {
+            char buf[64];
+            std::snprintf(buf, sizeof(buf), "  %d line%s \xc2\xb7 %s",
+                          lines, lines == 1 ? "" : "s",
+                          format_bytes(bytes).c_str());
+            std::size_t off = text.size();
+            text += buf;
+            runs.push_back(StyledRun{off, std::string{buf}.size(),
+                Style{}.with_dim()});
+        }
+
+        return Element{TextElement{
+            .content = std::move(text),
+            .style = {},
+            .wrap = TextWrap::NoWrap,
+            .runs = std::move(runs),
+        }};
+    }
+
     [[nodiscard]] IconInfo status_icon() const {
         switch (status_) {
             case WriteStatus::Pending:
-                return {"\xe2\x97\x8b", Color::bright_black()};   // ○
+                return {"\xe2\x97\x8b", Color::slot(ThemeSlot::Muted)};   // ○
             case WriteStatus::Writing:
-                return {"\xe2\x97\x8f", Color::yellow()};         // ●
+                return {"\xe2\x97\x8f", Color::slot(ThemeSlot::Warning)};         // ●
             case WriteStatus::Written:
-                return {"\xe2\x9c\x93", Color::green()};          // ✓
+                return {"\xe2\x9c\x93", Color::slot(ThemeSlot::Success)};          // ✓
             case WriteStatus::Failed:
-                return {"\xe2\x9c\x97", Color::red()};            // ✗
+                return {"\xe2\x9c\x97", Color::slot(ThemeSlot::Error)};            // ✗
         }
-        return {"\xe2\x97\x8b", Color::bright_black()};
+        return {"\xe2\x97\x8b", Color::slot(ThemeSlot::Muted)};
     }
 
     [[nodiscard]] std::string format_elapsed() const {

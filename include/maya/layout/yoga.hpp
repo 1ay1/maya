@@ -185,6 +185,16 @@ namespace detail {
     return s.border.top + s.padding.top;
 }
 
+/// Margin extent on each axis. Unlike outer_*, this is margin ONLY (no
+/// border/padding), for flex code that has already folded border+padding into
+/// an item's border-box main/cross size and must add just the margin on top.
+[[nodiscard]] constexpr int margin_horizontal(const FlexStyle& s) noexcept {
+    return s.margin.horizontal();
+}
+[[nodiscard]] constexpr int margin_vertical(const FlexStyle& s) noexcept {
+    return s.margin.vertical();
+}
+
 // --------------------------------------------------------------------------
 // Per-flex-line item tracking during the algorithm
 // --------------------------------------------------------------------------
@@ -196,6 +206,21 @@ struct FlexItem {
     int         cross;          // Final cross size
     int         main_offset;    // Offset along main axis (set during positioning)
     int         cross_offset;   // Offset along cross axis
+    // Outer margin+border+padding extents on each axis (border/padding are
+    // already folded into main/cross, so these carry ONLY the margins). Flex
+    // line-breaking, free-space distribution, the main-axis cursor advance and
+    // the container's own auto content-size must all reserve these — a child's
+    // margin occupies main/cross space just like its content does (CSS Flexbox
+    // §9.2/§9.5). Kept separate from `main`/`cross` because those stay the
+    // border-box size handed to the child's own compute_node.
+    int         margin_main = 0;  // margin extent along the main axis
+    int         margin_cross = 0; // margin extent along the cross axis
+    // Whether section 3a fully recursed this child (its `computed` is valid)
+    // and the available width/height it was laid out under. The 3d pass can
+    // skip re-running an identical layout when these match what it would pass.
+    bool        laid_out = false;
+    int         avail_w = 0;
+    int         avail_h = 0;
 };
 
 struct FlexLine {
@@ -215,6 +240,12 @@ void compute_node(
     int available_height,
     int parent_width,
     int parent_height);
+
+/// Test hook: when true, compute_node always re-lays a child out in the
+/// final pass instead of reusing its first-pass result. The layout must be
+/// identical either way (the fast path is exact); tests/test_layout.cpp
+/// renders the same trees both ways and compares every node.
+inline bool g_disable_relayout_fast_path = false;
 
 /// Resolve a node's definite main/cross sizes given the parent context.
 /// Returns (resolved_width, resolved_height), with -1 meaning "not yet determined".

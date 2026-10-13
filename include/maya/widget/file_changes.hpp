@@ -50,12 +50,12 @@ class FileChanges {
 
     static Color kind_color(FileChangeKind k) {
         switch (k) {
-            case FileChangeKind::Created:  return Color::green();
-            case FileChangeKind::Modified: return Color::yellow();
-            case FileChangeKind::Deleted:  return Color::red();
-            case FileChangeKind::Renamed:  return Color::blue();
+            case FileChangeKind::Created:  return Color::slot(ThemeSlot::Success);
+            case FileChangeKind::Modified: return Color::slot(ThemeSlot::Warning);
+            case FileChangeKind::Deleted:  return Color::slot(ThemeSlot::Error);
+            case FileChangeKind::Renamed:  return Color::slot(ThemeSlot::Primary);
         }
-        return Color::yellow();
+        return Color::slot(ThemeSlot::Warning);
     }
 
 public:
@@ -102,10 +102,10 @@ public:
             parts.push_back(text(std::to_string(changes_.size()) + " files", val));
             if (total_add > 0)
                 parts.push_back(text(" +" + std::to_string(total_add),
-                    Style{}.with_fg(Color::green())));
+                    Style{}.with_fg(Color::slot(ThemeSlot::Success))));
             if (total_rm > 0)
                 parts.push_back(text(" -" + std::to_string(total_rm),
-                    Style{}.with_fg(Color::red())));
+                    Style{}.with_fg(Color::slot(ThemeSlot::Error))));
             return h(std::move(parts)).build();
         }
 
@@ -119,10 +119,10 @@ public:
                 val.with_bold()));
             if (total_add > 0)
                 summary.push_back(text("  +" + std::to_string(total_add),
-                    Style{}.with_fg(Color::green())));
+                    Style{}.with_fg(Color::slot(ThemeSlot::Success))));
             if (total_rm > 0)
                 summary.push_back(text("  -" + std::to_string(total_rm),
-                    Style{}.with_fg(Color::red())));
+                    Style{}.with_fg(Color::slot(ThemeSlot::Error))));
             rows.push_back(h(std::move(summary)).build());
         }
 
@@ -153,12 +153,12 @@ public:
 
                 if (c.lines_added > 0)
                     line.push_back(text("+" + std::to_string(c.lines_added),
-                        Style{}.with_fg(Color::green())));
+                        Style{}.with_fg(Color::slot(ThemeSlot::Success))));
                 if (c.lines_added > 0 && c.lines_removed > 0)
                     line.push_back(text(" "));
                 if (c.lines_removed > 0)
                     line.push_back(text("-" + std::to_string(c.lines_removed),
-                        Style{}.with_fg(Color::red())));
+                        Style{}.with_fg(Color::slot(ThemeSlot::Error))));
             }
 
             rows.push_back(h(std::move(line)).build());

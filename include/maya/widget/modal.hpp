@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "../core/focus.hpp"
+#include "../core/function.hpp"
 #include "../core/overload.hpp"
 #include "../core/signal.hpp"
 #include "../dsl.hpp"
@@ -35,7 +36,7 @@ struct ModalButton {
 
     std::string label;
     Variant variant = Default;
-    std::move_only_function<void()> callback;
+    MoveOnlyFunction<void()> callback;
 };
 
 // ============================================================================
@@ -47,6 +48,7 @@ class Modal {
     Element content_;
     std::vector<ModalButton> buttons_;
     bool visible_ = false;
+    int max_width_ = 80;
     FocusNode focus_;
     Signal<int> focused_button_{0};
 
@@ -119,22 +121,22 @@ public:
             bool active = (i == cur) && focused;
 
             // Determine button colors
-            Color fg_color = Color::white();
-            Color border_color = Color::bright_black();
+            Color fg_color = Color::slot(ThemeSlot::Text);
+            Color border_color = Color::slot(ThemeSlot::Muted);
 
             switch (btn.variant) {
                 case ModalButton::Primary:
-                    fg_color = Color::blue();
+                    fg_color = Color::slot(ThemeSlot::Primary);
                     break;
                 case ModalButton::Danger:
-                    fg_color = Color::red();
+                    fg_color = Color::slot(ThemeSlot::Error);
                     break;
                 case ModalButton::Default:
                     break;
             }
 
             if (active) {
-                border_color = Color::blue();
+                border_color = Color::slot(ThemeSlot::Primary);
             }
 
             std::string label = " " + btn.label + " ";
@@ -151,12 +153,22 @@ public:
         // Assemble the modal
         auto inner = (dsl::v(std::move(body), std::move(button_row)) | dsl::gap(1)).build();
 
-        auto border_color = Color::bright_black();
-        return (dsl::v(std::move(inner))
+        auto border_color = Color::slot(ThemeSlot::Muted);
+        Element card = (dsl::v(std::move(inner))
             | dsl::border(BorderStyle::Round) | dsl::bcolor(border_color)
             | dsl::btext(title_, BorderTextPos::Top)
             | dsl::padding(1, 2)).build();
+
+        // Dialog convention: never wider than max_width_ (default 80),
+        // centered beyond — a modal that spans a 300-col ultrawide reads
+        // as a banner, not a dialog. Below the cap the clamp is
+        // transparent.
+        if (max_width_ <= 0) return card;
+        return detail::clamp(std::move(card), max_width_);
     }
+
+    /// Cap the dialog's width (cells); 0 = full slot. Default 80.
+    void set_max_width(int w) { max_width_ = w; }
 
 private:
     void cycle_next() {

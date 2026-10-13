@@ -37,14 +37,14 @@ enum class GaugeStyle : uint8_t {
 class Gauge {
     float value_ = 0.0f;
     std::string label_;
-    Color color_ = Color::blue();
+    Color color_ = Color::slot(ThemeSlot::Primary);
     GaugeStyle style_ = GaugeStyle::Arc;
 
 public:
     Gauge() = default;
 
     explicit Gauge(float value, std::string label = {},
-                   Color color = Color::blue(),
+                   Color color = Color::slot(ThemeSlot::Primary),
                    GaugeStyle style = GaugeStyle::Arc)
         : value_(std::clamp(value, 0.0f, 1.0f))
         , label_(std::move(label))
@@ -123,7 +123,7 @@ private:
                 if (!empty_str.empty()) {
                     runs.push_back(StyledRun{
                         content.size(), empty_str.size(),
-                        Style{}.with_fg(Color::bright_black()),
+                        Style{}.with_fg(Color::slot(ThemeSlot::Muted)),
                     });
                     content += empty_str;
                 }
@@ -146,7 +146,7 @@ private:
 
         return (dsl::v(std::move(inner))
             | dsl::border(BorderStyle::Round)
-            | dsl::bcolor(Color::bright_black())
+            | dsl::bcolor(Color::slot(ThemeSlot::Muted))
             | dsl::padding(0, 1)).build();
     }
 
@@ -198,7 +198,7 @@ private:
                 fg = color_;
             } else {
                 block = "\xe2\x94\x80";  // ─
-                fg = Color::bright_black();
+                fg = Color::slot(ThemeSlot::Muted);
             }
 
             rows.push_back(Element{TextElement{

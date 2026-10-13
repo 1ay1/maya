@@ -31,6 +31,19 @@ struct RenderContext {
     int      height      = 24;   // available height in rows
     uint32_t generation  = 0;    // incremented on every resize
     bool     auto_height = false; // true in inline mode (root height unconstrained)
+    // Inline monotonic-height pad (composer anti-bounce). The inline
+    // composer rides content_height; a transient 1-row dip in the live
+    // transcript (indicator→first-content handoff, welcome→conversation
+    // subtree swap, typewriter crossing a block boundary, a tool card
+    // collapsing) would bounce the composer up then back down. maya sets
+    // this AUTONOMOUSLY in Runtime::render: it tracks the running-max
+    // content height while it fits the viewport and pads up to it across
+    // a dip, then DECAYS the peak once the lower height persists (the
+    // shrink is real) so idle / post-settle carries no dead space. The
+    // pad is consumed by a lazy component in AppLayout::build (read at
+    // paint time). 0 = no pad. NOT host-driven — set_height_hold is a
+    // no-op kept only for Cmd plumbing compatibility.
+    int      inline_min_content = 0;
 };
 
 // ============================================================================
@@ -41,16 +54,42 @@ namespace detail {
 inline thread_local const RenderContext* render_ctx_ = nullptr;
 } // namespace detail
 
+/// True when a render pass is active on this thread — i.e. when
+/// available_width()/available_height() reflect a REAL surface rather
+/// than their safe defaults. Lets a widget distinguish "the surface is
+/// 80 columns" from "nobody has told me the width yet", which is the
+/// difference between resolving a width-dependent decision eagerly and
+/// having to defer it into a component().
+[[nodiscard]] inline bool have_render_context() noexcept {
+    return detail::render_ctx_ != nullptr;
+}
+
+/// The width reported when there is no render context.
+///
+/// Not a measurement — a stand-in for "nobody has told me a width yet",
+/// returned to keep measure-outside-a-pass from dividing by nothing. Named
+/// because layouts that pick their SHAPE from a width (columns(), grid())
+/// need to tell it apart from a real slot: choosing a column count from this
+/// number answers a different question than paint will, and the two then
+/// disagree about how tall the result is.
+inline constexpr int kNoContextWidth = 80;
+
 /// Query the available width from the current render context.
-/// Returns 80 if called outside a render pass (safe default).
+/// Returns kNoContextWidth if called outside a render pass (safe default).
 [[nodiscard]] inline int available_width() noexcept {
-    return detail::render_ctx_ ? detail::render_ctx_->width : 80;
+    return detail::render_ctx_ ? detail::render_ctx_->width : kNoContextWidth;
 }
 
 /// Query the available height from the current render context.
 /// Returns 24 if called outside a render pass (safe default).
 [[nodiscard]] inline int available_height() noexcept {
     return detail::render_ctx_ ? detail::render_ctx_->height : 24;
+}
+
+/// Host-driven inline monotonic-height floor (see RenderContext::
+/// inline_min_content). Returns 0 outside a render pass / when unset.
+[[nodiscard]] inline int available_inline_min_content() noexcept {
+    return detail::render_ctx_ ? detail::render_ctx_->inline_min_content : 0;
 }
 
 /// Query the current render generation (incremented on resize).

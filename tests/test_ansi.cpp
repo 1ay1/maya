@@ -1,6 +1,11 @@
 // Tests for ANSI escape sequence generation and StyleApplier
 #include <maya/maya.hpp>
-#include <cassert>
+#include <maya/terminal/tmux.hpp>
+// NDEBUG guard: CMake builds tests in Release (-O3 -DNDEBUG), which strips
+// assert(). Undefine it here so this file's runtime asserts actually fire.
+#undef NDEBUG
+#include "agtest.hpp"
+#include <cstdlib>   // setenv / unsetenv (tmux sync-detection test)
 #include <print>
 
 using namespace maya;
@@ -9,7 +14,7 @@ using namespace maya;
 // write_move_to (zero-alloc) vs move_to (allocating) consistency
 // ============================================================================
 
-void test_move_to_format() {
+TEST_CASE("move to format") {
     std::println("--- test_move_to_format ---");
     // move_to(col, row) → ESC[row;colH
     assert(ansi::move_to(1, 1) == "\x1b[1;1H");
@@ -18,7 +23,7 @@ void test_move_to_format() {
     std::println("PASS\n");
 }
 
-void test_write_move_to_matches_move_to() {
+TEST_CASE("write move to matches move to") {
     std::println("--- test_write_move_to_matches_move_to ---");
     // Zero-alloc write_move_to must produce identical output to move_to
     for (auto [col, row] : std::initializer_list<std::pair<int,int>>{{1,1},{10,5},{80,24},{1,100}}) {
@@ -30,7 +35,7 @@ void test_write_move_to_matches_move_to() {
     std::println("PASS\n");
 }
 
-void test_write_move_to_appends() {
+TEST_CASE("write move to appends") {
     std::println("--- test_write_move_to_appends ---");
     std::string out = "PREFIX";
     ansi::write_move_to(out, 1, 1);
@@ -43,7 +48,7 @@ void test_write_move_to_appends() {
 // Cursor movement helpers
 // ============================================================================
 
-void test_move_up_down_left_right() {
+TEST_CASE("move up down left right") {
     std::println("--- test_move_up_down_left_right ---");
     assert(ansi::move_up(1)    == "\x1b[1A");
     assert(ansi::move_down(1)  == "\x1b[1B");
@@ -54,7 +59,7 @@ void test_move_up_down_left_right() {
     std::println("PASS\n");
 }
 
-void test_move_zero_returns_empty() {
+TEST_CASE("move zero returns empty") {
     std::println("--- test_move_zero_returns_empty ---");
     assert(ansi::move_up(0).empty());
     assert(ansi::move_down(0).empty());
@@ -63,7 +68,7 @@ void test_move_zero_returns_empty() {
     std::println("PASS\n");
 }
 
-void test_home_sequence() {
+TEST_CASE("home sequence") {
     std::println("--- test_home_sequence ---");
     assert(ansi::home() == "\x1b[H");
     std::println("PASS\n");
@@ -73,13 +78,13 @@ void test_home_sequence() {
 // Screen clearing
 // ============================================================================
 
-void test_clear_screen_sequence() {
+TEST_CASE("clear screen sequence") {
     std::println("--- test_clear_screen_sequence ---");
     assert(ansi::clear_screen() == "\x1b[2J");
     std::println("PASS\n");
 }
 
-void test_clear_line_sequence() {
+TEST_CASE("clear line sequence") {
     std::println("--- test_clear_line_sequence ---");
     assert(ansi::clear_line() == "\x1b[2K");
     std::println("PASS\n");
@@ -89,7 +94,7 @@ void test_clear_line_sequence() {
 // Known ANSI constants
 // ============================================================================
 
-void test_cursor_show_hide_constants() {
+TEST_CASE("cursor show hide constants") {
     std::println("--- test_cursor_show_hide_constants ---");
     // DEC private mode 25: show/hide cursor
     std::string show(ansi::show_cursor);
@@ -99,7 +104,7 @@ void test_cursor_show_hide_constants() {
     std::println("PASS\n");
 }
 
-void test_sync_markers() {
+TEST_CASE("sync markers") {
     std::println("--- test_sync_markers ---");
     // DEC private mode 2026: synchronized output
     std::string start(ansi::sync_start);
@@ -109,7 +114,7 @@ void test_sync_markers() {
     std::println("PASS\n");
 }
 
-void test_reset_constant() {
+TEST_CASE("reset constant") {
     std::println("--- test_reset_constant ---");
     std::string r(ansi::reset);
     assert(r == "\x1b[0m" || r == "\x1b[m");
@@ -120,14 +125,14 @@ void test_reset_constant() {
 // Color SGR sequences
 // ============================================================================
 
-void test_ansi_fg_sequence() {
+TEST_CASE("ansi fg sequence") {
     std::println("--- test_ansi_fg_sequence ---");
     std::string s = ansi::fg(Color::red());
     assert(s == "\x1b[31m");
     std::println("PASS\n");
 }
 
-void test_ansi_bg_sequence() {
+TEST_CASE("ansi bg sequence") {
     std::println("--- test_ansi_bg_sequence ---");
     std::string s = ansi::bg(Color::blue());
     assert(s == "\x1b[44m");
@@ -138,14 +143,14 @@ void test_ansi_bg_sequence() {
 // StyleApplier - allocating variants
 // ============================================================================
 
-void test_style_applier_apply_empty() {
+TEST_CASE("style applier apply empty") {
     std::println("--- test_style_applier_apply_empty ---");
     std::string s = ansi::StyleApplier::apply(Style{});
     assert(s.empty()); // empty style produces no SGR
     std::println("PASS\n");
 }
 
-void test_style_applier_apply_bold() {
+TEST_CASE("style applier apply bold") {
     std::println("--- test_style_applier_apply_bold ---");
     std::string s = ansi::StyleApplier::apply(Style{}.with_bold());
     assert(s.find("1") != std::string::npos);
@@ -154,7 +159,7 @@ void test_style_applier_apply_bold() {
     std::println("PASS\n");
 }
 
-void test_style_applier_apply_multiple() {
+TEST_CASE("style applier apply multiple") {
     std::println("--- test_style_applier_apply_multiple ---");
     Style s = Style{}.with_bold().with_italic().with_fg(Color::red());
     std::string sgr = ansi::StyleApplier::apply(s);
@@ -164,14 +169,14 @@ void test_style_applier_apply_multiple() {
     std::println("PASS\n");
 }
 
-void test_style_applier_transition_same_style() {
+TEST_CASE("style applier transition same style") {
     std::println("--- test_style_applier_transition_same_style ---");
     Style s = Style{}.with_bold().with_fg(Color::green());
     assert(ansi::StyleApplier::transition(s, s).empty());
     std::println("PASS\n");
 }
 
-void test_style_applier_transition_add_attribute() {
+TEST_CASE("style applier transition add attribute") {
     std::println("--- test_style_applier_transition_add_attribute ---");
     Style a = Style{}.with_bold();
     Style b = Style{}.with_bold().with_fg(Color::cyan());
@@ -181,7 +186,7 @@ void test_style_applier_transition_add_attribute() {
     std::println("PASS\n");
 }
 
-void test_style_applier_transition_remove_attribute_resets() {
+TEST_CASE("style applier transition remove attribute resets") {
     std::println("--- test_style_applier_transition_remove_attribute_resets ---");
     // Removing bold requires a reset because SGR has no individual "un-bold"
     Style a = Style{}.with_bold().with_fg(Color::red());
@@ -196,7 +201,7 @@ void test_style_applier_transition_remove_attribute_resets() {
 // StyleApplier - zero-alloc variants
 // ============================================================================
 
-void test_style_applier_apply_to_matches_apply() {
+TEST_CASE("style applier apply to matches apply") {
     std::println("--- test_style_applier_apply_to_matches_apply ---");
     Style s = Style{}.with_bold().with_fg(Color::green());
     std::string expected = ansi::StyleApplier::apply(s);
@@ -206,7 +211,7 @@ void test_style_applier_apply_to_matches_apply() {
     std::println("PASS\n");
 }
 
-void test_style_applier_transition_to_matches_transition() {
+TEST_CASE("style applier transition to matches transition") {
     std::println("--- test_style_applier_transition_to_matches_transition ---");
     Style a = Style{}.with_bold();
     Style b = Style{}.with_bold().with_fg(Color::blue());
@@ -217,7 +222,7 @@ void test_style_applier_transition_to_matches_transition() {
     std::println("PASS\n");
 }
 
-void test_style_applier_apply_to_appends() {
+TEST_CASE("style applier apply to appends") {
     std::println("--- test_style_applier_apply_to_appends ---");
     Style s = Style{}.with_bold();
     std::string out = "START";
@@ -227,7 +232,7 @@ void test_style_applier_apply_to_appends() {
     std::println("PASS\n");
 }
 
-void test_style_applier_transition_to_empty_on_same() {
+TEST_CASE("style applier transition to empty on same") {
     std::println("--- test_style_applier_transition_to_empty_on_same ---");
     Style s = Style{}.with_italic();
     std::string out;
@@ -236,30 +241,184 @@ void test_style_applier_transition_to_empty_on_same() {
     std::println("PASS\n");
 }
 
-int main() {
-    setvbuf(stdout, nullptr, _IONBF, 0);
-    test_move_to_format();
-    test_write_move_to_matches_move_to();
-    test_write_move_to_appends();
-    test_move_up_down_left_right();
-    test_move_zero_returns_empty();
-    test_home_sequence();
-    test_clear_screen_sequence();
-    test_clear_line_sequence();
-    test_cursor_show_hide_constants();
-    test_sync_markers();
-    test_reset_constant();
-    test_ansi_fg_sequence();
-    test_ansi_bg_sequence();
-    test_style_applier_apply_empty();
-    test_style_applier_apply_bold();
-    test_style_applier_apply_multiple();
-    test_style_applier_transition_same_style();
-    test_style_applier_transition_add_attribute();
-    test_style_applier_transition_remove_attribute_resets();
-    test_style_applier_apply_to_matches_apply();
-    test_style_applier_transition_to_matches_transition();
-    test_style_applier_apply_to_appends();
-    test_style_applier_transition_to_empty_on_same();
-    std::println("=== ALL 23 TESTS PASSED ===");
+// ============================================================================
+// env_supports_synchronized_output — multiplexer (tmux/screen) robustness
+// ============================================================================
+// Under tmux ALL of the outer terminal's identifying env vars are stripped;
+// the detector must lean on what SURVIVES the pane: tmux's own version
+// (TERM_PROGRAM=tmux + TERM_PROGRAM_VERSION) and COLORTERM. A modern tmux
+// (≥ 3.4) forwards synchronized output, so it must NOT be blanket-disabled.
+TEST_CASE("sync detect tmux") {
+    std::println("--- test_sync_detect_tmux ---");
+
+    // Wipe every var the detector consults so each case is hermetic.
+    auto clear_env = [] {
+        for (const char* v : {"MAYA_FORCE_SYNC", "MAYA_NO_SYNC", "TERM_PROGRAM",
+                              "TERM_PROGRAM_VERSION", "KITTY_WINDOW_ID",
+                              "ALACRITTY_LOG", "ALACRITTY_WINDOW_ID",
+                              "GHOSTTY_RESOURCES_DIR", "WEZTERM_EXECUTABLE",
+                              "WT_SESSION", "KONSOLE_VERSION", "VTE_VERSION",
+                              "TERM", "COLORTERM", "TMUX",
+                              "MAYA_TMUX_FEATURES", "MAYA_TMUX_PASSTHROUGH",
+                              "MAYA_TMUX_GET_CLIPBOARD"})
+            ::unsetenv(v);
+        // Inside tmux the sync answer now comes from maya::tmux, which
+        // probes the LIVE server. Force the fabricated-env path so these
+        // cases never depend on the developer's own tmux config, and drop
+        // the memoised probe between cases.
+        ::setenv("MAYA_TMUX_FAKE", "1", 1);
+        maya::tmux::reset_cache_for_test();
+    };
+
+    // Modern tmux (3.4+) reporting its own version → sync supported.
+    clear_env();
+    ::setenv("TMUX", "/tmp/tmux-1000/default,1,0", 1);
+    ::setenv("TERM", "tmux-256color", 1);
+    ::setenv("TERM_PROGRAM", "tmux", 1);
+    ::setenv("TERM_PROGRAM_VERSION", "3.7b", 1);
+    ::setenv("MAYA_TMUX_PASSTHROUGH", "1", 1);
+    maya::tmux::reset_cache_for_test();
+    assert(ansi::env_supports_synchronized_output()
+           && "tmux 3.7 with passthrough must report sync-capable");
+
+    // tmux 3.4 exactly is the cutoff → supported.
+    ::setenv("TERM_PROGRAM_VERSION", "3.4", 1);
+    assert(ansi::env_supports_synchronized_output()
+           && "tmux 3.4 with passthrough must report sync-capable");
+
+    // Old tmux (3.2) with no truecolor signal → not supported.
+    clear_env();
+    ::setenv("TMUX", "/tmp/tmux-1000/default,1,0", 1);
+    ::setenv("TERM", "tmux-256color", 1);
+    ::setenv("TERM_PROGRAM", "tmux", 1);
+    ::setenv("TERM_PROGRAM_VERSION", "3.2a", 1);
+    // NEW CONTRACT: inside tmux the version is irrelevant — what matters
+    // is whether tmux will FORWARD the markers (allow-passthrough). A raw
+    // CSI ?2026 is swallowed by tmux regardless of its version, so
+    // "passthrough off" is the only correct "no sync" answer.
+    assert(!ansi::env_supports_synchronized_output()
+           && "tmux without passthrough must NOT report sync-capable");
+    ::setenv("MAYA_TMUX_PASSTHROUGH", "1", 1);
+    maya::tmux::reset_cache_for_test();
+    assert(ansi::env_supports_synchronized_output()
+           && "tmux WITH passthrough must report sync-capable");
+    ::unsetenv("MAYA_TMUX_PASSTHROUGH");
+    maya::tmux::reset_cache_for_test();
+
+    // Old/unknown-version multiplexer but COLORTERM=truecolor survives
+    // (modern outer terminal) → treat as supported.
+    clear_env();
+    ::setenv("TMUX", "/tmp/tmux-1000/default,1,0", 1);
+    ::setenv("TERM", "screen-256color", 1);
+    ::setenv("COLORTERM", "truecolor", 1);
+    // Under the new contract COLORTERM can't rescue a multiplexer that
+    // won't forward the markers — passthrough is the deciding fact.
+    ::setenv("MAYA_TMUX_PASSTHROUGH", "1", 1);
+    maya::tmux::reset_cache_for_test();
+    assert(ansi::env_supports_synchronized_output()
+           && "multiplexer WITH passthrough must report sync-capable");
+
+    // GNU screen, no version, no truecolor → not supported (screen never
+    // forwards 2026).
+    clear_env();
+    ::setenv("TERM", "screen", 1);
+    assert(!ansi::env_supports_synchronized_output()
+           && "bare GNU screen must NOT report sync-capable");
+
+    // Explicit override still wins inside a multiplexer.
+    clear_env();
+    ::setenv("TMUX", "/tmp/tmux-1000/default,1,0", 1);
+    ::setenv("TERM", "tmux-256color", 1);
+    ::setenv("TERM_PROGRAM", "tmux", 1);
+    ::setenv("TERM_PROGRAM_VERSION", "3.7b", 1);
+    ::setenv("MAYA_NO_SYNC", "1", 1);
+    assert(!ansi::env_supports_synchronized_output()
+           && "MAYA_NO_SYNC must override even a sync-capable tmux");
+    ::unsetenv("MAYA_NO_SYNC");
+
+    clear_env();
+    std::println("PASS\n");
 }
+
+// ============================================================================
+// tmux clipboard passthrough (image paste under tmux)
+// ============================================================================
+
+TEST_CASE("wrap_for_tmux wraps only inside tmux, doubling ESCs") {
+    std::println("--- test_wrap_for_tmux ---");
+
+    // Not in tmux: sequence returned unchanged.
+    //
+    // Clearing $TMUX alone is NOT enough to be "outside tmux", and this
+    // assertion failed for anyone running the suite from inside tmux:
+    // presence is also inferred from a tmux-*/screen-* $TERM (the
+    // ssh-from-local-tmux topology), which survives unsetenv("TMUX") as
+    // "tmux-256color". The probe also memoises its answer, so a stale
+    // verdict outlives the env change. Clear BOTH signals and reset the
+    // cache so the case tests the branch it names on every host.
+    ::unsetenv("TMUX");
+    ::setenv("TERM", "xterm-256color", 1);
+    ::unsetenv("MAYA_TMUX_FAKE");
+    tmux::reset_cache_for_test();
+    const std::string seq = "\x1b]5522;type=read;Zm9v\x1b\\";
+    assert(ansi::wrap_for_tmux(seq) == seq
+           && "outside tmux wrap_for_tmux must be a no-op");
+
+    // In tmux: wrapped in ESC P tmux ; … ESC \ with every inner ESC DOUBLED.
+    ::setenv("TMUX", "/tmp/tmux-1000/default,1,0", 1);
+    tmux::reset_cache_for_test();
+    const std::string wrapped = ansi::wrap_for_tmux(seq);
+    // Must start with the DCS passthrough intro and end with ST.
+    assert(wrapped.rfind("\x1bPtmux;", 0) == 0
+           && "tmux wrap must start with ESC P tmux ;");
+    assert(wrapped.size() >= 2
+           && wrapped[wrapped.size() - 2] == '\x1b'
+           && wrapped[wrapped.size() - 1] == '\\'
+           && "tmux wrap must end with ST (ESC \\)");
+    // Every ESC from the ORIGINAL payload is doubled. The original seq has 2
+    // ESCs (the OSC intro and its ST); the wrapper adds its own intro ESC and
+    // a trailing ST ESC. Count ESCs: wrapper_intro(1) + doubled_payload(2*2=4)
+    // + trailing_ST(1) = 6.
+    std::size_t escs = 0;
+    for (char c : wrapped) if (c == '\x1b') ++escs;
+    assert(escs == 6 && "payload ESCs must be doubled inside the tmux wrapper");
+
+    ::unsetenv("TMUX");
+    std::println("PASS\n");
+}
+
+TEST_CASE("env_supports_osc5522 is speculative inside tmux") {
+    std::println("--- test_osc5522_tmux ---");
+    auto clear = [] {
+        for (const char* v : {"KITTY_WINDOW_ID", "TERM", "TMUX"})
+            ::unsetenv(v);
+    };
+
+    // kitty locally.
+    clear();
+    ::setenv("KITTY_WINDOW_ID", "1", 1);
+    assert(ansi::env_supports_osc5522() && "KITTY_WINDOW_ID -> true");
+
+    // kitty over ssh (only TERM survives).
+    clear();
+    ::setenv("TERM", "xterm-kitty", 1);
+    assert(ansi::env_supports_osc5522() && "TERM=xterm-kitty -> true");
+
+    // Plain non-kitty, no tmux: false.
+    clear();
+    ::setenv("TERM", "xterm-256color", 1);
+    assert(!ansi::env_supports_osc5522() && "plain xterm -> false");
+
+    // Inside tmux, kitty's fingerprints are erased (TERM rewritten, no
+    // KITTY_WINDOW_ID) — we return true SPECULATIVELY so the tmux-wrapped
+    // request gets sent and kitty (if outer) can answer with an image.
+    clear();
+    ::setenv("TERM", "tmux-256color", 1);
+    ::setenv("TMUX", "/tmp/tmux-1000/default,1,0", 1);
+    assert(ansi::env_supports_osc5522()
+           && "inside tmux env_supports_osc5522 must be speculatively true");
+
+    clear();
+    std::println("PASS\n");
+}
+

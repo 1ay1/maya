@@ -23,6 +23,7 @@
 #include <vector>
 
 #include "../core/focus.hpp"
+#include "../core/function.hpp"
 #include "../core/overload.hpp"
 #include "../core/signal.hpp"
 #include "../dsl.hpp"
@@ -37,7 +38,7 @@ class Calendar {
     Signal<int> selected_day_{1};
     FocusNode focus_;
 
-    std::move_only_function<void(int, int, int)> on_select_;
+    MoveOnlyFunction<void(int, int, int)> on_select_;
 
     // Today's date (set at construction for highlighting)
     int today_year_  = 0;
@@ -162,10 +163,10 @@ public:
         auto weekday_style = Style{}.with_dim();
         auto day_style = Style{};
         auto weekend_style = Style{}.with_dim();
-        auto today_style = Style{}.with_fg(Color::blue()).with_bold();
+        auto today_style = Style{}.with_fg(Color::slot(ThemeSlot::Primary)).with_bold();
         auto selected_style = focused
             ? Style{}.with_inverse().with_bold()
-            : Style{}.with_bold().with_fg(Color::blue());
+            : Style{}.with_bold().with_fg(Color::slot(ThemeSlot::Primary));
 
         std::vector<Element> rows;
 

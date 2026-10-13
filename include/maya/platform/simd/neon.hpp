@@ -1,13 +1,16 @@
 #pragma once
 // maya::simd::Ops<Neon> - ARM NEON SIMD (128-bit, 2-4 cells/op)
 //
-// AArch64 baseline — always available on 64-bit ARM. Processes
-// 4 cells per iteration (2x 128-bit unrolled) with branchless
-// all-equal check using vminvq_u32 (single instruction on Apple
-// Silicon). Falls through to scalar for tails.
+// Processes 4 cells per iteration (2x 128-bit unrolled). On AArch64 the
+// all-equal check is a single `vminvq_u32` (Apple Silicon, Pi 3/4/5).
+// On ARMv7+NEON (Pi 2 v1.1, Pi Zero W, older 32-bit boards) `vceqq_u64`
+// and `vminvq_*` are A64-only, so we synthesise both from the A32 subset
+// that's available — see detail_neon::{vceqq_u64_compat, all_lanes_set_u32x4}.
+// Same vector width, same load/store/AND ops; just an extra reduce step
+// on the all-equal check.
 
-#if !(defined(__aarch64__) || defined(_M_ARM64))
-#error "NEON header included on non-AArch64 platform"
+#if !(defined(__aarch64__) || defined(_M_ARM64) || defined(__ARM_NEON))
+#error "NEON header included on platform without NEON support"
 #endif
 
 #include <arm_neon.h>
@@ -21,6 +24,44 @@
 #include "scalar.hpp"
 
 namespace maya::simd {
+
+namespace detail_neon {
+
+// 64-bit-element vector equality. `vceqq_u64` is AArch64-only; on ARMv7
+// NEON we emulate via a 32-bit-element compare and AND the two halves
+// of each 64-bit lane via a pair-swap. Result domain matches `vceqq_u64`:
+// each 64-bit lane is 0xFF…FF if equal, 0 otherwise.
+[[nodiscard]] MAYA_FORCEINLINE uint64x2_t vceqq_u64_compat(
+    uint64x2_t a, uint64x2_t b) noexcept
+{
+#if defined(__aarch64__) || defined(_M_ARM64)
+    return vceqq_u64(a, b);
+#else
+    uint32x4_t c   = vceqq_u32(vreinterpretq_u32_u64(a),
+                               vreinterpretq_u32_u64(b));
+    uint32x4_t rev = vrev64q_u32(c);
+    uint32x4_t both = vandq_u32(c, rev);
+    return vreinterpretq_u64_u32(both);
+#endif
+}
+
+// "Every 32-bit lane is set" — equivalent to `vminvq_u32(v) != 0` when
+// every lane is in {0, 0xFF…FF}. Used only on the result of vceq* chains
+// where that domain holds by construction.
+[[nodiscard]] MAYA_FORCEINLINE bool all_lanes_set_u32x4(
+    uint32x4_t v) noexcept
+{
+#if defined(__aarch64__) || defined(_M_ARM64)
+    return vminvq_u32(v) != 0;
+#else
+    uint32x2_t lo = vget_low_u32(v);
+    uint32x2_t hi = vget_high_u32(v);
+    uint32x2_t a  = vand_u32(lo, hi);
+    return (vget_lane_u32(a, 0) & vget_lane_u32(a, 1)) != 0;
+#endif
+}
+
+} // namespace detail_neon
 
 struct Neon {};
 
@@ -40,12 +81,11 @@ struct Ops<Neon> {
             uint64x2_t vb0 = vld1q_u64(b + i);
             uint64x2_t va1 = vld1q_u64(a + i + 2);
             uint64x2_t vb1 = vld1q_u64(b + i + 2);
-            uint64x2_t cmp0 = vceqq_u64(va0, vb0);
-            uint64x2_t cmp1 = vceqq_u64(va1, vb1);
-            // Branchless all-equal: AND + horizontal min
+            uint64x2_t cmp0 = detail_neon::vceqq_u64_compat(va0, vb0);
+            uint64x2_t cmp1 = detail_neon::vceqq_u64_compat(va1, vb1);
             uint64x2_t all = vandq_u64(cmp0, cmp1);
             uint32x4_t all32 = vreinterpretq_u32_u64(all);
-            if (vminvq_u32(all32) != 0) continue;
+            if (detail_neon::all_lanes_set_u32x4(all32)) continue;
             // Slow path: find which cell differs
             if (vgetq_lane_u64(cmp0, 0) == 0) return i;
             if (vgetq_lane_u64(cmp0, 1) == 0) return i + 1;
@@ -57,9 +97,9 @@ struct Ops<Neon> {
         for (; i + 2 <= count; i += 2) {
             uint64x2_t va  = vld1q_u64(a + i);
             uint64x2_t vb  = vld1q_u64(b + i);
-            uint64x2_t cmp = vceqq_u64(va, vb);
+            uint64x2_t cmp = detail_neon::vceqq_u64_compat(va, vb);
             uint32x4_t cmp32 = vreinterpretq_u32_u64(cmp);
-            if (vminvq_u32(cmp32) != 0) continue;
+            if (detail_neon::all_lanes_set_u32x4(cmp32)) continue;
             if (vgetq_lane_u64(cmp, 0) == 0) return i;
             return i + 1;
         }
@@ -84,8 +124,8 @@ struct Ops<Neon> {
             uint64x2_t vb0 = vld1q_u64(b + i);
             uint64x2_t va1 = vld1q_u64(a + i + 2);
             uint64x2_t vb1 = vld1q_u64(b + i + 2);
-            uint64x2_t cmp0 = vceqq_u64(va0, vb0);
-            uint64x2_t cmp1 = vceqq_u64(va1, vb1);
+            uint64x2_t cmp0 = detail_neon::vceqq_u64_compat(va0, vb0);
+            uint64x2_t cmp1 = detail_neon::vceqq_u64_compat(va1, vb1);
             uint64x2_t all = vandq_u64(cmp0, cmp1);
             if (vgetq_lane_u64(all, 0) != 0 && vgetq_lane_u64(all, 1) != 0)
                 continue;
@@ -98,7 +138,7 @@ struct Ops<Neon> {
         for (; i + 2 <= end; i += 2) {
             uint64x2_t va  = vld1q_u64(a + i);
             uint64x2_t vb  = vld1q_u64(b + i);
-            uint64x2_t cmp = vceqq_u64(va, vb);
+            uint64x2_t cmp = detail_neon::vceqq_u64_compat(va, vb);
             if (vgetq_lane_u64(cmp, 0) == 0) return i;
             if (vgetq_lane_u64(cmp, 1) == 0) return i + 1;
         }

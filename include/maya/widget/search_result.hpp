@@ -76,13 +76,29 @@ public:
     operator Element() const { return build(); }
 
     [[nodiscard]] Element build() const {
+        // Width-aware: long file paths truncate at the START (…/dir/file
+        // keeps the FILENAME — the part you came for) instead of the
+        // NoWrap clip eating the tail. Captures a COPY: a SearchResult is
+        // a value, routinely built from a temporary and the element kept
+        // (a transcript's frozen rows). Capturing `this` read a destroyed
+        // widget at layout time — a SIGSEGV in examples/chat.
+        return detail::adapt([self = *this](int w) { return self.build_at(w); });
+    }
+
+private:
+    [[nodiscard]] Element build_at(int w) const {
+        // Rows render inside border(2) + padding(2) — 4 cells of chrome.
+        const int avail = w > 4 ? w - 4 : w;
         auto [icon, icon_color] = status_icon();
         std::string tool_name = (kind_ == SearchKind::Grep) ? "Grep" : "Glob";
         std::string border_label = " " + icon + " " + tool_name + " ";
 
-        auto border_color = Color::bright_black();
-        if (status_ == SearchStatus::Failed)
-            border_color = Color::red();
+        auto border_color = Color::slot(ThemeSlot::Muted);
+        auto border_style = BorderStyle::Round;
+        if (status_ == SearchStatus::Failed) {
+            border_color = Color::slot(ThemeSlot::Error);
+            border_style = BorderStyle::Dashed;
+        }
 
         std::vector<Element> rows;
 
@@ -91,7 +107,7 @@ public:
             std::string content;
             std::vector<StyledRun> runs;
 
-            auto pattern_style = Style{}.with_fg(Color::yellow());
+            auto pattern_style = Style{}.with_fg(Color::slot(ThemeSlot::Warning));
             auto summary_style = Style{}.with_dim();
 
             if (!pattern_.empty()) {
@@ -134,21 +150,25 @@ public:
                     for (int i = 0; i < w; ++i) line += "\xe2\x94\x88";  // ┈
                     return Element{TextElement{
                         .content = std::move(line),
-                        .style = Style{}.with_dim().with_fg(Color::bright_black()),
+                        .style = Style{}.with_dim().with_fg(Color::slot(ThemeSlot::Muted)),
                     }};
                 },
                 .layout = {},
             }});
 
-            auto file_style = Style{}.with_fg(Color::blue()).with_bold();
+            auto file_style = Style{}.with_fg(Color::slot(ThemeSlot::Primary)).with_bold();
             auto lineno_style = Style{}.with_dim();
-            auto pipe_style = Style{}.with_fg(Color::bright_black());
+            auto pipe_style = Style{}.with_fg(Color::slot(ThemeSlot::Muted));
             auto match_style = Style{};
 
             for (auto const& group : groups_) {
-                // File header
+                // File header — truncate at the start so the filename
+                // survives on a narrow slot.
                 rows.push_back(Element{TextElement{
-                    .content = group.file_path,
+                    .content = (avail > 0
+                                && string_width(group.file_path) > avail)
+                        ? truncate_start(group.file_path, avail)
+                        : group.file_path,
                     .style = file_style,
                     .wrap = TextWrap::NoWrap,
                 }});
@@ -201,7 +221,7 @@ public:
         }
 
         return (dsl::v(std::move(rows))
-            | dsl::border(BorderStyle::Round)
+            | dsl::border(border_style)
             | dsl::bcolor(border_color)
             | dsl::btext(border_label, BorderTextPos::Top, BorderTextAlign::Start)
             | dsl::padding(0, 1, 0, 1)).build();
@@ -213,15 +233,15 @@ private:
     [[nodiscard]] IconInfo status_icon() const {
         switch (status_) {
             case SearchStatus::Pending:
-                return {"\xe2\x97\x8b", Color::bright_black()};       // ○
+                return {"\xe2\x97\x8b", Color::slot(ThemeSlot::Muted)};       // ○
             case SearchStatus::Searching:
-                return {"\xe2\x97\x8f", Color::yellow()};             // ●
+                return {"\xe2\x97\x8f", Color::slot(ThemeSlot::Warning)};             // ●
             case SearchStatus::Done:
-                return {"\xe2\x9c\x93", Color::green()};              // ✓
+                return {"\xe2\x9c\x93", Color::slot(ThemeSlot::Success)};              // ✓
             case SearchStatus::Failed:
-                return {"\xe2\x9c\x97", Color::red()};                // ✗
+                return {"\xe2\x9c\x97", Color::slot(ThemeSlot::Error)};                // ✗
         }
-        return {"\xe2\x97\x8b", Color::bright_black()};
+        return {"\xe2\x97\x8b", Color::slot(ThemeSlot::Muted)};
     }
 
     [[nodiscard]] std::string format_elapsed() const {

@@ -60,32 +60,29 @@ public:
         auto [icon, icon_color] = status_icon();
         std::string border_label = " " + icon + " Read ";
 
-        auto border_color = Color::bright_black();
+        auto border_color = Color::slot(ThemeSlot::Muted);
         auto border_style = BorderStyle::Round;
         if (status_ == ReadStatus::Failed) {
-            border_color = Color::red();
+            border_color = Color::slot(ThemeSlot::Error);
             border_style = BorderStyle::Dashed;
         }
 
         std::vector<Element> rows;
 
-        // File path header + elapsed
+        // File path header: "src/main.cpp              0.2s"
+        //
+        // Wrapped in a ComponentElement so we can measure the card width and
+        // truncate a long path with `…` instead of letting NoWrap clipping
+        // eat the elapsed time. For paths the important bit is the tail
+        // (filename), not the head — truncate from the left.
         {
-            std::string content = file_path_;
-            std::vector<StyledRun> runs;
-
-            if (elapsed_ > 0.0f) {
-                std::string ts = "  " + format_elapsed();
-                runs.push_back(StyledRun{content.size(), 2, Style{}});
-                runs.push_back(StyledRun{content.size() + 2, ts.size() - 2, Style{}.with_dim()});
-                content += ts;
-            }
-
-            rows.push_back(Element{TextElement{
-                .content = std::move(content),
-                .style = {},
-                .wrap = TextWrap::NoWrap,
-                .runs = std::move(runs),
+            std::string path = file_path_;
+            std::string suffix = elapsed_ > 0.0f ? ("  " + format_elapsed()) : std::string{};
+            rows.push_back(Element{ComponentElement{
+                .render = [path = std::move(path), suffix](int w, int /*h*/) -> Element {
+                    return build_path_row(path, suffix, w);
+                },
+                .layout = {},
             }});
         }
 
@@ -178,18 +175,55 @@ public:
 private:
     struct IconInfo { std::string icon; Color color; };
 
+    // Build a single-line header "src/.../main.cpp    0.2s" that fits in w.
+    // Unlike a command, a path's tail (filename) carries the information —
+    // so we truncate from the left with a leading `…` rather than the right.
+    // MEASURED in display cells (string_width / truncate_start) — a path
+    // with non-ASCII segments is wider than its byte count, and byte math
+    // here either sheared the row or wasted the budget.
+    [[nodiscard]] static Element build_path_row(std::string_view path,
+                                                std::string_view suffix,
+                                                int w) {
+        int avail = w - string_width(suffix);
+        if (avail < 1) avail = 1;
+
+        std::string shown_path = (string_width(path) <= avail)
+            ? std::string{path}
+            : truncate_start(path, avail);   // leading …, cell-exact
+
+        std::string content = shown_path;
+        std::size_t suffix_off = content.size();
+        if (!suffix.empty()) content += std::string{suffix};
+
+        std::vector<StyledRun> runs;
+        if (!shown_path.empty()) {
+            runs.push_back(StyledRun{0, shown_path.size(), Style{}});
+        }
+        if (!suffix.empty()) {
+            runs.push_back(StyledRun{suffix_off, suffix.size(),
+                Style{}.with_dim()});
+        }
+
+        return Element{TextElement{
+            .content = std::move(content),
+            .style = {},
+            .wrap = TextWrap::NoWrap,
+            .runs = std::move(runs),
+        }};
+    }
+
     [[nodiscard]] IconInfo status_icon() const {
         switch (status_) {
             case ReadStatus::Pending:
-                return {"\xe2\x97\x8b", Color::bright_black()};   // ○
+                return {"\xe2\x97\x8b", Color::slot(ThemeSlot::Muted)};   // ○
             case ReadStatus::Reading:
-                return {"\xe2\x97\x8f", Color::yellow()};         // ●
+                return {"\xe2\x97\x8f", Color::slot(ThemeSlot::Warning)};         // ●
             case ReadStatus::Success:
-                return {"\xe2\x9c\x93", Color::green()};          // ✓
+                return {"\xe2\x9c\x93", Color::slot(ThemeSlot::Success)};          // ✓
             case ReadStatus::Failed:
-                return {"\xe2\x9c\x97", Color::red()};            // ✗
+                return {"\xe2\x9c\x97", Color::slot(ThemeSlot::Error)};            // ✗
         }
-        return {"\xe2\x97\x8b", Color::bright_black()};
+        return {"\xe2\x97\x8b", Color::slot(ThemeSlot::Muted)};
     }
 
     [[nodiscard]] std::string format_elapsed() const {

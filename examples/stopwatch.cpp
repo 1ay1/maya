@@ -1,12 +1,13 @@
-// stopwatch.cpp — Timer-driven Program example
+// examples/stopwatch.cpp — a stopwatch with laps.
 //
 // Demonstrates:
 //   - Sub::every() for periodic tick subscriptions
 //   - Cmd::after() for delayed effects
 //   - Conditional subscriptions based on model state
 //   - Rich DSL composition with dynamic content
-//   - key_map() for declarative key bindings
+//   - keys() for declarative key bindings
 
+#include <maya/host/run.hpp>
 #include <maya/maya.hpp>
 #include <chrono>
 
@@ -31,38 +32,21 @@ struct Stopwatch {
     struct Quit {};
     using Msg = std::variant<Tick, Toggle, Lap, Reset, FlashOff, Quit>;
 
-    // ── init ─────────────────────────────────────────────────────────────
-    static Model init() { return {}; }
+    using Cmd = jaal::Cmd<Msg>;
+    using Sub = jaal::Sub<Msg, on_key>;
 
     // ── update ───────────────────────────────────────────────────────────
-    static auto update(Model m, Msg msg) -> std::pair<Model, Cmd<Msg>> {
-        return std::visit(overload{
-            [&](Tick) {
-                m.centiseconds++;
-                return std::pair{m, Cmd<Msg>{}};
-            },
-            [&](Toggle) {
-                m.running = !m.running;
-                return std::pair{m, Cmd<Msg>{}};
-            },
-            [&](Lap) {
-                m.laps++;
-                m.flash = true;
-                // Clear the flash after 300ms
-                return std::pair{m, Cmd<Msg>::after(std::chrono::milliseconds(300), FlashOff{})};
-            },
-            [&](Reset) {
-                return std::pair{Model{}, Cmd<Msg>{}};
-            },
-            [&](FlashOff) {
-                m.flash = false;
-                return std::pair{m, Cmd<Msg>{}};
-            },
-            [](Quit) {
-                return std::pair{Model{}, Cmd<Msg>::quit()};
-            },
-        }, msg);
+    static Cmd update(Model& m, Tick)   { m.centiseconds++; return {}; }
+    static Cmd update(Model& m, Toggle) { m.running = !m.running; return {}; }
+    static Cmd update(Model& m, Lap) {
+        m.laps++;
+        m.flash = true;
+        // Clear the flash after 300ms
+        return Cmd::after(std::chrono::milliseconds(300), FlashOff{});
     }
+    static Cmd update(Model& m, Reset)    { m = Model{}; return {}; }
+    static Cmd update(Model& m, FlashOff) { m.flash = false; return {}; }
+    static Cmd update(Model& m, Quit)     { m = Model{}; return Cmd::quit(0); }
 
     // ── view ─────────────────────────────────────────────────────────────
     static Element view(const Model& m) {
@@ -93,8 +77,8 @@ struct Stopwatch {
 
     // ── subscribe ────────────────────────────────────────────────────────
     // Tick subscription is conditional: only active when running.
-    static auto subscribe(const Model& m) -> Sub<Msg> {
-        auto keys = key_map<Msg>({
+    static Sub subscribe(const Model& m) {
+        auto on_keys = keys<Sub>({
             {'q', Quit{}},
             {' ', Toggle{}},
             {'l', Lap{}},
@@ -103,17 +87,17 @@ struct Stopwatch {
 
         if (m.running) {
             // 10ms tick = centisecond precision
-            return Sub<Msg>::batch(
-                std::move(keys),
-                Sub<Msg>::every(std::chrono::milliseconds(10), Tick{})
+            return Sub::batch(
+                std::move(on_keys),
+                Sub::every(std::chrono::milliseconds(10), Tick{})
             );
         }
-        return keys;
+        return on_keys;
     }
 };
 
 static_assert(Program<Stopwatch>);
 
 int main() {
-    run<Stopwatch>({.title = "stopwatch"});
+    return run<Stopwatch>({.title = "stopwatch"});
 }

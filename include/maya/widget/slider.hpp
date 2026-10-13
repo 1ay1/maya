@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "../core/focus.hpp"
+#include "../core/function.hpp"
 #include "../core/overload.hpp"
 #include "../core/signal.hpp"
 #include "../element/builder.hpp"
@@ -39,8 +40,8 @@ struct SliderConfig {
     float max  = 1.0f;
     float step = 0.01f;
     int   width = 0;       // track width in columns; 0 = fill available width
-    Color fill_color   = Color::blue();
-    Color track_color  = Color::bright_black();
+    Color fill_color   = Color::slot(ThemeSlot::Primary);
+    Color track_color  = Color::slot(ThemeSlot::Muted);
     bool  show_percent = true;
 };
 
@@ -54,7 +55,7 @@ class Slider {
     std::string   label_;
     SliderConfig  cfg_;
 
-    std::move_only_function<void(float)> on_change_;
+    MoveOnlyFunction<void(float)> on_change_;
 
 public:
     Slider() : value_(0.0f) {}

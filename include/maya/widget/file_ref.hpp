@@ -24,8 +24,8 @@ struct FileRef {
     struct Config {
         Config() = default;
         Style path_style   = Style{}.with_dim();
-        Style name_style   = Style{}.with_fg(Color::blue()).with_underline();
-        Style lineno_style = Style{}.with_fg(Color::magenta());
+        Style name_style   = Style{}.with_fg(Color::slot(ThemeSlot::Primary)).with_underline();
+        Style lineno_style = Style{}.with_fg(Color::slot(ThemeSlot::Accent));
         std::string icon   = "\xf0\x9f\x93\x84 "; // 📄 + space
         bool show_icon     = true;
     };
@@ -37,6 +37,15 @@ struct FileRef {
 
     [[nodiscard]] Element build() const { return build(Config{}); }
     [[nodiscard]] Element build(Config cfg) const {
+        // Width-aware: when the full dir/name:line chip can't fit the
+        // measured slot, the DIRECTORY collapses to a leading …/ and
+        // the filename — the part you came for — survives whole.
+        return detail::adapt([self = *this, cfg](int w) {
+            return self.build_at(cfg, w);
+        });
+    }
+
+    [[nodiscard]] Element build_at(const Config& cfg, int avail) const {
         std::string content;
         std::vector<StyledRun> runs;
 
@@ -55,14 +64,21 @@ struct FileRef {
         }
 
         if (last_sep != std::string_view::npos) {
-            // Directory part (including trailing slash)
-            std::string_view dir = sv.substr(0, last_sep + 1);
+            // Directory part (including trailing slash) — collapsed to
+            // "…/" when the whole chip would overflow the slot.
+            std::string_view name = sv.substr(last_sep + 1);
+            std::string dir{sv.substr(0, last_sep + 1)};
+            const int tail_w = string_width(name)
+                + (line > 0 ? 1 + static_cast<int>(std::to_string(line).size()) : 0);
+            if (avail > 0
+                && string_width(content) + string_width(dir) + tail_w > avail) {
+                dir = "\xe2\x80\xa6/";   // …/
+            }
             std::size_t dir_off = content.size();
             content += dir;
             runs.push_back({dir_off, dir.size(), cfg.path_style});
 
             // Filename part
-            std::string_view name = sv.substr(last_sep + 1);
             std::size_t name_off = content.size();
             content += name;
             runs.push_back({name_off, name.size(), cfg.name_style});

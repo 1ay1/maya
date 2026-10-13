@@ -30,7 +30,7 @@ class PixelCanvas {
     int height_ = 0;  // cell height (pixel height = height_ * 2)
     std::vector<Color> top_pixels_;     // top half of each cell
     std::vector<Color> bottom_pixels_;  // bottom half of each cell
-    Color bg_ = Color::black();   // default background / clear color
+    Color bg_ = Color::slot(ThemeSlot::Background);   // default background / clear color
 
     [[nodiscard]] size_t idx(int x, int y_cell) const {
         return static_cast<size_t>(y_cell * width_ + x);
@@ -41,8 +41,8 @@ public:
 
     PixelCanvas(int width, int height)
         : width_(width), height_(height),
-          top_pixels_(static_cast<size_t>(width * height), Color::black()),
-          bottom_pixels_(static_cast<size_t>(width * height), Color::black()) {}
+          top_pixels_(static_cast<size_t>(width * height), Color::slot(ThemeSlot::Background)),
+          bottom_pixels_(static_cast<size_t>(width * height), Color::slot(ThemeSlot::Background)) {}
 
     // -- Accessors --
     [[nodiscard]] int width()        const noexcept { return width_; }
@@ -106,7 +106,12 @@ public:
 
     [[nodiscard]] Element build() const {
         if (width_ == 0 || height_ == 0) {
-            return Element{TextElement{}};
+            // Zero-dimension canvas: consume zero rows.  Returning a
+            // 1-row blank TextElement here would trick the parent
+            // vstack into allocating a row that the canvas can't
+            // legitimately fill, leaving stale content from the
+            // previous frame in that row.
+            return dsl::nothing();
         }
 
         // Each row is one line of half-block characters.

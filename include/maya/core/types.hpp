@@ -148,9 +148,14 @@ struct Rect {
 // be constructed except by moving a Terminal<Cooked> through
 // enable_raw_mode(). This is the type-state pattern.
 
-struct Cooked    {};   // Default terminal mode
-struct Raw       {};   // Raw mode enabled (no line buffering, no echo)
-struct AltScreen {};   // Alternate screen buffer active
+struct Cooked     {};  // Default terminal mode
+struct Raw        {};  // Raw mode enabled (no line buffering, no echo)
+struct AltScreen  {};  // Alternate screen buffer active
+struct InlineMode {};  // Raw + per-feature opt-ins (KKP, modifyOtherKeys,
+                       // bracketed paste, hidden cursor) — scrollback
+                       // preserved, alt-screen NOT entered.  Named with
+                       // the `Mode` suffix to avoid collision with
+                       // `maya::md::Inline` from the markdown widget.
 
 // ============================================================================
 // Edges - for margin, padding, border per-side values

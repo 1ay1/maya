@@ -98,7 +98,7 @@ public:
             std::string content = "  \u2502 " + std::string{line};
 
             // Build with styled runs: border char in severity color, text dimmed
-            std::size_t border_end = 5;  // "  │ " is 5 bytes (2 spaces + 3-byte UTF-8 + space)
+            std::size_t border_end = std::string_view("  │ ").size();
             std::size_t content_len = content.size();
             auto text_style = Style{};
 
@@ -127,13 +127,13 @@ private:
     [[nodiscard]] static constexpr SeverityProps severity_props(Severity sev) noexcept {
         switch (sev) {
             case Severity::Info:
-                return {"\u2139", Color::blue()};    // ℹ blue
+                return {"\u2139", Color::slot(ThemeSlot::Primary)};    // ℹ blue
             case Severity::Success:
-                return {"\u2713", Color::green()};   // ✓ green
+                return {"\u2713", Color::slot(ThemeSlot::Success)};   // ✓ green
             case Severity::Warning:
-                return {"\u26A0", Color::yellow()};  // ⚠ yellow
+                return {"\u26A0", Color::slot(ThemeSlot::Warning)};  // ⚠ yellow
             case Severity::Error:
-                return {"\u2717", Color::red()};     // ✗ red
+                return {"\u2717", Color::slot(ThemeSlot::Error)};     // ✗ red
         }
         __builtin_unreachable();
     }

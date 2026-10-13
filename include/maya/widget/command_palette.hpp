@@ -20,6 +20,7 @@
 #include <vector>
 
 #include "../core/focus.hpp"
+#include "../core/function.hpp"
 #include "../core/overload.hpp"
 #include "../core/signal.hpp"
 #include "../dsl.hpp"
@@ -44,7 +45,7 @@ class CommandPalette {
     FocusNode focus_;
     bool visible_ = false;
 
-    std::move_only_function<void(int)> on_execute_;
+    MoveOnlyFunction<void(int)> on_execute_;
 
 public:
     explicit CommandPalette(std::vector<Command> commands)
@@ -131,15 +132,35 @@ public:
     [[nodiscard]] Element build() const {
         if (!visible_) return Element{TextElement{}};
 
+        // Width-aware: rows shed their DESCRIPTION first, then the
+        // SHORTCUT, when the measured line would overflow the slot —
+        // the command name never shears. The whole palette is clamped
+        // to max_width_ (default 72, the command-palette convention)
+        // and centered on wider slots. Captures `this`: the palette is
+        // long-lived interactive state that outlives the frame tree.
+        return detail::clamp(
+            detail::adapt([this](int w) { return build_at(w); }),
+            max_width_);
+    }
+
+    /// Cap the palette's width (cells); 0 = full slot. Default 72.
+    void set_max_width(int w) { max_width_ = w; }
+
+private:
+    int max_width_ = 72;
+
+    [[nodiscard]] Element build_at(int w) const {
+        // Rows render inside border(2) + padding(2) — 4 cells of chrome.
+        const int avail = w > 4 ? w - 4 : w;
         int cur = cursor_();
         bool focused = focus_.focused();
 
         auto name_style    = Style{};
         auto desc_style    = Style{}.with_dim();
         auto sc_style      = Style{}.with_dim();
-        auto active_name   = Style{}.with_fg(Color::blue()).with_bold();
-        auto active_desc   = Style{}.with_fg(Color::blue());
-        auto match_style   = Style{}.with_fg(Color::yellow()).with_bold();
+        auto active_name   = Style{}.with_fg(Color::slot(ThemeSlot::Primary)).with_bold();
+        auto active_desc   = Style{}.with_fg(Color::slot(ThemeSlot::Primary));
+        auto match_style   = Style{}.with_fg(Color::slot(ThemeSlot::Warning)).with_bold();
 
         const auto& query = search_.value()();
 
@@ -198,16 +219,23 @@ public:
                     is_active ? active_name : name_style});
             }
 
-            // Append description
-            if (!cmd.description.empty()) {
+            // Append description, then shortcut — each only when the
+            // measured row still fits; description sheds first.
+            const int sc_w = cmd.shortcut.empty()
+                ? 0 : 4 + string_width(cmd.shortcut);
+            if (!cmd.description.empty()
+                && (avail <= 0
+                    || string_width(content) + 2 + string_width(cmd.description)
+                           + sc_w <= avail)) {
                 size_t desc_start = content.size();
                 content += "  " + cmd.description;
                 runs.push_back(StyledRun{desc_start, content.size() - desc_start,
                     is_active ? active_desc : desc_style});
             }
 
-            // Append shortcut
-            if (!cmd.shortcut.empty()) {
+            if (!cmd.shortcut.empty()
+                && (avail <= 0
+                    || string_width(content) + sc_w <= avail)) {
                 size_t sc_start = content.size();
                 content += "    " + cmd.shortcut;
                 runs.push_back(StyledRun{sc_start, content.size() - sc_start, sc_style});
@@ -216,6 +244,7 @@ public:
             rows.push_back(Element{TextElement{
                 .content = std::move(content),
                 .style = name_style,
+                .wrap = TextWrap::NoWrap,
                 .runs = std::move(runs),
             }});
         }
@@ -231,8 +260,8 @@ public:
 
         // Wrap search + results in a bordered box
         auto border_color = focused
-            ? Color::blue()
-            : Color::bright_black();
+            ? Color::slot(ThemeSlot::Primary)
+            : Color::slot(ThemeSlot::Muted);
 
         return (dsl::v(
                 search_.build(),
@@ -242,7 +271,7 @@ public:
                         for (int i = 0; i < w; ++i) line += "\xe2\x94\x80"; // "─"
                         return Element{TextElement{
                             .content = std::move(line),
-                            .style = Style{}.with_fg(Color::bright_black()),
+                            .style = Style{}.with_fg(Color::slot(ThemeSlot::Muted)),
                         }};
                     },
                     .layout = {},

@@ -281,6 +281,13 @@ struct BorderConfig {
     BorderSides             sides  = BorderSides::all();
     BorderColors            colors{};
     std::optional<BorderText> text{};
+    // Second, independent border-text slot. Painted after `text`, so when
+    // both occupy the same edge with overlapping alignments the later one
+    // wins on collision (renderer clips to the edge width either way).
+    // The typical use is a left-aligned `text` (title) on Top paired with
+    // an end-aligned `text_end` (status / elapsed) on the same Top edge —
+    // a single BorderText can't express that because it has one align.
+    std::optional<BorderText> text_end{};
 
     /// Convenience: look up the character set implied by this config.
     [[nodiscard]] constexpr BorderChars chars() const noexcept {

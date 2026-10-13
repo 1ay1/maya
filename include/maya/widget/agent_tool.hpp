@@ -50,8 +50,6 @@ public:
     void set_expanded(bool e) { expanded_ = e; }
     void toggle() { expanded_ = !expanded_; }
 
-    void advance(float dt) { spinner_.advance(dt); }
-
     void clear_tools() { nested_tools_.clear(); }
     void add_tool(Element tool) { nested_tools_.push_back(std::move(tool)); }
 
@@ -64,11 +62,11 @@ public:
         auto [icon, icon_color] = status_icon();
         std::string border_label = " " + icon + " Agent ";
 
-        auto border_color = Color::bright_black();
+        auto border_color = Color::slot(ThemeSlot::Muted);
         if (status_ == AgentStatus::Failed)
-            border_color = Color::red();
+            border_color = Color::slot(ThemeSlot::Error);
         else if (status_ == AgentStatus::Running)
-            border_color = Color::magenta();
+            border_color = Color::slot(ThemeSlot::Accent);
 
         std::vector<Element> rows;
 
@@ -154,15 +152,15 @@ private:
     [[nodiscard]] IconInfo status_icon() const {
         switch (status_) {
             case AgentStatus::Pending:
-                return {"\xe2\x97\x8b", Color::bright_black()};   // ○
+                return {"\xe2\x97\x8b", Color::slot(ThemeSlot::Muted)};   // ○
             case AgentStatus::Running:
-                return {"\xe2\x97\x8f", Color::magenta()};        // ●
+                return {"\xe2\x97\x8f", Color::slot(ThemeSlot::Accent)};        // ●
             case AgentStatus::Completed:
-                return {"\xe2\x9c\x93", Color::green()};          // ✓
+                return {"\xe2\x9c\x93", Color::slot(ThemeSlot::Success)};          // ✓
             case AgentStatus::Failed:
-                return {"\xe2\x9c\x97", Color::red()};            // ✗
+                return {"\xe2\x9c\x97", Color::slot(ThemeSlot::Error)};            // ✗
         }
-        return {"\xe2\x97\x8b", Color::bright_black()};
+        return {"\xe2\x97\x8b", Color::slot(ThemeSlot::Muted)};
     }
 
     [[nodiscard]] std::string format_elapsed() const {

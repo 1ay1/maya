@@ -1,18 +1,21 @@
 // Tests for the diff algorithm: direct ANSI output, zero intermediate allocations
 #include <maya/maya.hpp>
-#include <cassert>
+// NDEBUG guard: CMake builds tests in Release (-O3 -DNDEBUG), which strips
+// assert(). Undefine it here so this file's runtime asserts actually fire.
+#undef NDEBUG
+#include "agtest.hpp"
 #include <print>
 
 using namespace maya;
 using namespace maya::dsl;
 
-void test_diff_identical_canvases_empty_output() {
+TEST_CASE("diff identical canvases empty output") {
     std::println("--- test_diff_identical_canvases_empty_output ---");
     StylePool pool;
     Canvas old_c(20, 3, &pool);
     Canvas new_c(20, 3, &pool);
-    render_tree(text("same content"), old_c, pool, theme::dark);
-    render_tree(text("same content"), new_c, pool, theme::dark);
+    render_tree(text("same content"), old_c, pool, theme::native);
+    render_tree(text("same content"), new_c, pool, theme::native);
 
     std::string result;
     diff(old_c, new_c, pool, result);
@@ -20,7 +23,56 @@ void test_diff_identical_canvases_empty_output() {
     std::println("PASS\n");
 }
 
-void test_diff_no_damage_empty_output() {
+TEST_CASE("diff: a cell that looks the same is not re-sent") {
+    std::println("--- test_diff_same_look_not_resent ---");
+    // Two DIFFERENT style ids that paint identically on any terminal: the
+    // same fg, one with an explicit Default bg ("no bg SGR") and one with
+    // no bg. On a native theme both emit only the fg. A diff that
+    // compared ids re-sent every such cell; the look key must not.
+    StylePool pool;
+    const uint16_t a = pool.intern(Style{}.with_fg(Color::rgb(200, 30, 30)));
+    const uint16_t b = pool.intern(Style{}.with_fg(Color::rgb(200, 30, 30))
+                                          .with_bg(Color::default_color()));
+    assert(a != b);
+    assert(pool.same_look(a, b));
+
+    Canvas old_c(8, 1, &pool);
+    Canvas new_c(8, 1, &pool);
+    for (int x = 0; x < 8; ++x) {
+        old_c.set(x, 0, U'\u2580', a);
+        new_c.set(x, 0, U'\u2580', b);
+    }
+    std::string result;
+    diff(old_c, new_c, pool, result);
+    assert(result.find("\xe2\x96\x80") == std::string::npos);   // no glyph re-sent
+    std::println("PASS\n");
+}
+
+TEST_CASE("diff: a cell that looks different IS re-sent") {
+    std::println("--- test_diff_different_look_resent ---");
+    // Red and blue stay distinct at every colour depth (16, 256, truecolor)
+    // except monochrome, where nothing coloured reaches the wire.
+    StylePool pool;
+    const uint16_t red  = pool.intern(Style{}.with_fg(Color::rgb(220, 20, 20)));
+    const uint16_t blue = pool.intern(Style{}.with_fg(Color::rgb(20, 20, 220)));
+    Canvas old_c(4, 1, &pool);
+    Canvas new_c(4, 1, &pool);
+    for (int x = 0; x < 4; ++x) {
+        old_c.set(x, 0, U'x', red);
+        new_c.set(x, 0, U'x', blue);
+    }
+    std::string result;
+    diff(old_c, new_c, pool, result);
+    if (terminal_color_level() > 0) {
+        assert(!pool.same_look(red, blue));
+        assert(result.find('x') != std::string::npos);
+    } else {
+        assert(pool.same_look(red, blue));        // monochrome: same pixels
+    }
+    std::println("PASS\n");
+}
+
+TEST_CASE("diff no damage empty output") {
     std::println("--- test_diff_no_damage_empty_output ---");
     StylePool pool;
     Canvas old_c(10, 3, &pool);
@@ -33,13 +85,13 @@ void test_diff_no_damage_empty_output() {
     std::println("PASS\n");
 }
 
-void test_diff_changed_cell_nonempty() {
+TEST_CASE("diff changed cell nonempty") {
     std::println("--- test_diff_changed_cell_nonempty ---");
     StylePool pool;
     Canvas old_c(20, 3, &pool);
     Canvas new_c(20, 3, &pool);
-    render_tree(text("before"), old_c, pool, theme::dark);
-    render_tree(text("after "), new_c, pool, theme::dark);
+    render_tree(text("before"), old_c, pool, theme::native);
+    render_tree(text("after "), new_c, pool, theme::native);
 
     std::string result;
     diff(old_c, new_c, pool, result);
@@ -48,14 +100,14 @@ void test_diff_changed_cell_nonempty() {
     std::println("PASS\n");
 }
 
-void test_diff_single_cell_change() {
+TEST_CASE("diff single cell change") {
     std::println("--- test_diff_single_cell_change ---");
     StylePool pool;
     Canvas old_c(10, 3, &pool);
     Canvas new_c(10, 3, &pool);
     // Start with identical canvases
-    render_tree(text("hello"), old_c, pool, theme::dark);
-    render_tree(text("hello"), new_c, pool, theme::dark);
+    render_tree(text("hello"), old_c, pool, theme::native);
+    render_tree(text("hello"), new_c, pool, theme::native);
 
     // Mutate one cell in new canvas
     new_c.set(0, 0, U'H', 0);
@@ -70,13 +122,13 @@ void test_diff_single_cell_change() {
     std::println("PASS\n");
 }
 
-void test_diff_size_mismatch_full_repaint() {
+TEST_CASE("diff size mismatch full repaint") {
     std::println("--- test_diff_size_mismatch_full_repaint ---");
     StylePool pool;
     Canvas old_c(20, 5, &pool);
     Canvas new_c(10, 3, &pool);
-    render_tree(text("hello"), old_c, pool, theme::dark);
-    render_tree(text("hello"), new_c, pool, theme::dark);
+    render_tree(text("hello"), old_c, pool, theme::native);
+    render_tree(text("hello"), new_c, pool, theme::native);
 
     std::string result;
     diff(old_c, new_c, pool, result);
@@ -85,7 +137,7 @@ void test_diff_size_mismatch_full_repaint() {
     std::println("PASS\n");
 }
 
-void test_diff_unicode_char_encoded_correctly() {
+TEST_CASE("diff unicode char encoded correctly") {
     std::println("--- test_diff_unicode_char_encoded_correctly ---");
     StylePool pool;
     Canvas old_c(10, 3, &pool);
@@ -101,7 +153,7 @@ void test_diff_unicode_char_encoded_correctly() {
     std::println("PASS\n");
 }
 
-void test_diff_multi_byte_unicode_sequence() {
+TEST_CASE("diff multi byte unicode sequence") {
     std::println("--- test_diff_multi_byte_unicode_sequence ---");
     StylePool pool;
     Canvas old_c(10, 3, &pool);
@@ -116,7 +168,7 @@ void test_diff_multi_byte_unicode_sequence() {
     std::println("PASS\n");
 }
 
-void test_diff_two_byte_utf8() {
+TEST_CASE("diff two byte utf8") {
     std::println("--- test_diff_two_byte_utf8 ---");
     StylePool pool;
     Canvas old_c(10, 3, &pool);
@@ -131,7 +183,7 @@ void test_diff_two_byte_utf8() {
     std::println("PASS\n");
 }
 
-void test_diff_contains_cursor_move() {
+TEST_CASE("diff contains cursor move") {
     std::println("--- test_diff_contains_cursor_move ---");
     StylePool pool;
     Canvas old_c(20, 3, &pool);
@@ -147,7 +199,7 @@ void test_diff_contains_cursor_move() {
     std::println("PASS\n");
 }
 
-void test_diff_full_repaint_all_cells() {
+TEST_CASE("diff full repaint all cells") {
     std::println("--- test_diff_full_repaint_all_cells ---");
     StylePool pool;
     Canvas old_c(5, 3, &pool);
@@ -167,7 +219,7 @@ void test_diff_full_repaint_all_cells() {
     std::println("PASS\n");
 }
 
-void test_diff_style_change_emits_sgr() {
+TEST_CASE("diff style change emits sgr") {
     std::println("--- test_diff_style_change_emits_sgr ---");
     StylePool pool;
     uint16_t bold_id = pool.intern(Style{}.with_bold());
@@ -183,18 +235,3 @@ void test_diff_style_change_emits_sgr() {
     std::println("PASS\n");
 }
 
-int main() {
-    setvbuf(stdout, nullptr, _IONBF, 0);
-    test_diff_identical_canvases_empty_output();
-    test_diff_no_damage_empty_output();
-    test_diff_changed_cell_nonempty();
-    test_diff_single_cell_change();
-    test_diff_size_mismatch_full_repaint();
-    test_diff_unicode_char_encoded_correctly();
-    test_diff_multi_byte_unicode_sequence();
-    test_diff_two_byte_utf8();
-    test_diff_contains_cursor_move();
-    test_diff_full_repaint_all_cells();
-    test_diff_style_change_emits_sgr();
-    std::println("=== ALL 11 TESTS PASSED ===");
-}

@@ -4,7 +4,7 @@ Complete reference for all public types, functions, and constants in maya.
 
 ## Table of Contents
 
-- [App Framework](#app-framework) (run, Program, Cmd, Sub, key\_map)
+- [App Framework](#app-framework) (run, Options, Program, effects, event sources, keys, print)
 - [DSL Nodes](#dsl-nodes)
 - [DSL Style Tags](#dsl-style-tags)
 - [DSL Layout Tags](#dsl-layout-tags)
@@ -28,190 +28,168 @@ Complete reference for all public types, functions, and constants in maya.
 
 ## App Framework
 
+`#include <maya/host/run.hpp>` (it includes `<maya/maya.hpp>`), link `maya::app`.
+An app is a [jaal](../third_party/jaal/README.md) program whose `view()`
+returns an `Element`; maya is to jaal what Ink is to React. The rules are in
+[internals/design.md](internals/design.md).
+
 ### run\<P\>()
 
 ```cpp
 template <Program P>
-void run(RunConfig cfg = {});
+int run(Options cfg = {}, jaal::run_options opt = {});
 ```
 
-The primary entry point for interactive apps. `P` must satisfy the `Program`
-concept (see below). The runtime owns the event loop, calling `P::update` on
-each message and re-rendering via `P::view`.
+Takes the terminal (raw mode, alt screen or an inline region), runs `P` on
+jaal until it quits, gives the terminal back on every path, and returns the
+program's exit code (70 if the terminal couldn't be taken).
+
+### Options
+
+```cpp
+struct Options {
+    std::string_view title        = "";               // window title (OSC 0)
+    int              fps          = 0;                // >0: redraw continuously; 0: only on change
+    bool             mouse        = false;            // mouse reporting
+    bool             hover_motion = false;            // also bare motion (mode 1003)
+    Mode             mode         = Mode::Fullscreen; // or Mode::Inline (renders into scrollback)
+    RenderBackend    backend      = RenderBackend::Ansi;
+    Theme            theme        = theme::native;
+    bool             enhanced_keyboard = true;        // kitty keyboard protocol when available
+};
+```
+
+Prefer `Sub::every` in `subscribe()` over `fps`: a timer you can drop when
+nothing moves costs nothing while idle.
 
 ### Program concept
 
 ```cpp
-template <typename P>
-concept Program = requires {
-    typename P::Model;
-    typename P::Msg;
-} && (HasFullInit<P> || HasSimpleInit<P>)
-  && requires(P::Model m, P::Msg msg) {
-    { P::update(std::move(m), std::move(msg)) } -> std::convertible_to<std::pair<P::Model, Cmd<P::Msg>>>;
-} && requires(const P::Model& m) {
-    { P::view(m) } -> std::convertible_to<Element>;
-};
+template <class P>
+concept Program = jaal::Program<P> && jaal::Viewable<P, Element>;
 ```
 
-A Program is a struct with:
-- `Model` — the app state type (plain data)
-- `Msg` — a `std::variant` of all possible messages
-- `init()` — returns `Model` (simple) or `std::pair<Model, Cmd<Msg>>` (full)
-- `update(Model, Msg)` — returns `std::pair<Model, Cmd<Msg>>`
-- `view(const Model&)` — returns `Element`
-- `subscribe(const Model&)` (optional) — returns `Sub<Msg>`
-
-### Cmd\<Msg\>
+The shape:
 
 ```cpp
-template <typename Msg>
-class Cmd {
-    static Cmd none();
-    static Cmd quit();
-    static Cmd batch(Cmd a, Cmd b);
-    static Cmd after(std::chrono::milliseconds delay, Msg msg);
-    static Cmd task(std::function<std::optional<Msg>()> fn);
-    static Cmd set_title(std::string title);
-    static Cmd write_clipboard(std::string text);
+struct Counter {
+    struct Model { int count = 0; };                   // default-constructible, all state
+    struct Inc {}; struct Quit {};
+    using Msg = std::variant<Inc, Quit>;               // may nest variants (domain groups)
+
+    using Cmd = jaal::Cmd<Msg>;                        // + the terminal effects you use
+    using Sub = jaal::Sub<Msg, on_key>;                // + the event sources you use
+
+    static Cmd init(Model&);                           // optional
+    static Cmd update(Model& m, Inc);                  // exactly one per alternative
+    static Cmd update(Model& m, Quit);
+    static Element view(const Model& m);               // pure
+    static Sub subscribe(const Model& m);              // optional; diffed every step
+    static auto subs_key(const Model& m);              // optional: what subscribe() reads
 };
+static_assert(Program<Counter>);
 ```
 
-Commands represent side effects. `Cmd<Msg>{}` (or `Cmd::none()`) means no
-effect. `Cmd::quit()` exits the app. `Cmd::batch()` combines multiple commands.
-`Cmd::after()` sends a delayed message. `Cmd::task()` runs an async function
-that may produce a message.
+A message without a handler, an effect not in the `Cmd` row, or an event
+source not in the `Sub` row is a compile error. Optional hooks read by the
+host: `static std::uint64_t visual_hash(const Model&)` (skip the view when
+unchanged), `static bool needs_warmup(const Model&)`.
 
-### Sub\<Msg\>
+### Effects: Cmd
+
+The core effects are jaal's: `Cmd::quit(code)`, `Cmd::after(dur, msg)`,
+`Cmd::task(fn, args..., mapper)` (a worker thread; the mapper turns its
+result into a message), `Cmd::send(msg)`, `Cmd::batch(...)`, `map`/`map_with`
+for composing child programs. See jaal's README.
+
+maya adds the terminal's own effects. List the ones a program uses in its
+`Cmd` row, e.g. `jaal::Cmd<Msg, set_title, write_clipboard>`, and return the
+payload as a `Cmd`: `return Cmd(SetTitle{"build: ok"});`
+
+| Effect | Payload | Does |
+|---|---|---|
+| `set_title` | `SetTitle{std::string}` | window title |
+| `write_clipboard` | `WriteClipboard{std::string}` | OSC 52 copy |
+| `query_clipboard` | `QueryClipboard{}` | OSC 52 paste request; the answer arrives as a `PasteEvent` |
+| `emit_host_sequence` | `EmitHostSequence{std::string}` (see `osc(code, payload)`) | raw sequence to the terminal, out of band |
+| `commit_scrollback` | `CommitScrollback{ScrollbackDebt}` — use `commit_from<Cmd>(ledger.harvest())` | inline: move finished rows into scrollback |
+| `commit_overflow` | `CommitOverflow{}` | inline: commit rows that overflowed the viewport |
+| `force_redraw` | `ForceRedraw{}` | repaint everything |
+| `reset_inline` | `ResetInline{}` | inline: start a fresh frame below |
+| `set_mouse` | `SetMouse{bool}` | mouse capture on/off at runtime |
+| `suspend` | `Suspend<Msg>{std::function<Msg()>}` | hand the tty to a child ($EDITOR, a pager); its return is the next message |
+
+`terminal_cmd<Msg>` is a `Cmd` with all of them.
+
+### Subscriptions: Sub
+
+The core sources are jaal's: `Sub::every(period, msg)`, `Sub::stream(...)`,
+`Sub::batch(...)`. maya adds the terminal's event sources:
+
+| Source | Event |
+|---|---|
+| `on_key` | `KeyEvent` |
+| `on_mouse` | `MouseEvent{button, kind (Press/Release/Move), x, y (1-based), mods}` — needs `.mouse = true` |
+| `on_paste` | `PasteEvent{content}` |
+| `on_focus` | `FocusEvent` |
+| `on_resize` | `ResizeEvent{width, height}` (cells); the first arrives at startup |
 
 ```cpp
-template <typename Msg>
-class Sub {
-    static Sub none();
-    static Sub batch(Sub a, Sub b);
-    static Sub on_key(std::function<std::optional<Msg>(const KeyEvent&)> fn);
-    static Sub on_mouse(std::function<std::optional<Msg>(const MouseEvent&)> fn);
-    static Sub on_resize(std::function<std::optional<Msg>(int w, int h)> fn);
-    static Sub on_paste(std::function<std::optional<Msg>(const std::string&)> fn);
-    static Sub every(std::chrono::milliseconds interval, Msg msg);
-};
+static Sub subscribe(const Model& m) {
+    auto k = Sub::on(on_key{}, [](const KeyEvent& e) -> std::optional<Msg> {
+        if (ctrl_is(e, 'c')) return Quit{};
+        return Key{e};                                 // let update() decide
+    });
+    if (m.paused) return k;                            // no clock while paused
+    return Sub::batch(Sub::every(16ms, Tick{}), std::move(k));
+}
 ```
 
-Subscriptions declare which external events the app listens to. Returned from
-the optional `subscribe(const Model&)` method. Subscriptions are re-evaluated
-when the model changes, enabling conditional subscriptions (e.g. only tick
-while a timer is running).
+The lambda must be captureless (it runs on the loop; state reaches it only
+through messages).
 
-### key\_map\<Msg\>()
+### keys\<Sub\>() and key predicates
 
 ```cpp
+template <class S>
+S keys(std::initializer_list<std::pair<KeySpec, typename S::msg_type>>);
 using KeySpec = std::variant<char, SpecialKey>;
 
-template <typename Msg>
-Sub<Msg> key_map(std::initializer_list<std::pair<KeySpec, Msg>> entries);
+return keys<Sub>({{'q', Quit{}}, {SpecialKey::Up, Up{}}, {' ', Toggle{}}});
 ```
 
-Convenience helper that builds a `Sub::on_key` mapping specific keys to
-messages. Used for declarative key binding tables.
+Matches a plain key with no modifiers ('q' doesn't fire on Ctrl+Q).
+Predicates for `Sub::on` handlers: `key_is(k, 'c')`, `key_is(k, U'é')`,
+`key_is(k, SpecialKey::Up)`, `ctrl_is(k, 'c')`, `alt_is(k, 'x')`.
 
-### RunConfig
+### Scroll views
 
-```cpp
-struct RunConfig {
-    std::string_view title      = "";
-    int              fps        = 0;       // 0 = event-driven
-    bool             mouse      = false;
-    Mode             mode       = Mode::Fullscreen;
-    Theme            theme      = theme::dark;
-};
-```
-
-### run() — Simple Convenience API
-
-```cpp
-template <SimpleEventFn EventFn, SimpleRenderFn RenderFn>
-void run(RunConfig cfg, EventFn&& event_fn, RenderFn&& render_fn);
-
-template <SimpleEventFn EventFn, SimpleRenderFn RenderFn>
-void run(EventFn&& event_fn, RenderFn&& render_fn); // default RunConfig
-```
-
-A closure-based entry point that requires no boilerplate. Suitable for most
-interactive apps that don't need the full Elm-architecture of `run<P>()`.
-
-Event function: `(const Event&) -> bool` (returning `false` quits) or
-`(const Event&) -> void` (call `quit()` to exit).
-
-Render function: `() -> Element` or `(const Ctx&) -> Element`.
-
-### Ctx
-
-```cpp
-struct Ctx {
-    Size  size;   // Current terminal dimensions
-    Theme theme;  // Active color theme
-};
-```
-
-The `Ctx` overload of the render function is useful for adaptive layouts that
-need to inspect the terminal size or current theme at render time.
-
-### live()
-
-```cpp
-template <AnyLiveRenderFn RenderFn>
-void live(LiveConfig cfg, RenderFn&& render_fn);
-```
-
-### LiveConfig
-
-```cpp
-struct LiveConfig {
-    int   fps       = 30;
-    int   max_width = 0;     // 0 = auto-detect
-    bool  cursor    = false;
-};
-```
-
-### canvas_run()
-
-```cpp
-Status canvas_run(
-    CanvasConfig                                   cfg,
-    std::function<void(StylePool&, int w, int h)>  on_resize,
-    std::function<bool(const Event&)>              on_event,
-    std::function<void(Canvas&, int w, int h)>     on_paint);
-```
-
-### CanvasConfig
-
-```cpp
-struct CanvasConfig {
-    int         fps        = 60;
-    bool        mouse      = false;
-    Mode        mode       = Mode::Fullscreen;
-    std::string title;
-};
-```
+Keep a `mutable ScrollState` in the model and pipe content through
+`| scroll(state, h)`. The terminal forwards mouse wheel and scrollbar drags
+to scroll views painted last frame; keys are the program's own — route them
+with a message and `state.handle(key, viewport_h)` in `update`.
 
 ### print()
 
 ```cpp
-void print(const Element& root);
+#include <maya/print.hpp>                      // included by maya.hpp
+void print(const Element& root);               // at the terminal's width
 void print(const Element& root, int width);
+std::string render_to_string(const Element& root, int width = 80);
+std::string render_to_string_ansi(const Element& root, int width = 80);
 ```
 
-### quit()
+Static output with no runtime and no terminal mode changes: reports,
+tables, tests.
 
-```cpp
-void quit() noexcept;  // Schedule clean exit after current frame
-```
+### Screen and terminal_host
 
-> In Program apps, prefer `Cmd<Msg>::quit()` from `update()` instead of calling
-> `quit()` directly. The free function is still available for `live()` and
-> `canvas_run()` apps.
-
----
+`maya::Screen` (`<maya/screen.hpp>`) is the terminal device: `open(Options)`,
+`read()` (parsed events), `present(element)`, `set_title`, `set_mouse`,
+`commit_scrollback`, `suspend(fn)`, frame flow control (`ready()`,
+`round_trip()`). `maya::terminal_host<P>` adapts a `Screen` to jaal's host
+protocol; `run<P>()` is `Screen::open` + `terminal_host` + `jaal::run`. Use
+them directly only for a custom driver or a test.
 
 ## DSL Nodes
 
@@ -368,6 +346,12 @@ inline constexpr BColTag<R,G,B> bcol;    // Requires border first
 
 template <int G = 1>
 inline constexpr GrowTag<G> grow_;
+
+template <int W>
+inline constexpr WidthTag<W> w_;        // fixed width; also wraps text nodes
+
+template <int H>
+inline constexpr HeightTag<H> h_;       // fixed height
 ```
 
 ---
@@ -393,7 +377,7 @@ Runtime pipe tags for dynamic values. Same `|` syntax as compile-time pipes.
 |----------|----------|-------------|
 | `border(BorderStyle)` | `RBorder` | Border style |
 | `bcolor(Color)` | `RBCol` | Border color |
-| `btext(string, BorderTextPos, BorderTextAlign)` | `RBText` | Border text label |
+| `btext(string, pos = Top, align = Start)` | `RBText` | Border text label (pos/align default) |
 
 ### Style Pipes
 
@@ -409,6 +393,27 @@ Runtime pipe tags for dynamic values. Same `|` syntax as compile-time pipes.
 | `align(Align)` | `RAlign` | Cross-axis alignment |
 | `justify(Justify)` | `RJust` | Main-axis distribution |
 | `overflow(Overflow)` | `ROvf` | Overflow behavior |
+
+### Scroll Pipes
+
+Wrap content in a scroll viewport backed by a caller-owned `ScrollState`. The
+renderer applies the scroll offset and writes `max_x`/`max_y` back after layout
+so clamping is automatic.
+
+| Function | Description |
+|----------|-------------|
+| `scroll(ScrollState&)` | Scroll on both axes, viewport = allocated size |
+| `scroll(ScrollState&, int viewport_h)` | Vertical scroll, fixed viewport height |
+| `scroll(ScrollState&, int w, int h)` | Both axes, fixed viewport w×h |
+| `scrolly(ScrollState&, int h)` | Vertical-only scroll, fixed height |
+| `scrollx(ScrollState&, int w)` | Horizontal-only scroll, fixed width |
+
+### Text-Wrap Tags
+
+| Tag | Effect on a `text(...)` node |
+|-----|------------------------------|
+| `clip` | `TextWrap::TruncateEnd` — hard-truncate at the box edge |
+| `nowrap` | `TextWrap::NoWrap` — overflow past the edge, never wrap |
 
 ### WrappedNode
 
@@ -443,6 +448,45 @@ auto vstack() -> BoxBuilder;   // Column direction
 auto hstack() -> BoxBuilder;   // Row direction
 auto center() -> BoxBuilder;   // Centered, grow=1
 
+// Z-stack — layer children on top of one another
+Element zstack(std::vector<Element> layers);
+
+// Measure-aware component: receives the (width, height) it was allotted
+Element component(std::function<Element(int w, int h)> fn);
+
+// Responsive layout toolkit (see "Responsive layout" below)
+Size measure_element(const Element& el, int max_w, int max_h = 1 << 20);
+auto fill(std::function<Element(int w, int h)> fn, int min_w = 0, int min_h = 1);
+auto adapt(std::function<Element(int w)> fn);
+auto fit_row(std::vector<FitItem> items, int gap = 0);
+auto fit_col(std::vector<FitItem> items, int gap = 0);
+auto pick(std::vector<Element> alternatives);
+auto clamp(Element el, int max_width, HAlign align = HAlign::Center);
+auto responsive(std::vector<Bp> tiers);
+Element place(Element child, HAlign h = HAlign::Center, VAlign v = VAlign::Middle);
+
+// The grid — responsive layout with one number (see "Responsive layout" below)
+auto row(std::vector<Element> cells, int min_width = 24) -> ComponentBuilder;
+Element col(std::vector<Element> cells, int gap = 0);
+auto grid(std::vector<Element> cells, int min_width) -> ComponentBuilder;
+auto sidebar(Element rail, Element main, int width)  -> ComponentBuilder;
+
+// Pretty text (see "Gradients" below)
+Element gradient(std::string text, Color from, Color to, Style base = {});
+Element gradient(std::string text, Gradient g, Style base = {});
+Element rainbow(std::string text, Style base = {},
+                float saturation = 0.85f, float lightness = 0.62f);
+auto    gradient_rule(Color from, Color to, char32_t glyph = U'─');
+auto    gradient_rule(Gradient g, char32_t glyph = U'─');
+
+// Empty element (renders nothing, satisfies Node)
+Element nothing();
+
+// Zero-copy references (no element copy): render an externally-owned
+// element vector / sealed ScrollbackLedger in place
+Element list_ref(const std::vector<Element>* items);
+Element ledger_ref(const ScrollbackLedger& ledger);
+
 // Runtime text
 template <typename S>
 auto text(S&& content, Style s = {}) -> RuntimeTextNode<decay_t<S>>;
@@ -457,6 +501,10 @@ auto dyn(F&& fn) -> DynNode<decay_t<F>>;
 // Map range
 template <std::ranges::range R, typename Proj>
 auto map(R&& range, Proj&& proj) -> MapNode<decay_t<R>, decay_t<Proj>>;
+
+// each() — alias for map(), for discoverability
+template <std::ranges::range R, typename Proj>
+auto each(R&& range, Proj&& proj);
 
 // Spacer/separator/blank (function forms)
 constexpr auto spacer()    -> SpacerNode;
@@ -571,7 +619,8 @@ struct Style {
 
     Style merge(const Style& other) const;
     bool  empty() const;
-    std::string to_sgr() const;
+    std::string to_sgr() const;              // resolves via the live theme
+    template <class R> std::string to_sgr(R&& resolve) const;  // explicit theme
 };
 
 Style operator|(const Style& lhs, const Style& rhs);  // Merge
@@ -625,6 +674,7 @@ public:
     // Adjustment (constexpr)
     Color lighten(float amount) const;
     Color darken(float amount) const;
+    Color to_rgb() const;   // resolve Named/Indexed → true RGB channels
 
     // SGR sequences
     std::string fg_sgr() const;
@@ -810,6 +860,248 @@ struct Edges {
     T horizontal() const;    // left + right
     T vertical() const;      // top + bottom
 };
+```
+
+---
+
+## Responsive Layout
+
+Measure-driven primitives for layouts that restructure with the terminal size.
+Full treatment in [Responsive Layouts](15-responsive.md). All are in `maya::dsl`
+(and `maya::`); `solve_columns` and its types live in
+`<maya/layout/columns.hpp>`.
+
+### row() / col() / grid() / GridOpts
+
+```cpp
+// Cells side by side, sharing the width equally and EXACTLY (largest-
+// remainder split — no ragged right edge) — wrapping, then stacking, by
+// itself as the slot narrows: 4-across → 2×2 → one column. `min_width` is
+// the one number: how wide one cell needs to be to look right.
+auto row(std::vector<Element> cells, int min_width = 24) -> ComponentBuilder;
+
+// Cells stacked top to bottom, each stretched to the full width (flex
+// cross-stretch — the GTK "fill"). Pipe `| grow(1)` onto the child that
+// should take the leftover height. Compose: col({ row({a, b}), table }).
+Element col(std::vector<Element> cells, int gap = 0);
+
+struct GridOpts {
+    int  min       = 24;     // a cell's comfortable minimum width (columns)
+    int  max_cols  = 0;      // cap cells-per-row; 0 = as many as fit
+    int  gap_x     = 1;      // blank columns between cells
+    int  gap_y     = 0;      // blank rows between rows
+    bool grow_rows = false;  // rows share surplus height (definite slot)
+};
+
+// row's engine with the knobs exposed. Re-solved from the REAL slot width
+// per frame (adapt() underneath), so nested grids collapse independently.
+// A short last row keeps the same cell width so columns line up.
+auto grid(std::vector<Element> cells, GridOpts opts = {}) -> ComponentBuilder;
+auto grid(std::vector<Element> cells, int min_width)      -> ComponentBuilder;
+
+//   row({cpu, mem, net, disk})        // side by side; stacks by itself
+//   grid(cells, {.min = 24, .max_cols = 2})   // capped 2-across flow
+```
+
+### sidebar() / SidebarOpts
+
+```cpp
+struct SidebarOpts {
+    int  width       = 32;    // the rail's fixed width (columns)
+    int  stack_below = 0;     // stack when slot < this; 0 = auto (2×width)
+    int  gap         = 1;     // blank columns between rail and main
+    bool right       = false; // rail on the right instead of the left
+};
+
+// Fixed-width rail beside a main pane that takes the rest; the pair stacks
+// vertically (reading order preserved) when the slot is too narrow. The
+// default threshold (2×width) keeps them side-by-side only while the main
+// pane gets at least as much as the rail.
+auto sidebar(Element rail, Element main, SidebarOpts opts = {}) -> ComponentBuilder;
+auto sidebar(Element rail, Element main, int width)             -> ComponentBuilder;
+
+//   sidebar(row({cpu, mem, net, disk}), proc_table, 42)
+//   // wide: 42-cell rail + table · medium: stats flow over the table
+//   // narrow: one column — a whole dashboard in two lines.
+```
+
+### measure_element()
+
+```cpp
+// Runs a real layout pass over `el` and returns its natural size within the
+// given bounds. The measurement uses the SAME engine the renderer uses, so it
+// can never disagree with the eventual paint. Cheap enough to call per frame.
+Size measure_element(const Element& el, int max_width, int max_height = 1 << 20);
+```
+
+Pass a large `max_width` (e.g. `1 << 14`) for the natural one-line width; pass a
+real width to learn how many rows the fragment wraps to.
+
+### fill()
+
+```cpp
+// A component that GROWS to fill the (w, h) its flex container allocates, then
+// calls `fn` with the real allocated size at paint time. `min_w`/`min_h` set
+// the measured minimum so grow has a finite basis. Sets grow(1) internally.
+// The container must be DEFINITE on the fill axis for it to expand.
+auto fill(std::function<Element(int w, int h)> fn, int min_w = 0, int min_h = 1)
+    -> ComponentBuilder;
+```
+
+### adapt()
+
+```cpp
+// A component that BUILDS a different tree depending on the width it is given.
+// `fn` receives the real allocated width at paint time; natural height is
+// auto-measured from what `fn` returns (measure runs the callback).
+auto adapt(std::function<Element(int w)> fn) -> ComponentBuilder;
+```
+
+### fit_row() / FitItem
+
+```cpp
+struct FitItem {
+    Element el;
+    int     keep = kKeepAlways;   // importance; lower ranks drop first
+};
+
+// A row that DROPS items when they don't fit: lowest-`keep` first (ties drop
+// the rightmost) until the remainder fits. Widths come from measure_element
+// over the real fragments. `kKeepAlways` items never drop. `gap` spaces the
+// KEPT items. Grow spacers (dsl::space) measure 0 and always survive.
+auto fit_row(std::vector<FitItem> items, int gap = 0) -> ComponentBuilder;
+
+// The vertical fit_row: DROPS items when the slot is too SHORT, lowest-`keep`
+// first, until what remains fits the rows actually given. Heights come from
+// measure_element at the real slot width (wrapping accounted for). Natural
+// size is ALL items — shedding only happens when a definite-height slot
+// hands it fewer rows (flex shrink, on by default, delivers the budget).
+auto fit_col(std::vector<FitItem> items, int gap = 0) -> ComponentBuilder;
+```
+
+### pick()
+
+```cpp
+// SwiftUI's ViewThatFits: the FIRST alternative whose real measured width
+// fits the slot renders; richest first, the LAST is the always-rendered
+// fallback. No breakpoints — the decision measures the actual fragments.
+auto pick(std::vector<Element> alternatives) -> ComponentBuilder;
+```
+
+### clamp()
+
+```cpp
+// libadwaita's AdwClamp: content uses the full slot up to max_width, then
+// stops growing and aligns (Center by default; Left/Right for corner-
+// anchored content like toasts) — a web page's container column.
+// Transparent below max_width. The "too wide" half of responsive design.
+auto clamp(Element el, int max_width,
+           HAlign align = HAlign::Center) -> ComponentBuilder;
+```
+
+### responsive() / Bp
+
+```cpp
+struct Bp {
+    int min_width = 0;
+    std::function<Element(int w)> build;
+};
+
+// Named width breakpoints over adapt(): the widest tier whose min_width the
+// slot satisfies builds the view (the builder receives the real width). If
+// the slot is narrower than every tier, the smallest tier is used.
+auto responsive(std::vector<Bp> tiers) -> ComponentBuilder;
+```
+
+### place() / HAlign / VAlign
+
+```cpp
+enum class HAlign { Left, Center, Right };
+enum class VAlign { Top, Middle, Bottom };
+
+// Fill the slot the flex parent allocates and pin `child` at the given
+// corner / edge / center. Tracks every resize with zero arithmetic.
+Element place(Element child, HAlign h = HAlign::Center,
+              VAlign v = VAlign::Middle);
+```
+
+!!! note
+    `ComponentBuilder` (returned by `component` / `fill` / `adapt` / `fit_row`
+    / `responsive` / `gradient_rule`) satisfies the `Node` concept — components
+    go directly in `v()` / `h()` and accept runtime pipes (`| grow(1)`,
+    `| width(40)`, `| hit(id)`).
+
+### solve_columns() / ColSpec / ColPlan
+
+```cpp
+#include <maya/layout/columns.hpp>
+
+inline constexpr int kKeepAlways = std::numeric_limits<int>::max();
+
+struct ColSpec {
+    int   min    = 1;             // minimum content width (cells)
+    int   max    = 0;             // growth cap; 0 = unbounded (weight > 0 only)
+    float weight = 0.0f;          // share of surplus space; 0 = fixed at min
+    int   keep   = kKeepAlways;    // drop order: LOWER dropped first
+};
+
+struct ColPlan {
+    std::vector<int> width;       // solved widths; 0 = dropped
+    int gap = 0;
+
+    bool has(std::size_t i) const;   // is column i visible?
+    int  at(std::size_t i) const;    // solved width (0 when dropped/out of range)
+    int  used() const;               // total cells: visible widths + inter-column gaps
+};
+
+// Solve one shared width plan for a table, so the header row and every body row
+// read the same column widths. Drop phase (lowest keep first) then weighted
+// surplus waterfill clamped at max. With an unbounded weighted column the plan
+// fills `avail` exactly. Pure arithmetic — no Element types, no layout engine.
+ColPlan solve_columns(std::span<const ColSpec> cols, int avail, int gap = 1);
+```
+
+---
+
+## Gradients
+
+Multi-color "pretty" primitives. Full treatment in
+[Styling › Gradients](03-styling.md#gradients).
+
+### Gradient
+
+```cpp
+#include <maya/maya.hpp>          // or <maya/style/gradient.hpp> standalone
+
+struct Gradient {
+    std::vector<LitColor> stops;
+
+    Gradient(std::initializer_list<LitColor> stops);
+    static Gradient two(LitColor from, LitColor to);
+
+    // Sample at t ∈ [0,1] (clamped): linear RGB blend across the two nearest
+    // stops. Named/Indexed stops project via to_rgb() first.
+    Color at(float t) const;
+};
+```
+
+### gradient() / rainbow() / gradient_rule()
+
+```cpp
+// Horizontal gradient text — ONE TextElement with per-codepoint StyledRuns,
+// so it wraps/truncates/measures exactly like plain text(). `base` carries
+// non-color attributes (bold/italic) into every run.
+Element gradient(std::string text, Color from, Color to, Style base = {});
+Element gradient(std::string text, Gradient g, Style base = {});
+
+// Full HSL hue sweep across the text width.
+Element rainbow(std::string text, Style base = {},
+                float saturation = 0.85f, float lightness = 0.62f);
+
+// Full-width divider that re-tiles `glyph` to its real allocated width and
+// sweeps the gradient across it. Responsive by construction.
+auto gradient_rule(Color from, Color to, char32_t glyph = U'─') -> ComponentBuilder;
+auto gradient_rule(Gradient g,           char32_t glyph = U'─') -> ComponentBuilder;
 ```
 
 ---
@@ -1044,29 +1336,34 @@ All widgets live in `maya::widget`. Full documentation in [13-widgets.md](13-wid
 | `Select` | `widget/select.hpp` | Dropdown select menu |
 | `Slider` | `widget/slider.hpp` | Numeric slider |
 | `Button` | `widget/button.hpp` | Clickable button with variants |
-| `CommandPalette` | `widget/command_palette.hpp` | Fuzzy-search command launcher |
+| `CommandPalette` | `widget/command_palette.hpp` | Fuzzy-search command launcher; clamped, rows shed detail when narrow |
 
 ### Data Display
 
 | Widget | Header | Description |
 |--------|--------|-------------|
-| `Table` | `widget/table.hpp` | Tabular data with column alignment |
+| `Table` | `widget/table.hpp` | Data table: rich cells (spans + width-adaptive builders), selection, height-aware windowing + scrollbar, host-owned scroll, sort indicators, flexible + shedding columns, hit rects, `flow_rows()` per-row Elements for host-owned flows |
 | `Tree` | `widget/tree.hpp` | Expandable tree view |
 | `List` | `widget/list.hpp` | Selectable item list |
-| `KeyHelp` | `widget/key_help.hpp` | Keyboard shortcut legend |
+| `KeyHelp` | `widget/key_help.hpp` | Keyboard shortcut legend; 2-col ↔ 1-col by real measurement (pick) |
 | `Badge` | `widget/badge.hpp` | Inline status badge |
 | `Callout` | `widget/callout.hpp` | Info/success/warning/error callout box |
 | `Link` | `widget/link.hpp` | Hyperlink element |
+| `ShortcutRow` | `widget/shortcut_row.hpp` | Width-adaptive keyboard hint row (Helix/k9s style) |
+| `ModelBadge` | `widget/model_badge.hpp` | Color-coded active-model indicator |
 
 ### Navigation
 
 | Widget | Header | Description |
 |--------|--------|-------------|
-| `Tabs` | `widget/tabs.hpp` | Tab bar navigation |
-| `Breadcrumb` | `widget/breadcrumb.hpp` | Breadcrumb path navigation |
-| `Menu` | `widget/menu.hpp` | Menu with selectable items |
+| `Tabs` | `widget/tabs.hpp` | Tab bar navigation; falls back to ‹ active i/n › when narrow (pick) |
+| `Breadcrumb` | `widget/breadcrumb.hpp` | Breadcrumb path navigation; collapses to first › … › last (pick) |
+| `Menu` | `widget/menu.hpp` | Menu with selectable items; shortcuts shed when narrow |
 | `ActivityBar` | `widget/activity_bar.hpp` | Vertical icon sidebar |
 | `Scrollable` | `widget/scrollable.hpp` | Scrollable content region |
+| `Scrollbar` | `widget/scrollbar.hpp` | Visual indicator for a `ScrollState` |
+| `Picker` | `widget/picker.hpp` | Bordered modal picker with scrollable results |
+| `CommandPalette` | `widget/command_palette.hpp` | Fuzzy-search command launcher; clamped, rows shed detail when narrow |
 
 ### Display
 
@@ -1080,14 +1377,16 @@ All widgets live in `maya::widget`. Full documentation in [13-widgets.md](13-wid
 | `Image` | `widget/image.hpp` | Terminal image display |
 | `gradient()` | `widget/gradient.hpp` | Color gradient text builder |
 | `Disclosure` | `widget/disclosure.hpp` | Collapsible disclosure section |
+| `Html` | `widget/html.hpp` | Render a safe subset of HTML as styled Elements |
+| `Overlay` | `widget/overlay.hpp` | Base layer + one anchored floating element |
 
 ### Overlay
 
 | Widget | Header | Description |
 |--------|--------|-------------|
-| `Modal` | `widget/modal.hpp` | Modal dialog with buttons |
+| `Modal` | `widget/modal.hpp` | Modal dialog with buttons; clamped to dialog width |
 | `Popup` | `widget/popup.hpp` | Floating popup |
-| `ToastManager` | `widget/toast.hpp` | Toast notification manager |
+| `ToastManager` | `widget/toast.hpp` | Toast notification manager; clamped right-anchored cards |
 
 ### Visualization
 
@@ -1099,20 +1398,67 @@ All widgets live in `maya::widget`. Full documentation in [13-widgets.md](13-wid
 | `Heatmap` | `widget/heatmap.hpp` | Grid heatmap |
 | `Calendar` | `widget/calendar.hpp` | Calendar date display |
 | `PixelCanvas` | `widget/canvas.hpp` | Pixel-level drawing canvas |
+| `FlameChart` | `widget/flame_chart.hpp` | Flame graph for nested execution spans |
+| `Waterfall` | `widget/waterfall.hpp` | Timing waterfall chart (devtools style) |
+| `Timeline` | `widget/timeline.hpp` | Vertical CI/pipeline event timeline |
+| `GitGraph` | `widget/git_graph.hpp` | Commit graph with colored branch lines |
 
-### Specialized
+### Agent UI
+
+Composable pieces of a Claude-Code / Zed-style agent conversation. `Thread`
+is the top-level viewport; the rest are the parts it (or a host) assembles.
 
 | Widget | Header | Description |
 |--------|--------|-------------|
+| `Thread` | `widget/thread.hpp` | Top-level viewport: empty → `WelcomeScreen`, else `Conversation` |
+| `WelcomeScreen` | `widget/welcome_screen.hpp` | Empty-thread brand splash + starters/hints |
+| `Conversation` | `widget/conversation.hpp` | Vertical list of turns with dividers + in-flight indicator |
+| `Turn` | `widget/turn.hpp` | One speaker turn (rail, role, checkpoint) |
+| `TurnDivider` | `widget/turn_divider.hpp` | Styled rule between conversation turns |
+| `CheckpointDivider` | `widget/checkpoint_divider.hpp` | Full-width "↺ Restore checkpoint" rule above a turn |
+| `Composer` | `widget/composer.hpp` | State-driven bordered input box (idle/streaming/permission) |
+| `AgentTimeline` | `widget/agent_timeline.hpp` | Bordered Actions panel logging tool events for a turn |
+| `ToolBodyPreview` | `widget/tool_body_preview.hpp` | Per-`ToolKind` body detail under a timeline event |
+| `AppLayout` | `widget/app_layout.hpp` | Top-level chat-app frame (header/body/composer/overlay) |
 | `UserMessage` | `widget/message.hpp` | Chat user message bubble |
 | `AssistantMessage` | `widget/message.hpp` | Chat assistant message bubble |
 | `ThinkingBlock` | `widget/thinking.hpp` | Collapsible AI thinking block |
-| `DiffView` | `widget/diff_view.hpp` | Side-by-side or unified diff |
+| `StreamingCursor` | `widget/streaming_cursor.hpp` | Pulsing "assistant is streaming" indicator |
+| `SystemBanner` | `widget/system_banner.hpp` | Severity-coloured system alert (ctx warning, rate limit) |
+| `TodoList` | `widget/todo_list.hpp` | Session todo list card |
 | `PlanView` | `widget/plan_view.hpp` | Task plan with status tracking |
-| `LogViewer` | `widget/log_viewer.hpp` | Filterable log viewer |
-| `SearchResult` | `widget/search_result.hpp` | Grouped search results display |
-| `FileRef` | `widget/file_ref.hpp` | File reference with icon |
 | `Permission` | `widget/permission.hpp` | Permission approval prompt |
+
+### Session / Diagnostics
+
+| Widget | Header | Description |
+|--------|--------|-------------|
+| `DiffView` | `widget/diff_view.hpp` | Side-by-side or unified diff |
+| `InlineDiff` | `widget/inline_diff.hpp` | Two-line word-level LCS diff |
+| `FileChanges` | `widget/file_changes.hpp` | Session file-change summary (created/modified/deleted + counts) |
+| `ChangesStrip` | `widget/changes_strip.hpp` | Bordered "session has pending changes" banner |
+| `FileRef` | `widget/file_ref.hpp` | File reference with icon; dir collapses to …/ when narrow |
+| `LogViewer` | `widget/log_viewer.hpp` | Filterable log viewer |
+| `SearchResult` | `widget/search_result.hpp` | Grouped search results; paths keep their filename when narrow |
+| `ErrorBlock` | `widget/error_block.hpp` | Structured error/exception card |
+| `GitStatus` | `widget/git_status.hpp` | Branch + working-tree status |
+| `ContextWindow` | `widget/context_window.hpp` | Segmented context-window usage meter |
+| `TokenStream` | `widget/token_stream.hpp` | Live token-rate sparkline + stats (compact/full) |
+| `CostTracker` | `widget/cost_tracker.hpp` | Per-turn + cumulative token/cost breakdown |
+| `ApiUsage` | `widget/api_usage.hpp` | API rate-limit / request-count / latency display |
+| `ActivityIndicator` | `widget/activity_indicator.hpp` | Single-row hex-dump activity tape — decorative noise while waiting, a real hexdump of `Config::stream` (the host's live byte tail + true total) once bytes flow |
+
+### Status Bar
+
+| Widget | Header | Description |
+|--------|--------|-------------|
+| `StatusBar` | `widget/status_bar.hpp` | Single-line streaming status bar (composes the pieces below) |
+| `TokenStreamSparkline` | `widget/token_stream_sparkline.hpp` | Live tok/s rate + sparkline chip (adaptive width) |
+| `PhaseChip` | `widget/phase_chip.hpp` | Current-phase verb + elapsed, breathing |
+| `TitleChip` | `widget/title_chip.hpp` | Breadcrumb / title chip |
+| `ContextGauge` | `widget/context_gauge.hpp` | Context-window usage gauge |
+| `PhaseAccent` | `widget/phase_accent.hpp` | Top/bottom accent rail strip |
+| `StatusBanner` | `widget/status_banner.hpp` | Full-width toast that takes over the activity row |
 
 ### Tool Widgets
 
@@ -1125,6 +1471,7 @@ All widgets live in `maya::widget`. Full documentation in [13-widgets.md](13-wid
 | `WriteTool` | `widget/write_tool.hpp` | File write tool call |
 | `FetchTool` | `widget/fetch_tool.hpp` | HTTP fetch tool call |
 | `AgentTool` | `widget/agent_tool.hpp` | Sub-agent tool call |
+| `GitCommitTool` | `widget/git_commit_tool.hpp` | Git commit operation card |
 
 ---
 

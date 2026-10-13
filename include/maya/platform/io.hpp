@@ -14,6 +14,7 @@
 
 #if MAYA_PLATFORM_POSIX || MAYA_PLATFORM_MACOS
     #include <cerrno>
+    #include <poll.h>      // poll() for non-blocking writability check
     #include <sys/ioctl.h>
     #include <sys/uio.h>   // writev()
     #include <unistd.h>
@@ -166,6 +167,74 @@ struct IoVec {
 }
 
 // ============================================================================
+// io_poll_writable — non-blocking check for output writability
+// ============================================================================
+//
+// Returns true if `handle` accepts at least one byte of write right now.
+// On POSIX, a single poll() with POLLOUT and timeout=0. On Win32 the
+// console buffer for an interactive tty is large enough that this check
+// rarely matters; return true.
+//
+// Used by the inline renderer to detect kernel-buffer backpressure on
+// slow ttys (serial console, framebuffer, ssh over high-latency link)
+// and skip the paint cycle entirely — the next render coalesces the
+// diff naturally because `prev_cells` wasn't updated. Modern terminals
+// always return true and pay only the syscall cost (~µs).
+
+[[nodiscard]] inline bool io_poll_writable(
+    [[maybe_unused]] NativeHandle h, [[maybe_unused]] int timeout_ms = 0) noexcept
+{
+#if MAYA_PLATFORM_POSIX || MAYA_PLATFORM_MACOS
+    struct pollfd pfd{};
+    pfd.fd = h;
+    pfd.events = POLLOUT;
+    pfd.revents = 0;
+    int r = ::poll(&pfd, 1, timeout_ms);
+    if (r <= 0) {
+        // 0 = timeout (kernel buffer currently full)
+        // < 0 = error (EINTR / EBADF). On error, conservatively assume
+        // writable so we don't block forever on a transient fault.
+        return r < 0;
+    }
+    return (pfd.revents & POLLOUT) != 0;
+#else
+    return true;
+#endif
+}
+
+// ============================================================================
+// io_poll_readable — non-blocking check for pending input
+// ============================================================================
+//
+// Returns true if `handle` has at least one byte ready right now.
+//
+// Used on shutdown to swallow terminal REPLIES still in flight. An inline
+// frame ends with a DSR (`CSI 5 n`) and the terminal answers `CSI 0 n`; if we
+// stop reading before that answer lands, the bytes are delivered to whatever
+// reads the tty next — the user's shell — and their prompt gets a literal
+// `^[[0n` in it. We asked the question, so we owe the answer a reader.
+
+[[nodiscard]] inline bool io_poll_readable(
+    [[maybe_unused]] NativeHandle h, [[maybe_unused]] int timeout_ms = 0) noexcept
+{
+#if MAYA_PLATFORM_POSIX || MAYA_PLATFORM_MACOS
+    struct pollfd pfd{};
+    pfd.fd = h;
+    pfd.events = POLLIN;
+    pfd.revents = 0;
+    const int r = ::poll(&pfd, 1, timeout_ms);
+    // On error, report NOT readable: a drain loop must terminate, and
+    // pretending there is data on a broken fd would spin it.
+    if (r <= 0) return false;
+    return (pfd.revents & POLLIN) != 0;
+#else
+    // Win32 console input is message-based; WaitForSingleObject on the input
+    // handle signals when records are queued.
+    return ::WaitForSingleObject(h, static_cast<DWORD>(timeout_ms)) == WAIT_OBJECT_0;
+#endif
+}
+
+// ============================================================================
 // Terminal size query
 // ============================================================================
 
@@ -215,20 +284,75 @@ struct IoVec {
 // ============================================================================
 // TTY detection
 // ============================================================================
-
+//
+// THE QUESTION THIS ANSWERS is "is a human looking at this", not "is this a
+// Win32 console object". The two are the same on POSIX and emphatically not
+// on Windows.
+//
+// GetConsoleMode() alone says NO for a terminal that is plainly interactive:
+// under mintty (MSYS2's default), Git Bash, Cygwin, and anything driving a
+// ConPTY, fds 0/1 are named PIPES carrying a VT byte stream, not console
+// handles. Win32Terminal::open() already knows this -- a failed
+// GetConsoleMode there means "pipe mode", not "no terminal", and that fix is
+// what made agentty run under MSYS2 at all.
+//
+// is_tty() was never told. So every OTHER consumer of the same question kept
+// getting the wrong answer, and the loudest one is colour: detect_tier()
+// returns Mono for a non-tty, which silently collapses every theme to native
+// and drops diff row bands to plain text. "Why is + green everywhere except
+// Windows Terminal" is this function, one layer down.
+//
+// A pipe is only a terminal if something on the far end is drawing it, so we
+// require positive evidence rather than assuming: either the host names
+// itself (WT_SESSION / ConEmuANSI / a TERM an MSYS2 shell exports) or the
+// handle is a pipe whose name matches the msys/cygwin PTY convention. A
+// plain redirect to a file or an anonymous pipe still answers false, which
+// is what keeps `agentty > log.txt` free of escape soup.
 [[nodiscard]] inline bool is_tty(NativeHandle h) noexcept {
 #if MAYA_PLATFORM_POSIX || MAYA_PLATFORM_MACOS
     return ::isatty(h) != 0;
 #else
     DWORD mode;
-    return ::GetConsoleMode(h, &mode) != 0;
+    if (::GetConsoleMode(h, &mode) != 0) return true;   // real console
+
+    // Not a console handle. It may still be a VT terminal on a pipe.
+    if (::GetFileType(h) != FILE_TYPE_PIPE) return false;   // file/redirect
+
+    // A host that identifies itself is the strongest evidence available,
+    // and it does not depend on naming the pipe.
+    const auto env_set = [](const char* k) noexcept {
+        const char* v = std::getenv(k);
+        return v != nullptr && *v != '\0';
+    };
+    if (env_set("WT_SESSION")) return true;          // Windows Terminal
+    if (env_set("ConEmuANSI")) return true;          // ConEmu
+    if (env_set("MSYSTEM"))    return true;          // MSYS2 / Git Bash
+
+    // Otherwise ask the pipe its name. MSYS2 and Cygwin PTYs are named
+    // \cygwin-<id>-pty<N>-{from,to}-master (msys- for MSYS2), which is the
+    // documented way to tell a PTY from an ordinary anonymous pipe.
+    struct NameInfo {
+        DWORD length;
+        WCHAR name[260];
+    } info{};
+    if (::GetFileInformationByHandleEx(h, FileNameInfo, &info, sizeof info)) {
+        const std::size_t n =
+            (std::min)(static_cast<std::size_t>(info.length / sizeof(WCHAR)),
+                       static_cast<std::size_t>(259));
+        std::wstring_view nm{info.name, n};
+        const bool ptyish = nm.find(L"pty") != std::wstring_view::npos;
+        if (ptyish && (nm.find(L"msys-")   != std::wstring_view::npos
+                    || nm.find(L"cygwin-") != std::wstring_view::npos))
+            return true;
+    }
+    return false;
 #endif
 }
 
 // ============================================================================
 // ensure_utf8 — one-shot UTF-8 console codepage setup (Win32)
 // ============================================================================
-// Call before any non-Terminal UTF-8 output (e.g. print(), live()).
+// Call before any non-Terminal UTF-8 output (e.g. print()).
 // No-op on POSIX. Safe to call multiple times.
 
 inline void ensure_utf8() noexcept {

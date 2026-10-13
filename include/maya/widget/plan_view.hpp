@@ -43,9 +43,9 @@ struct PlanView {
     [[nodiscard]] Element build() const {
         using namespace dsl;
 
-        constexpr auto pending_color    = Color::bright_black();
-        constexpr auto inprogress_color = Color::blue();
-        constexpr auto completed_color  = Color::green();
+        constexpr auto pending_color    = Color::slot(ThemeSlot::Muted);
+        constexpr auto inprogress_color = Color::slot(ThemeSlot::Primary);
+        constexpr auto completed_color  = Color::slot(ThemeSlot::Success);
 
         std::vector<Element> rows;
         rows.reserve(tasks.size());

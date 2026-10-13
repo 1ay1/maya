@@ -24,6 +24,7 @@
 #include <string>
 
 #include "canvas.hpp"
+#include "canvas_witness.hpp"
 #include "../core/simd.hpp"
 #include "../platform/detect.hpp"
 #include "../terminal/ansi.hpp"
@@ -78,23 +79,49 @@ MAYA_FORCEINLINE char* write_uint_pos(char* p, unsigned n) noexcept {
         *p++ = static_cast<char>('0' + n / 100);
         *p++ = static_cast<char>('0' + (n / 10) % 10);
         *p++ = static_cast<char>('0' + n % 10);
-    } else {
+    } else if (n < 10000) {
         *p++ = static_cast<char>('0' + n / 1000);
         *p++ = static_cast<char>('0' + (n / 100) % 10);
         *p++ = static_cast<char>('0' + (n / 10) % 10);
         *p++ = static_cast<char>('0' + n % 10);
+    } else {
+        // >= 10000: general base-10 encode. The old 4-digit-only `else`
+        // wrote '0'+n/1000 (>= 10 -> ':' '<' ... non-digit bytes), so a
+        // terminal with >= 10000 rows/cols emitted a malformed CUP escape.
+        char tmp[10];
+        int len = 0;
+        do { tmp[len++] = static_cast<char>('0' + n % 10); n /= 10; } while (n);
+        while (len) *p++ = tmp[--len];
     }
     return p;
 }
 
 MAYA_FORCEINLINE void write_cup(std::string& out, int col, int row) {
-    char buf[16]; // max: \x1b[9999;9999H = 15 chars
+    char buf[24]; // fits two 10-digit uints: \x1b[ + 10 + ; + 10 + H = 24
     char* p = buf;
     *p++ = '\x1b'; *p++ = '[';
     p = write_uint_pos(p, static_cast<unsigned>(row));
     *p++ = ';';
     p = write_uint_pos(p, static_cast<unsigned>(col));
     *p++ = 'H';
+    out.append(buf, static_cast<std::size_t>(p - buf));
+}
+
+/// Cursor forward (CUF) by n >= 1 columns: `ESC[C` or `ESC[nC`.
+///
+/// A same-row skip over unchanged cells used to be a full CUP
+/// (`ESC[row;colH`, 8-10 bytes on a real-size screen). CUF is 3-5 bytes
+/// and reaches the same cell. Measured on doom_fire at 214x60: CUPs were
+/// 7.4% of the stream, nearly all of them same-row skips. CUF stops at
+/// the right margin rather than wrapping, but a skip never passes it: the
+/// target is a cell of this row that the diff is about to write.
+MAYA_FORCEINLINE void write_cuf(std::string& out, int n) {
+    if (n == 1) { out.append("\x1b[C", 3); return; }
+    char buf[16];
+    char* p = buf;
+    *p++ = '\x1b'; *p++ = '[';
+    p = write_uint_pos(p, static_cast<unsigned>(n));
+    *p++ = 'C';
     out.append(buf, static_cast<std::size_t>(p - buf));
 }
 
@@ -107,6 +134,25 @@ MAYA_FORCEINLINE void write_cup(std::string& out, int col, int row) {
 void diff(
     const Canvas& old_canvas,
     const Canvas& new_canvas,
+    const StylePool& pool,
+    std::string& out);
+
+// ============================================================================
+// Witness-gated diff (Layer 0 of the chain).
+// ============================================================================
+//
+// The legacy overload above trusts that last_col_/max_y_/cells of both
+// canvases are coherent. The overload below cannot be called without first
+// proving that via verify_canvas(). It re-hashes both canvases on entry
+// and std::aborts on drift (A4 hedge, mirroring ShadowWitness in Layer 3).
+//
+// The witnesses are consumed by rvalue reference: a CanvasWitness is
+// move-only and has no other public consumer, so each verify_canvas() call
+// pairs with exactly one diff() call. Forgetting to verify is a compile
+// error at every host call site that constructs the parameters by type.
+void diff(
+    CanvasWitness&& old_witness,
+    CanvasWitness&& new_witness,
     const StylePool& pool,
     std::string& out);
 

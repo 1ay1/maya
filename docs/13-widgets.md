@@ -8,26 +8,27 @@ headers are under `include/maya/widget/`.
 
 ## Using Widgets
 
-Widgets work in both API styles. In simple `run()`, use them directly in the render lambda:
+A widget is a value: keep it in the `Model`, render it in `view()`, and
+forward the events it handles from `update()`:
 
 ```cpp
-Input<> prompt;
-prompt.set_placeholder("Type here...");
+struct Model { Input<> prompt; };
+struct Key { KeyEvent k; };
 
-run({.title = "app"}, event_fn, [&] {
-    return v(prompt, t<"[Enter] submit"> | Dim) | pad<1>;
-});
-```
+static Cmd update(Model& m, Key e) { (void)m.prompt.handle(e.k); return {}; }
 
-In Program apps, widgets are typically stored in the Model or as globals, and rendered in `view()`:
-
-```cpp
 static Element view(const Model& m) {
     return v(m.prompt, t<"[Enter] submit"> | Dim) | pad<1>;
 }
+
+static Sub subscribe(const Model&) {
+    return Sub::on(on_key{}, [](const KeyEvent& k) -> std::optional<Msg> { return Key{k}; });
+}
 ```
 
-Interactive widgets need their `handle(KeyEvent)` method called from the event handler (simple run) or from `subscribe()`/`update()` (Program).
+A widget whose state must change as it renders (a scroll view learning its
+extent) is held `mutable` in the model; see `ScrollState` in
+[Events](06-events.md).
 
 ---
 
@@ -251,27 +252,130 @@ auto ui = volume.build();
 
 ### Table
 
-Formatted data table with configurable columns, alignment, striping, and
-optional bordered card.
+The data table: configurable columns, alignment, striping, optional
+bordered card — plus selection, keyboard navigation, height-aware
+windowing, a scrollbar, sort indicators, flexible columns, and RICH
+cells (styled spans, width-adaptive builders). The rockbottom process
+list — tree rails, inline CPU meter, culprit marker and all — is a
+config away (see `examples/proc_table.cpp`).
+
+**Responsive (width).** ONE column plan (`maya::solve_columns`) is solved
+from the width the table is actually given and feeds the header, the
+separator, and every row — they can never drift apart or shear mid-cell.
+Columns shed lowest-`keep` first when narrow (first column never, rest
+rightmost-first by default). A column with `weight > 0` is FLEXIBLE: it
+absorbs surplus width (capped by `max_width` if set — an inline meter
+breathes `min_width → max_width`) and shrinks toward `min_width` when
+tight — cells truncate with `…`.
+
+**Responsive (height).** The natural height is all rows — nothing windows
+in an auto-height context. In a definite slot that is SHORTER (or with
+`visible_rows` set) the body windows around the cursor and a `▐` scrollbar
+gutter appears. `tbl.build() | grow(1)` fills a pane and the row count
+falls out of the layout.
+
+**Rich cells.** A row is a `TableRow` of `TableCell`s. A cell is plain
+text, text + `StyledRun` spans (multi-color content inside ONE cell —
+tree rails, a dim argv trail after a bright name), or DYNAMIC
+(`TableCell::dyn([](int w){ … })`) — built at the column's SOLVED width
+every frame (inline meters, sparklines). Truncation clips the spans with
+the text, so a rich cell can never shear the columns to its right. Rows
+carry identity too: `TableRow::style` merges UNDER every span (semantic
+row tints), `edge` + `edge_color` paint a gutter marker (» culprit)
+whenever the cursor bar isn't on that row. Plain
+`add_row({"a", "b"})` / `set_rows(vector<vector<string>>)` still work.
+
+**Interactive.** `selectable = true` adds the cursor (▎ bar +
+`selected_style` + optional `selected_bg` full-band strip) and keyboard
+nav — `↑↓`/`j`/`k`, `PgUp`/`PgDn`, `Home`/`End`/`g`/`G`, `Enter` →
+`on_activate`. Set `row_hit_kind` / `header_hit_kind` and every row /
+header cell registers a `hit_id(kind, index)` rect at paint — resolve
+clicks with `maya::hit_test`, zero coordinate math. `sort_col` +
+`sort_desc` render the `▾`/`▴` arrow and accent on the sorted header (the
+host owns the actual sort).
+
+**Host-driven.** A TEA host that owns its own state machine can take over
+every interactive default: `window_top` pins the scroll window (sticky
+scroll-margins live in YOUR model), `show_header = false` swaps the header
+for host chrome (a kill-confirm strip) without changing the row budget,
+per-column `header_style` paints your own ink tiers, and per-column
+`hit_index` remaps header clicks onto YOUR enum (two columns can share one
+sort key; `kNoHeaderHit` opts a column out).
+
+**Host-owned flow.** Some panes aren't rectangles: a drill-down view is a
+FLOW of one-row Elements (sections, graphs, a table) that an outer
+scroller windows element-by-element — `build()`'s block Element would
+enter that flow as ONE unit and break row-granular scrolling.
+`tbl.flow_rows(width)` solves the column plan ONCE at `width` and returns
+the configured chrome (header, separator, empty placeholder) plus every
+data row as its own one-row Element — same ink, spans, hits and `…`
+truncation as `build()`. Visibility is the host's job there: the
+windowing knobs (`visible_rows` / `window_top` / scrollbar / status) and
+the border don't apply.
 
 **Header:** `widget/table.hpp`
 
 ```cpp
 enum class ColumnAlign : uint8_t { Left, Center, Right };
 
+struct TableCell {
+    std::string text;
+    std::vector<StyledRun> runs;                 // spans over text
+    std::function<TableCell(int)> dynamic;       // solved width → cell
+    TableCell& span(std::string_view s, Style st = {});  // chainable
+    static TableCell dyn(F&& fn);                // width-adaptive cell
+};
+
+struct TableRow {
+    std::vector<TableCell> cells;
+    Style style;                  // merges UNDER every span
+    std::string edge;             // gutter marker when not selected (»)
+    std::optional<Color> edge_color;
+};
+
 struct ColumnDef {
     std::string header;
-    int width = 0;  // 0 = auto-fit
+    int width = 0;        // fixed; 0 = auto-fit
     ColumnAlign align = ColumnAlign::Left;
+    int keep = 0;         // shed order when narrow: LOWER first;
+                          // kKeepAlways never; 0 = auto
+    float weight = 0.0f;  // > 0 = flexible (absorbs surplus, shrinks to…
+    int min_width = 0;    // …this floor; cells truncate with …)
+    int max_width = 0;    // growth cap for a weighted column; 0 = ∞
+    std::optional<Style> header_style;  // per-column ink override
+    int hit_index = -1;   // header hit payload; kNoHeaderHit = no click
 };
 
 struct TableConfig {
     Style header_style, row_style, alt_row_style, separator_style;
     bool stripe_rows = true;
     int cell_padding = 1;
+    int column_gap = 0;               // extra cells between columns
     bool show_border = false;
     std::string title;
     Color border_color;
+
+    bool selectable = false;          // cursor + keyboard nav
+    Style selected_style;             // bold by default
+    Color cursor_bar_color;           // the ▎ edge bar
+    std::optional<Color> selected_bg; // full-band strip on the cursor row
+
+    int sort_col = -1;  bool sort_desc = true;   // ▾/▴ indicator
+    Style sort_header_style;
+
+    bool show_header = true;          // off = host renders its own strip
+    bool show_separator = true;       // the ── rule under the header
+    std::optional<Color> header_bg;   // full-band header rail tint
+    std::string empty_text;           // dim placeholder when rows empty
+
+    int visible_rows = 0;             // fixed window; 0 = fill the slot
+    bool show_scrollbar = true;       // gutter appears when windowed
+    bool show_status = false;         // "cursor/total" footer
+    int window_top = -1;              // host scroll top; -1 = auto-center
+    Color scrollbar_thumb_color, scrollbar_track_color;
+
+    uint32_t row_hit_kind = 0;        // hit_id(kind, row) per row
+    uint32_t header_hit_kind = 0;     // hit_id(kind, col.hit_index) per header
 };
 
 class Table;
@@ -279,14 +383,41 @@ class Table;
 // Table(std::vector<ColumnDef> columns, TableConfig cfg)
 ```
 
-**Key methods:** `add_row(vector<string>)`, `set_rows(...)`, `clear_rows()`,
-`row_count()`, `set_title(sv)`, `set_bordered(bool)`.
+**Key methods:** `add_row(TableRow)` (accepts `{"a", "b"}`),
+`set_rows(vector<TableRow>)`, `set_rows(vector<vector<string>>)`,
+`clear_rows()`, `row_count()`, `set_title(sv)`, `set_bordered(bool)`,
+`set_sort(col, desc)`, `selected()`, `set_selected(idx)`,
+`handle(KeyEvent)`, `on_change(fn)`, `on_activate(fn)`, `focus_node()`,
+`config()`, `flow_rows(width)` (per-row Elements for host-owned flows).
 
 ```cpp
+// Classic static card — unchanged:
 Table tbl({{"Name", 20}, {"Status", 10}});
 tbl.add_row({"main.cpp", "modified"});
-tbl.add_row({"README.md", "staged"});
 auto ui = tbl.build();
+
+// The proc list (rich cells + host-owned scroll):
+TableConfig cfg;
+cfg.selectable = true;  cfg.sort_col = 3;  cfg.sort_desc = true;
+cfg.selected_bg = Color::hex(0x33354A);  cfg.window_top = m.scroll_top;
+cfg.row_hit_kind = HK_ProcRow;  cfg.header_hit_kind = HK_SortCol;
+Table procs({{.header = "PID", .align = ColumnAlign::Right},
+             {.header = "NAME", .weight = 3.0f, .min_width = 10,
+              .hit_index = static_cast<int>(SortKey::Name)},
+             {.header = "", .keep = 1, .weight = 1.0f,     // inline meter
+              .min_width = 6, .max_width = 14, .hit_index = kNoHeaderHit},
+             {.header = "CPU", .align = ColumnAlign::Right,
+              .hit_index = static_cast<int>(SortKey::Cpu)}}, cfg);
+TableRow row;
+row.cells.emplace_back("937", pid_style);
+row.cells.push_back(TableCell{}.span("├─ ", rail).span("rb", name)
+                               .span("  ./build/rb", dim_trail));
+row.cells.push_back(TableCell::dyn([f](int w) { return meter(f, w); }));
+row.cells.emplace_back("42.5", load_style);
+row.edge = "»";  row.edge_color = Color::red();   // culprit marker
+procs.add_row(std::move(row));
+procs.set_selected(m.cursor);
+auto pane = procs.build() | grow(1);   // rows = whatever fits
 ```
 
 ---
@@ -294,7 +425,9 @@ auto ui = tbl.build();
 ### List
 
 Scrollable selectable list with icon, label, description, and optional
-filtering via `/` key.
+filtering via `/` key. Width-aware: a row sheds its DESCRIPTION (whole,
+fit_row-style) when the measured line wouldn't fit the slot — the label
+never shears.
 
 **Header:** `widget/list.hpp`
 
@@ -404,6 +537,9 @@ auto ui = spark.build();
 ### Tabs
 
 Tabbed content switcher. Left/Right, h/l, and 1-9 number key navigation.
+Responsive via `pick()` (ViewThatFits): the full label row renders while its
+measured width fits; a slot too narrow for every label falls back to
+`‹ active-label  i/n ›` — always readable, never sheared.
 
 **Header:** `widget/tabs.hpp`
 
@@ -427,6 +563,9 @@ auto ui = dsl::v(tabs, content);
 ### Breadcrumb
 
 Passive path/context breadcrumb trail. Last segment is highlighted.
+Responsive via `pick()` (ViewThatFits): the full trail renders while its
+measured width fits; a narrow slot collapses the middle to `first › … ›
+last`; the tightest slot shows just the current segment.
 
 **Header:** `widget/breadcrumb.hpp`
 
@@ -448,6 +587,8 @@ auto ui = dsl::v(bc, content);
 ### Menu
 
 Vertical menu with keybind hints, separators, and disabled items.
+Width-aware: a row sheds its SHORTCUT hint when label + shortcut would
+overflow the measured slot — the label never shears.
 
 **Header:** `widget/menu.hpp`
 
@@ -480,6 +621,9 @@ menu.on_select([](int idx) { handle_menu(idx); });
 ### CommandPalette
 
 Fuzzy-search command launcher with embedded Input and highlighted match results.
+Width-aware: rows shed their DESCRIPTION first, then the SHORTCUT, when the
+measured line would overflow; the whole palette is clamped to `max_width`
+(default 72 — `set_max_width(0)` for full slot) and centered on wider slots.
 
 **Header:** `widget/command_palette.hpp`
 
@@ -572,6 +716,9 @@ auto ui = dsl::v(err, info);
 ### ToastManager
 
 Notification toast stack with timed auto-dismissal and severity styling.
+Cards are clamped to `Config::max_width` (default 60) and pinned to the
+right edge — the toast convention — instead of stretching into full-width
+banners on a wide terminal.
 
 **Header:** `widget/toast.hpp`
 
@@ -594,8 +741,7 @@ struct ToastManager {
 ```cpp
 ToastManager toasts;
 toasts.push("Response complete", ToastLevel::Success);
-toasts.advance(dt);
-auto ui = toasts.build();
+auto ui = toasts.build();   // expiry is clock-driven; no advance() needed
 ```
 
 ---
@@ -603,7 +749,9 @@ auto ui = toasts.build();
 ### FileRef
 
 File path reference display with dimmed directory, underlined filename, and
-optional line number.
+optional line number. Width-aware: when the full `dir/name:line` chip can't
+fit the measured slot the directory collapses to a leading `…/` — the
+filename survives whole.
 
 **Header:** `widget/file_ref.hpp`
 
@@ -755,11 +903,12 @@ class Spinner;
 // Spinner(Style s)
 ```
 
-**Key methods:** `advance(float dt)`, `set_style(Style)`.
+**Key methods:** `set_style(Style)`. The frame derives from the shared
+animation clock — every spinner in the process steps in lockstep, and
+`build()` schedules its own wakes (one per frame step).
 
 ```cpp
 Spinner spin;
-spin.advance(dt);
 auto ui = dsl::h(spin, text(" Loading..."));
 
 Spinner<SpinnerStyle::Braille> s2;
@@ -772,7 +921,8 @@ Spinner<SpinnerStyle::Braille> s2;
 ### Modal
 
 Modal dialog with title, content, and Tab-navigable action buttons. Enter to
-activate, Escape to dismiss.
+activate, Escape to dismiss. Clamped to `set_max_width` (default 80) and
+centered beyond — a dialog, not a banner, on an ultrawide.
 
 **Header:** `widget/modal.hpp`
 
@@ -1117,8 +1267,10 @@ auto ui = cal.build();
 
 ### KeyHelp
 
-Keyboard shortcut reference panel. Adapts between 1-column and 2-column layout
-based on available width.
+Keyboard shortcut reference panel. Responsive via `pick()` (ViewThatFits):
+the two-column arrangement renders when its REAL measured width fits the
+slot, otherwise the single column does — no byte-count estimates, no
+breakpoints.
 
 **Header:** `widget/key_help.hpp`
 
@@ -1191,8 +1343,7 @@ class ThinkingBlock;
 ThinkingBlock thinking;
 thinking.set_active(true);
 thinking.set_content("Analyzing the request...\nReading project structure...");
-thinking.advance(dt);
-auto ui = thinking.build();
+auto ui = thinking.build();   // spinner is clock-driven
 ```
 
 ---
@@ -1380,7 +1531,9 @@ auto ui = ft.build();
 
 ### SearchResult
 
-Search results display (Grep/Glob) with grouped file matches.
+Search results display (Grep/Glob) with grouped file matches. Width-aware:
+long file paths truncate at the START (`…/dir/file.cpp` keeps the filename)
+instead of the tail clipping off.
 
 **Header:** `widget/search_result.hpp`
 
@@ -1434,10 +1587,9 @@ class AgentTool;
 AgentTool agent("Exploring codebase structure");
 agent.set_model("claude-sonnet-4");
 agent.set_status(AgentStatus::Running);
-agent.advance(dt);
 agent.add_tool(read_tool.build());
 agent.add_tool(grep_tool.build());
-auto ui = agent.build();
+auto ui = agent.build();   // spinner is clock-driven
 ```
 
 ---
@@ -1463,3 +1615,78 @@ Permission perm("bash", "rm -rf node_modules && npm install");
 auto ui = perm.build();
 // renders: [y] allow  [n] deny  key hints
 ```
+
+---
+
+## Status Bar Widgets
+
+The streaming-status family renders the single-line status bar an agent shows
+while a turn is in flight: a leading breadcrumb / phase chip on the left, the
+live token-rate spark in the middle, and the model badge + context gauge on the
+right. `StatusBar` composes them; the pieces are also usable standalone.
+
+### StatusBar
+
+Three-row status bar: a top/bottom `PhaseAccent` rail sandwiching a
+hard-locked single-line activity row. The row is a MEASURED degradation
+ladder — the real styled fragments are built at progressively leaner shapes
+and the richest one whose measured width fits renders. Shed order: ctx token
+counts · token-stream chip · phase elapsed · ctx bar · phase verb · ctx
+gauge · model badge; the phase chip — *what's happening now* — is the last
+survivor, and the breadcrumb is added last from the measured leftover
+(capped at its config `max_chars`). There are NO width-threshold knobs to
+tune — the old `*_min_width` Config fields are gone. When
+`status_banner.text` is set the middle row becomes a full-width toast instead.
+
+**Header:** `widget/status_bar.hpp`
+
+```cpp
+StatusBar::Config cfg;
+cfg.phase_color = Color::cyan();
+cfg.breadcrumb  = { .title = "maya › docs" };
+cfg.phase       = { /* verb, elapsed, breathing */ };
+cfg.token_stream = { .rate = 23.4f, .history = hist, .live = true,
+                     .adaptive = true };
+cfg.model_badge = ModelBadge("claude-opus-4").build();
+cfg.context     = { .used = 42000, .max = 200000 };
+auto ui = StatusBar{cfg}.build();
+```
+
+### TokenStreamSparkline
+
+Compact `⚡ rate t/s ▁▂▃▄▅▆▇█ ` chip for the status bar: a fixed-width tok/s
+rate, a right-pinned block-glyph sparkline of the rate history, coloured by
+rate (red / yellow / green). Every segment is a fixed display width so ticking
+numbers never shove the neighbouring chips leftward. When `live` is false the
+rate + spark dim, signalling “frozen at last sample” during tool execution.
+
+**Header:** `widget/token_stream_sparkline.hpp`
+
+```cpp
+struct Config {
+    float              rate    = 0.0f;   // current tok/s
+    int                total   = 0;
+    std::vector<float> history;          // rate samples, newest last
+    Color              color   = Color::cyan();
+    bool               live    = false;  // false = dim (frozen)
+    bool               adaptive        = false;
+    int                max_spark_cells = 64;
+};
+```
+
+```cpp
+maya::TokenStreamSparkline{{
+    .rate    = 23.4f,
+    .history = rate_history,
+    .color   = Color::cyan(),
+    .live    = is_streaming,
+}}.build();
+```
+
+**Adaptive width.** With `.adaptive = true` the widget returns a `grow(1)`
+component that defers the spark-cell count to paint time and sizes the
+sparkline to *fill* its allocated slot — the status bar hands it the dead space
+between the phase chip and the model badge. The count is clamped to
+`[8, max_spark_cells]` and right-pinned so the newest sample stays glued to the
+chips on its right. With `.adaptive = false` (default) the layout is the legacy
+fixed 16-cell chip, byte-identical to before.

@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "../core/focus.hpp"
+#include "../core/function.hpp"
 #include "../core/overload.hpp"
 #include "../core/signal.hpp"
 #include "../dsl.hpp"
@@ -33,7 +34,7 @@ namespace maya {
 struct SelectConfig {
     std::string indicator       = "\xe2\x9d\xaf ";   // "❯ " — Zed-style chevron
     std::string inactive_prefix = "  ";   // shown next to inactive items
-    Style active_style   = Style{}.with_bold().with_fg(Color::blue());
+    Style active_style   = Style{}.with_bold().with_fg(Color::slot(ThemeSlot::Primary));
     Style inactive_style = Style{}.with_dim();
     int visible_count    = 0;  // 0 = show all items
 };
@@ -48,7 +49,7 @@ class Select {
     FocusNode focus_;
     SelectConfig cfg_;
 
-    std::move_only_function<void(int, std::string_view)> on_select_;
+    MoveOnlyFunction<void(int, std::string_view)> on_select_;
 
 public:
     explicit Select(std::vector<std::string> items, SelectConfig cfg = {})

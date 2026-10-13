@@ -10,6 +10,7 @@
 #include "../core/types.hpp"
 
 #include <cstddef>
+#include <cstdlib>
 #include <string_view>
 
 #if MAYA_PLATFORM_POSIX || MAYA_PLATFORM_MACOS

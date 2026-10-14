@@ -119,6 +119,7 @@ using ::jaal::JoinFree;         // destroying T never waits for a thread (guarde
 using ::jaal::joins_on_destroy; // mark a type whose destructor joins
 using ::jaal::lock_order_error; // a pool shut down from one of its own jobs
 using ::jaal::scope;            // structured helpers: all joined on return (needs unlocked)
+using ::jaal::parallel_for;     // a borrowed body over [0, n), joined before it returns
 template <class T> using snapshot = ::jaal::snapshot<T>;  // read-mostly value, no lock at all
 using ::jaal::nursery;
 using pool       = ::jaal::kernel::pool;        // owned worker threads

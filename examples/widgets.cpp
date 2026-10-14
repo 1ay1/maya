@@ -298,7 +298,7 @@ struct Widgets {
             {'q',                Quit{}},
             {SpecialKey::Escape, Quit{}},
             {' ',                ToggleStream{}},
-            {'\t',               NextPanel{}},
+            {SpecialKey::Tab,    NextPanel{}},
             {'r',                ResetState{}},
         };
         return keys(k);

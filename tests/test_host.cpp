@@ -24,6 +24,8 @@
 
 #include <chrono>
 #include <cstdio>
+#include <optional>
+#include <stdexcept>
 #include <string>
 #include <exception>
 #include <variant>
@@ -297,6 +299,79 @@ TEST_CASE("host: every terminal effect is one device call") {
     CHECK(dev.redraws == 1,   "  force_redraw must be one call (got %d)\n", dev.redraws);
     CHECK(dev.resets == 1,    "  reset_inline must be one call (got %d)\n", dev.resets);
     CHECK(dev.mouse_on,       "  set_mouse(true) must reach the device\n");
+}
+
+// A stand-in for jaal's host_context: records emits, answers how many Msgs
+// each produced (as the program's on() would), and records stop().
+namespace {
+struct FakeCx {
+    std::vector<Event> emitted;
+    std::size_t (*answer)(const Event&) = [](const Event&) -> std::size_t { return 0; };
+    std::optional<int> stopped;
+    jaal::result<jaal::platform::native_reactor::registration>
+    watch(jaal::platform::native_reactor::handle, jaal::interest, std::uint64_t) {
+        return std::unexpected(jaal::error{.what = "fake"});
+    }
+    std::size_t emit(const Event& ev) { emitted.push_back(ev); return answer(ev); }
+    void stop(int code) { stopped = code; }
+};
+
+KeyEvent ctrl(char c) { return KeyEvent{.key = CharKey{static_cast<char32_t>(c)}, .mods = {.ctrl = true}}; }
+KeyEvent plain(char c) { return KeyEvent{.key = CharKey{static_cast<char32_t>(c)}, .mods = {}}; }
+
+} // namespace
+
+TEST_CASE("host: an unhandled ^C stops with 130, like SIGINT") {
+    // Raw mode delivers ^C as a key; jaal only applies its exit rule to a
+    // real SIGINT. A program with no ^C handler must still be stoppable.
+    FakeDevice dev;
+    Host h{dev};
+    FakeCx cx;
+    dev.next_read = {plain('x'), ctrl('c'), plain('y')};
+    h.on_ready(cx, jaal::readiness{.token = 1, .readable = true});
+    CHECK(cx.stopped == 130, "  unhandled ^C must stop with 130 (got %d)\n", cx.stopped.value_or(-1));
+    CHECK(cx.emitted.size() == 2, "  input after the ^C must not be handed on (got %zu emits)\n",
+          cx.emitted.size());
+}
+
+TEST_CASE("host: a ^C the program handles is the program's call") {
+    FakeDevice dev;
+    Host h{dev};
+    FakeCx cx;
+    cx.answer = [](const Event&) -> std::size_t { return 1; };
+    dev.next_read = {ctrl('c')};
+    h.on_ready(cx, jaal::readiness{.token = 1, .readable = true});
+    CHECK(!cx.stopped, "  a handled ^C must not stop the program\n");
+}
+
+TEST_CASE("host: default_signal_exit off keeps ^C as plain input") {
+    FakeDevice dev;
+    Host h{dev};
+    h.set_interrupt_exit(false);
+    FakeCx cx;
+    dev.next_read = {ctrl('c')};
+    h.on_ready(cx, jaal::readiness{.token = 1, .readable = true});
+    CHECK(!cx.stopped, "  with the exit off, ^C must not stop the program\n");
+}
+
+TEST_CASE("keymap: O(1) match, no modifiers, specials") {
+    using M = std::variant<Tick, Bye>;
+    const keymap<M> keys{{'q', Bye{}}, {SpecialKey::Tab, Tick{}}, {'a', Tick{}}};
+    CHECK(keys(plain('q')) && std::holds_alternative<Bye>(*keys(plain('q'))), "  'q' must map to Bye\n");
+    CHECK(!keys(ctrl('q')), "  Ctrl+q must not match 'q'\n");
+    CHECK(!keys(plain('z')), "  an unlisted key must not match\n");
+    const KeyEvent tab{.key = SpecialKey::Tab, .mods = {}};
+    CHECK(keys(tab) && std::holds_alternative<Tick>(*keys(tab)), "  Tab must map to Tick\n");
+    const KeyEvent wide{.key = CharKey{U'é'}, .mods = {}};
+    CHECK(!keys(wide), "  a non-ASCII key must not alias a table slot\n");
+}
+
+TEST_CASE("keymap: a key listed twice is rejected") {
+    using M = std::variant<Tick, Bye>;
+    bool threw = false;
+    try { const keymap<M> keys{{'q', Bye{}}, {'q', Tick{}}}; (void)keys; }
+    catch (const std::logic_error&) { threw = true; }
+    CHECK(threw, "  a duplicate key must throw (the second entry could never fire)\n");
 }
 
 TEST_CASE("host: osc() builds a well-formed sequence") {

@@ -42,7 +42,7 @@ try:
     import pyte
 except ImportError:
     print("SKIP: needs pyte (pip install pyte)")
-    sys.exit(0)
+    sys.exit(77)   # ctest SKIP_RETURN_CODE: reported as skipped, not passed
 
 BIN = sys.argv[1] if len(sys.argv) > 1 else "build/host_probe"
 failures = 0

@@ -105,7 +105,7 @@ public:
         input_reg_.emplace(std::move(*reg));
         cx_ = ctx_ref{&cx};
         const auto sz = term_.size();
-        cx.emit(ResizeEvent{sz.width, sz.height});
+        (void)cx.emit(ResizeEvent{sz.width, sz.height});
     }
 
     template <class Cx>
@@ -173,7 +173,14 @@ public:
         // keys: stop right after one and hold the rest.
         for (std::size_t i = 0; i < events.size(); ++i) {
             const bool nav = detail::is_navigation_key(events[i]);
-            cx.emit(events[i]);                   // Event is event_type: no rebuild
+            const std::size_t produced = cx.emit(events[i]);
+            // Raw mode turns ^C into a key, so jaal never sees a SIGINT and
+            // its "unhandled interrupt exits 130" rule can't fire. Apply it
+            // here: a ^C the program didn't take ends it like a real SIGINT.
+            if (produced == 0 && interrupt_exit_ && is_ctrl_c(events[i])) {
+                cx.stop(kInterruptExit);
+                return;
+            }
             if (nav && i + 1 < events.size()) {
                 held_.assign(std::make_move_iterator(events.begin() + static_cast<std::ptrdiff_t>(i) + 1),
                              std::make_move_iterator(events.end()));
@@ -188,8 +195,19 @@ public:
         if (s != jaal::sig::resize) return;
         term_.on_resize();
         const auto sz = term_.size();
-        cx.emit(ResizeEvent{sz.width, sz.height});
+        (void)cx.emit(ResizeEvent{sz.width, sz.height});
         dirty_ = true;                            // re-lay-out even if the program has no on(ResizeEvent)
+    }
+
+    /// jaal::run_options::default_signal_exit, applied to ^C typed in raw
+    /// mode. maya::run copies it from the run options; on by default.
+    void set_interrupt_exit(bool on) noexcept { interrupt_exit_ = on; }
+
+    static constexpr int kInterruptExit = 128 + 2;   // what SIGINT exits with
+
+    [[nodiscard]] static bool is_ctrl_c(const Event& ev) noexcept {
+        const auto* k = std::get_if<KeyEvent>(&ev);
+        return k && ctrl_is(*k, 'c');
     }
 
     // The model changed, or a frame is owed: draw it.
@@ -402,15 +420,15 @@ private:
     // The attached context, type-erased.
     //
     // attach() is templated (see there), so the context type varies with the
-    // host that ends up running — but this member has to name ONE type. The
-    // host only ever asks the context to watch a handle or emit an event, so
-    // erase to those two.
+    // host that ends up running, but this member has to name ONE type. The
+    // host only asks it to watch a handle, emit an event or stop.
     struct ctx_ref {
         void* p = nullptr;
         jaal::result<jaal::platform::native_reactor::registration>
             (*watch_fn)(void*, jaal::platform::native_reactor::handle,
                         jaal::interest, std::uint64_t) = nullptr;
-        void (*emit_fn)(void*, const Event&) = nullptr;
+        std::size_t (*emit_fn)(void*, const Event&) = nullptr;
+        void (*stop_fn)(void*, int) = nullptr;
 
         ctx_ref() = default;
         template <class Cx>
@@ -421,9 +439,10 @@ private:
                           jaal::interest what, std::uint64_t tok) {
                   return static_cast<Cx*>(self)->watch(h, what, tok);
               }),
-              emit_fn([](void* self, const Event& ev) {
-                  static_cast<Cx*>(self)->emit(ev);
-              }) {}
+              emit_fn([](void* self, const Event& ev) -> std::size_t {
+                  return static_cast<Cx*>(self)->emit(ev);
+              }),
+              stop_fn([](void* self, int code) { static_cast<Cx*>(self)->stop(code); }) {}
 
         explicit operator bool() const noexcept { return p != nullptr; }
         [[nodiscard]] auto watch(jaal::platform::native_reactor::handle h,
@@ -431,7 +450,8 @@ private:
                                  std::uint64_t tok) const {
             return watch_fn(p, h, what, tok);
         }
-        void emit(const Event& ev) const { emit_fn(p, ev); }
+        std::size_t emit(const Event& ev) const { return emit_fn(p, ev); }
+        void stop(int code) const { stop_fn(p, code); }
     };
 
     Dev&                                                    term_;
@@ -447,6 +467,7 @@ private:
     bool                                                      last_warmup_ = false;
     std::optional<clock::time_point>                          next_frame_at_;
     std::chrono::nanoseconds                                  frame_period_;   // 0 = event-driven
+    bool                                                      interrupt_exit_ = true;   // unhandled ^C exits 130
     clock::time_point                                         next_tick_{};    // next fps frame
 };
 

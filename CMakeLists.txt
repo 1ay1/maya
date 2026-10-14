@@ -945,8 +945,55 @@ set_tests_properties(
                              COMMAND ${Python3_EXECUTABLE}
                                      ${PROJECT_SOURCE_DIR}/tests/host_pty_test.py
                                      $<TARGET_FILE:host_probe>)
-                    set_tests_properties(host_pty_test PROPERTIES TIMEOUT 60 RUN_SERIAL TRUE)
+                    set_tests_properties(host_pty_test PROPERTIES TIMEOUT 60 RUN_SERIAL TRUE
+                                         SKIP_RETURN_CODE 77)
+                    add_test(NAME ctrl_c_test
+                             COMMAND ${Python3_EXECUTABLE}
+                                     ${PROJECT_SOURCE_DIR}/tests/ctrl_c_test.py
+                                     $<TARGET_FILE:host_probe>)
+                    set_tests_properties(ctrl_c_test PROPERTIES TIMEOUT 30 RUN_SERIAL TRUE)
                 endif()
+            endif()
+
+            # Seam mistakes that must not compile (tests/compile_fail/seam.cpp).
+            # Each MATCH is the diagnostic, so a case can't pass by failing for
+            # the wrong reason. Case 0 is a control that must compile.
+            set(_cf_std "-std=c++2c")
+            if(MSVC)
+                set(_cf_std "/std:c++latest")
+            endif()
+            set(_cf_inc "${PROJECT_SOURCE_DIR}/include;${PROJECT_SOURCE_DIR}/third_party/jaal/include")
+            set(_cf_cases
+                "0|"
+                "1|use SpecialKey::Tab"
+                "2|use SpecialKey::Escape"
+                "3|arrive as Ctrl\\+letter"
+                "4|lists input the terminal never sends"
+                "5|no overload takes an event this host sends"
+                "6|lists a kind of input with no on\\(\\) for it"
+                "7|on_key")
+            if(NOT MSVC)
+                foreach(_c IN LISTS _cf_cases)
+                    string(REPLACE "|" ";" _parts "${_c}")
+                    list(GET _parts 0 _n)
+                    list(LENGTH _parts _len)
+                    set(_m "")
+                    if(_len GREATER 1)
+                        list(GET _parts 1 _m)
+                    endif()
+                    set(_ok "")
+                    if(_n EQUAL 0)
+                        set(_ok 1)
+                    endif()
+                    add_test(NAME seam_compile_fail_${_n}
+                             COMMAND ${CMAKE_COMMAND}
+                                     -DCXX=${CMAKE_CXX_COMPILER} -DSTD=${_cf_std}
+                                     "-DINC=${_cf_inc}"
+                                     -DSRC=${PROJECT_SOURCE_DIR}/tests/compile_fail/seam.cpp
+                                     -DCASE=${_n} "-DMATCH=${_m}" -DEXPECT_OK=${_ok}
+                                     -P ${PROJECT_SOURCE_DIR}/tests/compile_fail/run_case.cmake)
+                    set_tests_properties(seam_compile_fail_${_n} PROPERTIES LABELS "static" TIMEOUT 120)
+                endforeach()
             endif()
         endif()
     endif()

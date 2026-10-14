@@ -688,7 +688,7 @@ struct Agent {
             {'q',                Quit{}},
             {SpecialKey::Escape, Quit{}},
             {' ',                Advance{}},
-            {'\t',               ToggleTool{}},
+            {SpecialKey::Tab,    ToggleTool{}},
             {'r',                Restart{}},
             {SpecialKey::Enter,  Send{}},
         };

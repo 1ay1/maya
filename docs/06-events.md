@@ -97,8 +97,20 @@ static std::optional<Msg> on(const Model&, const KeyEvent& k) {
 ```
 
 Each entry matches a **plain** key with no modifiers, so `'q'` doesn't also
-fire on Alt+Q. Lookup is O(1); if a key is listed twice the first entry wins.
-Timers are separate — they still go in `subscribe()`:
+fire on Alt+Q. Lookup is O(1).
+
+A key that could never match won't compile: `'\t'`, `'\r'`, `'\x1b'` and
+`'\x7f'` arrive as `SpecialKey::Tab`, `Enter`, `Escape` and `Backspace`, and
+other control bytes arrive as Ctrl+letter (match those with `ctrl_is`). A key
+listed twice throws, since the second entry could never fire.
+
+**Ctrl+C.** Raw mode delivers ^C as a key, not SIGINT. If your `on()` doesn't
+take it, the program stops with exit 130 and the terminal restored, the same
+as an unhandled SIGINT. Handle it (`if (ctrl_is(k, 'c')) return Quit{};`) to
+decide yourself, or run with `run<App>({}, {.default_signal_exit = false})`
+to make it plain input.
+
+Timers are separate. They still go in `subscribe()`:
 
 ```cpp
 using Sub = jaal::Sub<Msg>;

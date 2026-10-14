@@ -81,6 +81,7 @@ int run(Options cfg = {}, jaal::run_options opt = {}) {
     // the effect and the program. Without this the error still happens, as
     // an unsatisfied constraint on jaal::run several levels down.
     jaal::require_host_for<Host<P>, P>();
+    check_program<P>();
 
     auto term = Screen::open(cfg);
     if (!term) {
@@ -97,6 +98,7 @@ int run(Options cfg = {}, jaal::run_options opt = {}) {
     // jaal for the program's lifetime, then is joined before we return.
     host_detail::executor_scope exec;
     Host<P> host{*term, cfg.fps};
+    host.set_interrupt_exit(opt.default_signal_exit);   // ^C typed in raw mode
     return jaal::run<P>(host, std::move(opt));
 }
 

@@ -202,6 +202,15 @@ check(alive(), "survives a resize")
 #    folding 5M messages/s showed as 12% and passed. Checked against a known
 #    spinner: see the note at the end of this file.)
 def child_cpu():
+    # /proc/<pid>/stat gives clock ticks (10 ms). `ps -o cputime` rounds to
+    # whole seconds, so over a 2 s window one second of rounding read as
+    # ~45% of a core and failed programs that really used ~7%.
+    try:
+        with open(f"/proc/{pid}/stat") as f:
+            fields = f.read().rsplit(")", 1)[1].split()
+        return (int(fields[11]) + int(fields[12])) / os.sysconf("SC_CLK_TCK")
+    except (OSError, IndexError, ValueError):
+        pass
     out = os.popen(f"ps -o cputime= -p {pid}").read().strip()
     if not out:
         return None

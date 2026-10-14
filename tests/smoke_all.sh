@@ -68,12 +68,15 @@ run stopwatch         --keys=" l"
 run editor_live       --keys="x"                         --quit="$(printf '\021')"
 run proc_table        --keys="jsr"
 run viewport          --keys="-fj"
-run widgets           --keys="$(printf '\t') r"
+# widgets streams a token chart on a 50 ms tick, so idle it still draws.
+run widgets           --keys="$(printf '\t') r"               --idle-cpu=0.3
 run agent_stats       --keys="2f-"
 run motion_showcase   --keys="c1"                        --animates="5"
 run agent             --keys="$(printf '\r') t"              --animates="$(printf '\r')"
 run messenger         --keys="xyz"                       --quit="$(printf '\003')"
-run agent_session     --keys="xy"                        --quit="$(printf '\003')" --animates="$(printf '\r')"
+# agent_session runs an autopilot demo: it streams a turn, then starts the
+# next one by itself, so it is never idle. Its budget is the cost of streaming.
+run agent_session     --keys="xy"                        --quit="$(printf '\003')" --animates="$(printf '\r')" --idle-cpu=0.4
 run terminal_fx            --keys="tcori"
 
 # Canvas-style demos (pixels / glyphs). Ray tracers render every frame by
@@ -95,7 +98,9 @@ run space3d                --keys="bd"                        --idle-cpu=8
 run fps                    --keys="wd"                        --idle-cpu=2
 
 # Dashboards and apps.
-run chat                   --keys="ab"
+# chat replays a scripted conversation at 30 Hz (markdown streaming) until
+# the script ends, so for the first seconds it is never idle.
+run chat                   --keys="ab"                        --idle-cpu=0.4
 run deploy                 --keys="3f"
 run hacker                 --keys="2e"
 run ide                    --keys="b12"

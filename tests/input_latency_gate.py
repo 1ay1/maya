@@ -15,7 +15,7 @@
 #
 # The point of THIS test is NOT the microbench numbers — those live in
 # jaal_bench and are already tight. The point is that the END-TO-END pipe
-# (PTY read -> Sub::on_key -> Msg -> update -> view -> Element -> renderer
+# (PTY read -> on(model, KeyEvent) -> Msg -> update -> view -> Element -> renderer
 # -> PTY write) stays fast under real conditions, including tty setup and
 # escape parsing. If a change in maya (e.g. a slow renderer walk) or a
 # change in jaal (e.g. an extra reconcile per key) doubles this number,

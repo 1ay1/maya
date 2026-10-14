@@ -138,12 +138,14 @@ struct Prog {
     struct Model { int n = 0; };
     using Msg = std::variant<Tick, Bye>;
     using Cmd = terminal_cmd<Msg>;
-    using Sub = jaal::Sub<Msg, on_key>;
 
     static Cmd update(Model& m, Tick) { ++m.n; return {}; }
     static Cmd update(Model&, Bye)    { return Cmd::quit(0); }
     static Element view(const Model& m) { return dsl::text(std::to_string(m.n)); }
-    static Sub subscribe(const Model&) { return keys<Sub>({{'q', Bye{}}}); }
+    static std::optional<Msg> on(const Model&, const KeyEvent& k) {
+        static const keymap<Msg> keys{{'q', Bye{}}};
+        return keys(k);
+    }
 };
 
 using Host = terminal_host<Prog, FakeDevice>;

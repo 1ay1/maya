@@ -146,7 +146,6 @@ struct ProcTableDemo {
     using Msg = std::variant<Key, Mouse, Quit>;
 
     using Cmd = jaal::Cmd<Msg>;
-    using Sub = jaal::Sub<Msg, on_key, on_mouse>;
 
     // Hit kinds for the row / header click rects the Table registers.
     static constexpr std::uint32_t kHitRow    = 1;
@@ -385,19 +384,13 @@ struct ProcTableDemo {
         );
     }
 
-    static Sub subscribe(const Model&) {
-        return Sub::batch(
-            Sub::on(on_key{}, [](const KeyEvent& ev) -> std::optional<Msg> {
-                if (const auto* ck = std::get_if<CharKey>(&ev.key);
-                    ck && ck->codepoint == 'q')
-                    return Quit{};
-                return Key{ev};
-            }),
-            Sub::on(on_mouse{}, [](const MouseEvent& me) -> std::optional<Msg> {
-                return Mouse{me};
-            })
-        );
+    static std::optional<Msg> on(const Model&, const KeyEvent& ev) {
+        if (const auto* ck = std::get_if<CharKey>(&ev.key);
+            ck && ck->codepoint == 'q')
+            return Quit{};
+        return Key{ev};
     }
+    static std::optional<Msg> on(const Model&, const MouseEvent& me) { return Mouse{me}; }
 };
 
 static_assert(Program<ProcTableDemo>, "ProcTableDemo must satisfy App");

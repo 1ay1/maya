@@ -21,7 +21,6 @@ struct App {
     using Msg = std::variant<Move, Cycle, Quit>;
 
     using Cmd = jaal::Cmd<Msg>;
-    using Sub = jaal::Sub<Msg, on_key>;
 
     static Cmd update(Model&, Quit)       { return Cmd::quit(0); }
     static Cmd update(Model& m, Move mv)  { m.cx = std::max(0, m.cx + mv.dx); m.cy = std::max(0, m.cy + mv.dy); return {}; }
@@ -50,12 +49,13 @@ struct App {
               .side = sides[m.side], .gap = 0, .flip = true, .clamp = true });
     }
 
-    static Sub subscribe(const Model&) {
-        return keys<Sub>({
+    static std::optional<Msg> on(const Model&, const KeyEvent& k) {
+        static const keymap<Msg> keys{
             {SpecialKey::Left,  Move{-1, 0}}, {SpecialKey::Right, Move{1, 0}},
             {SpecialKey::Up,    Move{0, -1}}, {SpecialKey::Down,  Move{0, 1}},
             {' ', Cycle{}}, {'q', Quit{}}, {SpecialKey::Escape, Quit{}},
-        });
+        };
+        return keys(k);
     }
 
     static std::string side_name(int s) {

@@ -51,7 +51,7 @@
 
 namespace maya {
 
-// ── The program: model, messages, effects, subscriptions ────────────────
+// ── The program: model, messages, effects, subscriptions, input ─────────
 template <class Msg, class... Effects>
 using Cmd = ::jaal::Cmd<Msg, Effects...>;
 template <class Msg, class... Sources>
@@ -61,7 +61,6 @@ using Sink = ::jaal::Sink<Msg>;
 
 using ::jaal::pure_fx;          // declare an app effect: pure_fx<Payload, "name">
 using ::jaal::payload_t;
-using ::jaal::router;           // declare an event source
 using ::jaal::host_context;
 using ::jaal::require_host_for;
 using ::jaal::run_options;
@@ -69,6 +68,19 @@ using ::jaal::Subscribing;
 using ::jaal::HasVisualHash;
 using ::jaal::HasNeedsWarmup;
 using ::jaal::handled_as_group;
+// Input: a program writes on(const Model&, const E&). These name what it takes.
+using ::jaal::kernel::no_events; // `using Event = no_events;`: takes no input
+using ::jaal::event_of_t;       // a program's declared Event, or no_events
+// Keyed tasks and timers: Cmd::task("search", ...), Cmd::after("save", ...),
+// Cmd::cancel("search"). A new one with the same key replaces the old.
+// (jaal::key is not re-exported: maya::key(ev, 'q') is the key predicate.)
+using ::jaal::task_key;
+// Composition: a child program inside a parent's model.
+using ::jaal::child;
+using ::jaal::children;
+// Settle-down values that live in a model.
+using ::jaal::debounce;
+using ::jaal::throttle;
 namespace fx = ::jaal::fx;      // core effects: fx::quit, …
 // The bare runtime concept (maya::Program, in host/sources.hpp, adds view()).
 template <class P>

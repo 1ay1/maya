@@ -139,7 +139,6 @@ struct App {
     using Msg = std::variant<KeyMsg, Quit>;
 
     using Cmd = jaal::Cmd<Msg>;
-    using Sub = jaal::Sub<Msg, on_key>;
 
     static Cmd init(Model& m) { m.ed.set_text(src); return {}; }
 
@@ -148,12 +147,10 @@ struct App {
 
     static Element view(const Model& m) { return m.ed | dsl::grow(); }
 
-    static Sub subscribe(const Model&) {
-        return Sub::on(on_key{}, [](const KeyEvent& k) -> std::optional<Msg> {
-            if (k.mods.ctrl && std::holds_alternative<CharKey>(k.key) &&
-                std::get<CharKey>(k.key).codepoint == 'q') return Quit{};
-            return KeyMsg{k};
-        });
+    static std::optional<Msg> on(const Model&, const KeyEvent& k) {
+        if (k.mods.ctrl && std::holds_alternative<CharKey>(k.key) &&
+            std::get<CharKey>(k.key).codepoint == 'q') return Quit{};
+        return KeyMsg{k};
     }
 };
 

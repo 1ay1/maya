@@ -106,7 +106,7 @@ struct DoomFire {
     using Model = ::Model;
     using Msg   = ::Msg;
     using Cmd   = jaal::Cmd<Msg>;
-    using Sub   = jaal::Sub<Msg, on_key, on_resize>;
+    using Sub   = jaal::Sub<Msg>;
 
     static Cmd update(Model& m, Resize r) {
         m.w = std::max(1, r.cols);
@@ -192,21 +192,22 @@ struct DoomFire {
         return v(pixels(render(m)), status_bar(m));
     }
 
-    static Sub subscribe(const Model&) {
-        return Sub::batch(
-            Sub::every(16ms, Tick{}),
-            Sub::on(on_resize{}, [](const ResizeEvent& r) -> std::optional<Msg> {
-                return Resize{r.width.value, r.height.value};
-            }),
-            keys<Sub>({
-                {' ', ToggleSource{}},
-                {SpecialKey::Left, Wind{-1}}, {SpecialKey::Right, Wind{1}},
-                {'+', Heat{1}}, {'=', Heat{1}}, {'-', Heat{-1}},
-                {'1', SetPalette{0}}, {'2', SetPalette{1}}, {'3', SetPalette{2}},
-                {'q', Quit{}}, {SpecialKey::Escape, Quit{}},
-            }));
-    }
+    static Sub subscribe(const Model&) { return Sub::every(16ms, Tick{}); }
     static bool subs_key(const Model&) { return true; }
+
+    static std::optional<Msg> on(const Model&, const ResizeEvent& r) {
+        return Resize{r.width.value, r.height.value};
+    }
+    static std::optional<Msg> on(const Model&, const KeyEvent& k) {
+        static const keymap<Msg> keys{
+            {' ', ToggleSource{}},
+            {SpecialKey::Left, Wind{-1}}, {SpecialKey::Right, Wind{1}},
+            {'+', Heat{1}}, {'=', Heat{1}}, {'-', Heat{-1}},
+            {'1', SetPalette{0}}, {'2', SetPalette{1}}, {'3', SetPalette{2}},
+            {'q', Quit{}}, {SpecialKey::Escape, Quit{}},
+        };
+        return keys(k);
+    }
 };
 
 static_assert(Program<DoomFire>);

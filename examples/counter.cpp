@@ -8,6 +8,7 @@
 
 #include <maya/host/run.hpp>
 
+#include <optional>
 #include <string>
 #include <variant>
 
@@ -21,7 +22,6 @@ struct Counter {
     using Msg = std::variant<Inc, Dec, Quit>;
 
     using Cmd = jaal::Cmd<Msg>;
-    using Sub = jaal::Sub<Msg, on_key>;
 
     static Cmd update(Model& m, Inc)  { ++m.count; return {}; }
     static Cmd update(Model& m, Dec)  { --m.count; return {}; }
@@ -34,8 +34,9 @@ struct Counter {
         ) | border_<Round> | bcol<50, 55, 70> | pad<1>;
     }
 
-    static Sub subscribe(const Model&) {
-        return keys<Sub>({{'+', Inc{}}, {'-', Dec{}}, {'q', Quit{}}});
+    static std::optional<Msg> on(const Model&, const KeyEvent& k) {
+        static const keymap<Msg> keys{{'+', Inc{}}, {'-', Dec{}}, {'q', Quit{}}};
+        return keys(k);
     }
 };
 

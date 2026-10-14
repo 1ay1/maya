@@ -16,12 +16,12 @@ struct Nav {
     struct Down {}; struct Quit {};
     using Msg = std::variant<Down, Quit>;
     using Cmd = jaal::Cmd<Msg>;
-    using Sub = jaal::Sub<Msg, on_key>;
     static Cmd update(Model& m, Down) { ++m.row; return {}; }
     static Cmd update(Model&, Quit)   { return Cmd::quit(0); }
     static Element view(const Model& m) { return text("row " + std::to_string(m.row)); }
-    static Sub subscribe(const Model&) {
-        return keys<Sub>({{SpecialKey::Down, Down{}}, {'q', Quit{}}});
+    static std::optional<Msg> on(const Model&, const KeyEvent& k) {
+        static const keymap<Msg> keys{{SpecialKey::Down, Down{}}, {'q', Quit{}}};
+        return keys(k);
     }
 };
 

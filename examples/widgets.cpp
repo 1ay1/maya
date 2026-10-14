@@ -61,7 +61,7 @@ struct Widgets {
     using Msg = std::variant<Tick, ToggleStream, NextPanel, ResetState, Quit>;
 
     using Cmd = jaal::Cmd<Msg>;
-    using Sub = jaal::Sub<Msg, on_key>;
+    using Sub = jaal::Sub<Msg>;
 
     static Cmd init(Model& m) {
         m.rate_history.resize(32, 0.f);
@@ -291,21 +291,21 @@ struct Widgets {
         ) | pad<1>;
     }
 
-    // ── subscribe ────────────────────────────────────────────────────────
+    // ── input / subscribe ────────────────────────────────────────────────
 
-    static Sub subscribe(const Model& m) {
-        auto on_keys = keys<Sub>({
+    static std::optional<Msg> on(const Model&, const KeyEvent& k) {
+        static const keymap<Msg> keys{
             {'q',                Quit{}},
             {SpecialKey::Escape, Quit{}},
             {' ',                ToggleStream{}},
             {'\t',               NextPanel{}},
             {'r',                ResetState{}},
-        });
+        };
+        return keys(k);
+    }
 
-        return Sub::batch(
-            std::move(on_keys),
-            Sub::every(std::chrono::milliseconds(50), Tick{})
-        );
+    static Sub subscribe(const Model&) {
+        return Sub::every(std::chrono::milliseconds(50), Tick{});
     }
 };
 

@@ -1888,7 +1888,7 @@ struct App {
     using Model = ::Model;
     using Msg   = ::Msg;
     using Cmd   = jaal::Cmd<Msg, commit_scrollback>;
-    using Sub   = jaal::Sub<Msg, on_key>;
+    using Sub   = jaal::Sub<Msg>;
 
     static Cmd init(Model& m) {
         m.phase = Phase::Idle;
@@ -2284,7 +2284,33 @@ struct App {
 
     static Element view(const Model& m) { return ::view(m); }
 
-    // Keys and the animation tick, as before — plus the turn's WORKER.
+    static std::optional<Msg> on(const Model&, const KeyEvent& k) {
+        // Hard-quit chord
+        if (ctrl_is(k, 'c')) return Msg{Quit{}};
+
+        // Specials
+        if (key_is(k, SpecialKey::Escape))    return Msg{Quit{}};
+        if (key_is(k, SpecialKey::Enter))     return Msg{ComposerSubmit{}};
+        if (key_is(k, SpecialKey::Tab))       return Msg{ComposerCycle{+1}};
+        if (key_is(k, SpecialKey::BackTab))   return Msg{ComposerCycle{-1}};
+        if (key_is(k, SpecialKey::Up))        return Msg{ComposerCycle{-1}};
+        if (key_is(k, SpecialKey::Down))      return Msg{ComposerCycle{+1}};
+        if (key_is(k, SpecialKey::Backspace)) return Msg{ComposerBackspace{}};
+
+        // Space — context-sensitive: if a permission card is open it grants;
+        // otherwise it's just a literal space character into the composer.
+        if (key_is(k, ' ')) return Msg{GrantPerm{}};
+
+        // Plain character — type into the composer.
+        if (auto* ch = std::get_if<CharKey>(&k.key)) {
+            if (!k.mods.ctrl && !k.mods.alt && !k.mods.super_) {
+                return Msg{ComposerChar{ch->codepoint}};
+            }
+        }
+        return std::nullopt;
+    }
+
+    // The animation tick, plus the turn's WORKER.
     //
     // The worker is a Sub::stream keyed on (turn, phase). It runs exactly as
     // long as the model says a turn is in flight and not blocked on the
@@ -2294,41 +2320,16 @@ struct App {
     // abandoned for a new prompt changes the key too, so jaal stops the old
     // worker and drops anything it still sends.
     static Sub subscribe(const Model& m) {
-        auto keys = Sub::on(on_key{}, [](const KeyEvent& k) -> std::optional<Msg> {
-            // Hard-quit chord
-            if (ctrl_is(k, 'c')) return Msg{Quit{}};
-
-            // Specials
-            if (key_is(k, SpecialKey::Escape))    return Msg{Quit{}};
-            if (key_is(k, SpecialKey::Enter))     return Msg{ComposerSubmit{}};
-            if (key_is(k, SpecialKey::Tab))       return Msg{ComposerCycle{+1}};
-            if (key_is(k, SpecialKey::BackTab))   return Msg{ComposerCycle{-1}};
-            if (key_is(k, SpecialKey::Up))        return Msg{ComposerCycle{-1}};
-            if (key_is(k, SpecialKey::Down))      return Msg{ComposerCycle{+1}};
-            if (key_is(k, SpecialKey::Backspace)) return Msg{ComposerBackspace{}};
-
-            // Space — context-sensitive: if a permission card is open it grants;
-            // otherwise it's just a literal space character into the composer.
-            if (key_is(k, ' ')) return Msg{GrantPerm{}};
-
-            // Plain character — type into the composer.
-            if (auto* ch = std::get_if<CharKey>(&k.key)) {
-                if (!k.mods.ctrl && !k.mods.alt && !k.mods.super_) {
-                    return Msg{ComposerChar{ch->codepoint}};
-                }
-            }
-            return std::nullopt;
-        });
         auto tick = Sub::every(50ms, Tick{});
 
         const bool working = m.stream_phase > 0 && !m.perm_open
                           && m.phase != Phase::Idle && m.phase != Phase::Done;
-        if (!working) return Sub::batch(std::move(keys), std::move(tick));
+        if (!working) return tick;
 
         auto worker = Sub::stream(
             "turn/" + std::to_string(m.turn_number) + "/" + std::to_string(m.stream_phase),
             turn_worker, m.turn_prompt, m.stream_phase);
-        return Sub::batch(std::move(keys), std::move(tick), std::move(worker));
+        return Sub::batch(std::move(tick), std::move(worker));
     }
 };
 

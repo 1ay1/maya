@@ -38,7 +38,6 @@ struct TerminalFx {
     using Msg = std::variant<Title, Clip, Osc, Redraw, Reset, RunChild, ChildExited, Quit>;
 
     using Cmd = terminal_cmd<Msg>;
-    using Sub = jaal::Sub<Msg, on_key>;
 
     static void note(Model& m, std::string s) {
         m.log.push_back(std::to_string(++m.n) + ". " + std::move(s));
@@ -73,11 +72,12 @@ struct TerminalFx {
         return v(std::move(rows)) | pad<1> | border_<Round> | width(72);
     }
 
-    static Sub subscribe(const Model&) {
-        return keys<Sub>({
+    static std::optional<Msg> on(const Model&, const KeyEvent& k) {
+        static const keymap<Msg> keys{
             {'t', Title{}}, {'c', Clip{}}, {'o', Osc{}}, {'r', Redraw{}},
             {'i', Reset{}}, {'s', RunChild{}}, {'q', Quit{}},
-        });
+        };
+        return keys(k);
     }
 };
 

@@ -4,7 +4,7 @@ Complete reference for all public types, functions, and constants in maya.
 
 ## Table of Contents
 
-- [App Framework](#app-framework) (run, Options, Program, effects, event sources, keys, print)
+- [App Framework](#app-framework) (run, Options, Program, effects, input, keymap, print)
 - [DSL Nodes](#dsl-nodes)
 - [DSL Style Tags](#dsl-style-tags)
 - [DSL Layout Tags](#dsl-layout-tags)
@@ -78,20 +78,21 @@ struct Counter {
     using Msg = std::variant<Inc, Quit>;               // may nest variants (domain groups)
 
     using Cmd = jaal::Cmd<Msg>;                        // + the terminal effects you use
-    using Sub = jaal::Sub<Msg, on_key>;                // + the event sources you use
+    using Sub = jaal::Sub<Msg>;                        // timers/streams only; optional
 
     static Cmd init(Model&);                           // optional
     static Cmd update(Model& m, Inc);                  // exactly one per alternative
     static Cmd update(Model& m, Quit);
     static Element view(const Model& m);               // pure
-    static Sub subscribe(const Model& m);              // optional; diffed every step
+    static std::optional<Msg> on(const Model&, const KeyEvent&);  // optional; one per input kind
+    static Sub subscribe(const Model& m);              // optional: timers/streams; diffed every step
     static auto subs_key(const Model& m);              // optional: what subscribe() reads
 };
 static_assert(Program<Counter>);
 ```
 
-A message without a handler, an effect not in the `Cmd` row, or an event
-source not in the `Sub` row is a compile error. Optional hooks read by the
+A message without a handler or an effect not in the `Cmd` row is a compile
+error. Optional hooks read by the
 host: `static std::uint64_t visual_hash(const Model&)` (skip the view when
 unchanged), `static bool needs_warmup(const Model&)`.
 
@@ -100,7 +101,10 @@ unchanged), `static bool needs_warmup(const Model&)`.
 The core effects are jaal's: `Cmd::quit(code)`, `Cmd::after(dur, msg)`,
 `Cmd::task(fn, args..., mapper)` (a worker thread; the mapper turns its
 result into a message), `Cmd::send(msg)`, `Cmd::batch(...)`, `map`/`map_with`
-for composing child programs. See jaal's README.
+for composing child programs. `Cmd::perform<Found>(body, args...)` /
+`Cmd::attempt<Ok, Err>(...)` deliver a body's result as a message. Keyed
+effects replace the running one with the same key: `Cmd::task("search", body, args...)`,
+`Cmd::after("save", 1s, Msg{})`, `Cmd::cancel("search")`. See jaal's README.
 
 maya adds the terminal's own effects. List the ones a program uses in its
 `Cmd` row, e.g. `jaal::Cmd<Msg, set_title, write_clipboard>`, and return the
@@ -121,45 +125,54 @@ payload as a `Cmd`: `return Cmd(SetTitle{"build: ok"});`
 
 `terminal_cmd<Msg>` is a `Cmd` with all of them.
 
-### Subscriptions: Sub
+### Input: on()
 
-The core sources are jaal's: `Sub::every(period, msg)`, `Sub::stream(...)`,
-`Sub::batch(...)`. maya adds the terminal's event sources:
+Input is one static `on(const Model&, const E&)` overload per kind the
+program handles. It reads the live model when the event arrives and returns
+at most one message; a kind with no overload is dropped.
 
-| Source | Event |
+| Event | Carries |
 |---|---|
-| `on_key` | `KeyEvent` |
-| `on_mouse` | `MouseEvent{button, kind (Press/Release/Move), x, y (1-based), mods}` — needs `.mouse = true` |
-| `on_paste` | `PasteEvent{content}` |
-| `on_focus` | `FocusEvent` |
-| `on_resize` | `ResizeEvent{width, height}` (cells); the first arrives at startup |
+| `KeyEvent` | `key`, `mods`, `raw_sequence` |
+| `MouseEvent` | `{button, kind (Press/Release/Move), x, y (1-based), mods}` — needs `.mouse = true` |
+| `PasteEvent` | `{content}` |
+| `FocusEvent` | `{focused}` |
+| `ResizeEvent` | `{width, height}` (cells); the first arrives at startup |
+
+`maya::terminal_events` is the variant of all five (same as `maya::Event`).
+A program may declare `using Event = ...;` — `jaal::headless<App>` /
+`jaal::sim<App>` pick it up, and a listed kind with no `on()` is a compile
+error. Signals arrive the same way: `on(const Model&, jaal::sig)`.
 
 ```cpp
+static std::optional<Msg> on(const Model&, const KeyEvent& e) {
+    if (ctrl_is(e, 'c')) return Quit{};
+    return Key{e};                                     // let update() decide
+}
 static Sub subscribe(const Model& m) {
-    auto k = Sub::on(on_key{}, [](const KeyEvent& e) -> std::optional<Msg> {
-        if (ctrl_is(e, 'c')) return Quit{};
-        return Key{e};                                 // let update() decide
-    });
-    if (m.paused) return k;                            // no clock while paused
-    return Sub::batch(Sub::every(16ms, Tick{}), std::move(k));
+    if (m.paused) return Sub::none();                  // no clock while paused
+    return Sub::every(16ms, Tick{});
 }
 ```
 
-The lambda must be captureless (it runs on the loop; state reaches it only
-through messages).
+### Subscriptions: Sub
 
-### keys\<Sub\>() and key predicates
+`Sub` is sources only: `Sub::every(period, msg)`, `Sub::stream(...)`,
+`Sub::batch(...)`, `Sub::none()`. A program whose only input is events has no
+`subscribe()` at all.
+
+### keymap\<Msg\> and key predicates
 
 ```cpp
-template <class S>
-S keys(std::initializer_list<std::pair<KeySpec, typename S::msg_type>>);
-using KeySpec = std::variant<char, SpecialKey>;
-
-return keys<Sub>({{'q', Quit{}}, {SpecialKey::Up, Up{}}, {' ', Toggle{}}});
+static std::optional<Msg> on(const Model&, const KeyEvent& k) {
+    static const keymap<Msg> keys{{'q', Quit{}}, {SpecialKey::Up, Up{}}, {' ', Toggle{}}};
+    return keys(k);
+}
 ```
 
-Matches a plain key with no modifiers ('q' doesn't fire on Ctrl+Q).
-Predicates for `Sub::on` handlers: `key_is(k, 'c')`, `key_is(k, U'é')`,
+Keys are a `char` or `SpecialKey`, matched with no modifiers ('q' doesn't
+fire on Ctrl+Q); first entry wins; lookup is O(1).
+Predicates for richer `on()` handlers: `key_is(k, 'c')`, `key_is(k, U'é')`,
 `key_is(k, SpecialKey::Up)`, `ctrl_is(k, 'c')`, `alt_is(k, 'x')`.
 
 ### Scroll views

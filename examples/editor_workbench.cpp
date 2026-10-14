@@ -47,7 +47,6 @@ struct App {
     using Msg = std::variant<TabP, TogPanel, TogSide, Up, Down, Quit>;
 
     using Cmd = jaal::Cmd<Msg>;
-    using Sub = jaal::Sub<Msg, on_key>;
 
     static Cmd update(Model&, Quit)       { return Cmd::quit(0); }
     static Cmd update(Model& m, TabP)     { m.pane ^= 1; return {}; }
@@ -131,14 +130,15 @@ struct App {
         return wb | grow(1);
     }
 
-    static Sub subscribe(const Model&) {
-        return keys<Sub>({
+    static std::optional<Msg> on(const Model&, const KeyEvent& k) {
+        static const keymap<Msg> keys{
             {SpecialKey::Tab, TabP{}},
             {'p', TogPanel{}}, {'b', TogSide{}},
             {SpecialKey::Up, Up{}}, {'k', Up{}},
             {SpecialKey::Down, Down{}}, {'j', Down{}},
             {'q', Quit{}}, {SpecialKey::Escape, Quit{}},
-        });
+        };
+        return keys(k);
     }
 };
 

@@ -35,7 +35,6 @@ struct Counter {
     using Msg = std::variant<Inc, Dec, Quit>;
 
     using Cmd = jaal::Cmd<Msg>;
-    using Sub = jaal::Sub<Msg, on_key>;
 
     static Cmd update(Model& m, Inc)  { ++m.count; return {}; }
     static Cmd update(Model& m, Dec)  { --m.count; return {}; }
@@ -45,8 +44,9 @@ struct Counter {
         return text("count: " + std::to_string(m.count), Style{}.with_bold());
     }
 
-    static Sub subscribe(const Model&) {
-        return keys<Sub>({{'+', Inc{}}, {'-', Dec{}}, {'q', Quit{}}});
+    static std::optional<Msg> on(const Model&, const KeyEvent& k) {
+        static const keymap<Msg> keys{{'+', Inc{}}, {'-', Dec{}}, {'q', Quit{}}};
+        return keys(k);
     }
 };
 
@@ -86,11 +86,10 @@ genuinely idle:
 
 ```cpp
 static Sub subscribe(const Model& m) {
-    if (m.paused) return keys<Sub>({{'p', Pause{}}, {'q', Quit{}}});
-    return Sub::batch(
-        Sub::every(16ms, Tick{}),
-        keys<Sub>({{'p', Pause{}}, {'q', Quit{}}}));
+    if (m.paused) return Sub::none();
+    return Sub::every(16ms, Tick{});
 }
+static bool subs_key(const Model& m) { return m.paused; }
 ```
 
 ### Frame Flow Control
@@ -137,7 +136,7 @@ struct Plasma {
     struct Tick {}; struct Resized { int w, h; }; struct Quit {};
     using Msg = std::variant<Tick, Resized, Quit>;
     using Cmd = jaal::Cmd<Msg>;
-    using Sub = jaal::Sub<Msg, on_key, on_resize>;
+    using Sub = jaal::Sub<Msg>;
 
     static Cmd update(Model& m, Tick)      { m.t += 0.016f; return {}; }
     static Cmd update(Model& m, Resized r) { m.w = r.w; m.h = r.h; return {}; }
@@ -153,13 +152,15 @@ struct Plasma {
         return pixels(std::move(img));
     }
 
+    static std::optional<Msg> on(const Model&, const KeyEvent& k) {
+        static const keymap<Msg> keys{{'q', Quit{}}};
+        return keys(k);
+    }
+    static std::optional<Msg> on(const Model&, const ResizeEvent& r) {
+        return Resized{r.width.value, r.height.value};
+    }
     static Sub subscribe(const Model&) {
-        return Sub::batch(
-            Sub::every(16ms, Tick{}),
-            keys<Sub>({{'q', Quit{}}}),
-            Sub::on(on_resize{}, [](const ResizeEvent& r) -> std::optional<Msg> {
-                return Resized{r.width.value, r.height.value};
-            }));
+        return Sub::every(16ms, Tick{});
     }
 };
 
@@ -325,7 +326,10 @@ when it happens:
 ```cpp
 static Cmd update(Model& m, ToggleCollapse) { m.tool_collapsed = !m.tool_collapsed; return {}; }
 
-static Sub subscribe(const Model&) { return keys<Sub>({{'2', ToggleCollapse{}}}); }
+static std::optional<Msg> on(const Model&, const KeyEvent& k) {
+    static const keymap<Msg> keys{{'2', ToggleCollapse{}}};
+    return keys(k);
+}
 ```
 
 #### How It All Fits Together

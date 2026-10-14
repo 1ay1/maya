@@ -21,9 +21,7 @@ static Element view(const Model& m) {
     return v(m.prompt, t<"[Enter] submit"> | Dim) | pad<1>;
 }
 
-static Sub subscribe(const Model&) {
-    return Sub::on(on_key{}, [](const KeyEvent& k) -> std::optional<Msg> { return Key{k}; });
-}
+static std::optional<Msg> on(const Model&, const KeyEvent& k) { return Key{k}; }
 ```
 
 A widget whose state must change as it renders (a scroll view learning its

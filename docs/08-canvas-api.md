@@ -123,7 +123,7 @@ sparse grid can sit on top of something else in a `zstack`.
 ## A complete program
 
 A plasma that fills the screen, animated at ~60 Hz, with a status bar and a
-pause key. The model sizes itself from `on_resize`; `view()` builds the
+pause key. The model sizes itself from `ResizeEvent`; `view()` builds the
 image; `subscribe()` stops the timer while paused, so a still screen costs
 nothing.
 
@@ -157,7 +157,7 @@ struct Plasma {
     using Msg = std::variant<Tick, Resize, Pause, Quit>;
 
     using Cmd = jaal::Cmd<Msg>;
-    using Sub = jaal::Sub<Msg, on_key, on_resize>;
+    using Sub = jaal::Sub<Msg>;
 
     static Cmd update(Model& m, Resize r) {
         m.w = std::max(1, r.cols);
@@ -193,13 +193,16 @@ struct Plasma {
         return v(pixels(render(m)), status_bar(m));
     }
 
+    static std::optional<Msg> on(const Model&, const ResizeEvent& r) {
+        return Resize{r.width.value, r.height.value};
+    }
+    static std::optional<Msg> on(const Model&, const KeyEvent& k) {
+        static const keymap<Msg> keys{{' ', Pause{}}, {'q', Quit{}}, {SpecialKey::Escape, Quit{}}};
+        return keys(k);
+    }
     static Sub subscribe(const Model& m) {
-        auto resize = Sub::on(on_resize{}, [](const ResizeEvent& r) -> std::optional<Msg> {
-            return Resize{r.width.value, r.height.value};
-        });
-        auto keys_ = keys<Sub>({{' ', Pause{}}, {'q', Quit{}}, {SpecialKey::Escape, Quit{}}});
-        if (m.paused) return Sub::batch(std::move(resize), std::move(keys_));
-        return Sub::batch(Sub::every(16ms, Tick{}), std::move(resize), std::move(keys_));
+        if (m.paused) return Sub::none();
+        return Sub::every(16ms, Tick{});
     }
     static bool subs_key(const Model& m) { return m.paused; }
 };
@@ -213,7 +216,7 @@ Points to notice:
 
 - **All state is in the Model.** The image is rebuilt from it in `view()`;
   nothing is kept in globals or statics.
-- **Size comes from a message.** `on_resize` delivers the terminal size
+- **Size comes from a message.** The `ResizeEvent` overload delivers the terminal size
   (also once at start-up); `update()` turns it into pixel dimensions.
   Until it arrives, `m.w == 0` and the view is empty.
 - **Animation is a subscription.** `Sub::every(16ms, Tick{})` drives the

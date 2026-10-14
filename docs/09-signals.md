@@ -264,7 +264,6 @@ struct MyApp {
     using Msg = std::variant<Inc>;
 
     using Cmd = jaal::Cmd<Msg>;
-    using Sub = jaal::Sub<Msg, on_key>;
 
     static Cmd update(Model& m, Inc) {
         m.count++;

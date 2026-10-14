@@ -955,7 +955,7 @@ struct Ide {
     using Model = ::Model;
     using Msg   = ::Msg;
     using Cmd   = jaal::Cmd<Msg>;
-    using Sub   = jaal::Sub<Msg, maya::on_key>;
+    using Sub   = jaal::Sub<Msg>;
 
     static Cmd update(Model& m, Tick) {
         m.frame++;
@@ -987,7 +987,11 @@ struct Ide {
     static maya::Element view(const Model& m) { return render(m); }
 
     static Sub subscribe(const Model& m) {
-        auto on_keys = maya::keys<Sub>({
+        if (m.building) return Sub::every(std::chrono::milliseconds(100), Tick{});
+        return Sub::none();
+    }
+    static std::optional<Msg> on(const Model&, const maya::KeyEvent& k) {
+        static const maya::keymap<Msg> keys{
             {'q', Quit{}},
             {maya::SpecialKey::Escape, Quit{}},
             {maya::SpecialKey::Tab, NextTab{}},
@@ -995,11 +999,8 @@ struct Ide {
             {'2', ToggleRight{}},
             {'3', ToggleBottom{}},
             {'b', StartBuild{}},
-        });
-        if (m.building)
-            return Sub::batch(std::move(on_keys),
-                              Sub::every(std::chrono::milliseconds(100), Tick{}));
-        return on_keys;
+        };
+        return keys(k);
     }
     static bool subs_key(const Model& m) { return m.building; }
 };

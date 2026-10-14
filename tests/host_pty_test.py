@@ -23,7 +23,7 @@ maya draws diffs with cursor moves, so the text on the wire is never the text
 on the screen. And it waits for output to go QUIET rather than sleeping a
 fixed time, so it tests behaviour instead of timing.
 
-    python3 tests/host_pty_test.py build-app/maya_counter
+    python3 tests/host_pty_test.py build/host_probe
 
 Needs: pip install pyte. Exits non-zero on the first failure.
 """
@@ -44,7 +44,7 @@ except ImportError:
     print("SKIP: needs pyte (pip install pyte)")
     sys.exit(0)
 
-BIN = sys.argv[1] if len(sys.argv) > 1 else "build-app/maya_counter"
+BIN = sys.argv[1] if len(sys.argv) > 1 else "build/host_probe"
 failures = 0
 
 
@@ -121,7 +121,7 @@ t1, s1 = ticks(), time.time()
 n = (t1 or 0) - (t0 or 0)
 period_ms = (s1 - s0) / n * 1000 if n else 0
 check(6 <= n <= 9 and 200 <= period_ms <= 300,
-      f"Sub::every(250ms) ticks at its period ({n} ticks, {period_ms:.0f} ms each)")
+      f"a 250ms timer ticks at its period ({n} ticks, {period_ms:.0f} ms each)")
 
 os.write(fd, b" ")
 settle()

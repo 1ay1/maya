@@ -218,7 +218,7 @@ struct FluidSim {
     using Model = ::Model;
     using Msg   = ::Msg;
     using Cmd   = jaal::Cmd<Msg>;
-    using Sub   = jaal::Sub<Msg, on_key, on_mouse, on_resize>;
+    using Sub   = jaal::Sub<Msg>;
 
     static Cmd update(Model& m, Resize r)     { m.fluid.resize(r.cols, (r.rows - 1) * 2); m.moving = false; return {}; }
     static Cmd update(Model& m, Press p)      { m.down = true; m.px = m.lx = p.x; m.py = m.ly = p.y; return {}; }
@@ -269,29 +269,30 @@ struct FluidSim {
     }
 
     static Sub subscribe(const Model& m) {
-        auto mouse = Sub::on(on_mouse{}, [](const MouseEvent& e) -> std::optional<Msg> {
-            if (e.button != MouseButton::Left && e.kind != MouseEventKind::Move) return std::nullopt;
-            const int x = e.x.value - 1, y = (e.y.value - 1) * 2;     // 1-based cells -> grid pixels
-            switch (e.kind) {
-                case MouseEventKind::Press:   return Press{x, y};
-                case MouseEventKind::Move:    return Drag{x, y};
-                case MouseEventKind::Release: return Release{};
-            }
-            return std::nullopt;
-        });
-        auto rest = Sub::batch(
-            std::move(mouse),
-            Sub::on(on_resize{}, [](const ResizeEvent& r) -> std::optional<Msg> {
-                return Resize{r.width.value, r.height.value};
-            }),
-            keys<Sub>({
-                {'1', SetPalette{0}}, {'2', SetPalette{1}}, {'3', SetPalette{2}},
-                {'4', SetPalette{3}}, {'5', SetPalette{4}},
-                {'+', Viscosity{2.f}}, {'=', Viscosity{2.f}}, {'-', Viscosity{0.5f}},
-                {' ', Pause{}}, {'r', Reset{}}, {'q', Quit{}}, {SpecialKey::Escape, Quit{}},
-            }));
-        if (m.paused || !(m.down || m.moving)) return rest;      // nothing moving: no clock
-        return Sub::batch(Sub::every(33ms, Tick{}), std::move(rest));
+        if (m.paused || !(m.down || m.moving)) return Sub::none();  // nothing moving: no clock
+        return Sub::every(33ms, Tick{});
+    }
+    static std::optional<Msg> on(const Model&, const MouseEvent& e) {
+        if (e.button != MouseButton::Left && e.kind != MouseEventKind::Move) return std::nullopt;
+        const int x = e.x.value - 1, y = (e.y.value - 1) * 2;     // 1-based cells -> grid pixels
+        switch (e.kind) {
+            case MouseEventKind::Press:   return Press{x, y};
+            case MouseEventKind::Move:    return Drag{x, y};
+            case MouseEventKind::Release: return Release{};
+        }
+        return std::nullopt;
+    }
+    static std::optional<Msg> on(const Model&, const ResizeEvent& r) {
+        return Resize{r.width.value, r.height.value};
+    }
+    static std::optional<Msg> on(const Model&, const KeyEvent& k) {
+        static const keymap<Msg> keys{
+            {'1', SetPalette{0}}, {'2', SetPalette{1}}, {'3', SetPalette{2}},
+            {'4', SetPalette{3}}, {'5', SetPalette{4}},
+            {'+', Viscosity{2.f}}, {'=', Viscosity{2.f}}, {'-', Viscosity{0.5f}},
+            {' ', Pause{}}, {'r', Reset{}}, {'q', Quit{}}, {SpecialKey::Escape, Quit{}},
+        };
+        return keys(k);
     }
     static bool subs_key(const Model& m) { return !m.paused && (m.down || m.moving); }
 };

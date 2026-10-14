@@ -105,7 +105,7 @@ struct Agent {
     using Msg = std::variant<Tick, Advance, Send, ToggleTool, Restart, Quit>;
 
     using Cmd = jaal::Cmd<Msg>;
-    using Sub = jaal::Sub<Msg, on_key>;
+    using Sub = jaal::Sub<Msg>;
 
     // ── The full response text the agent "types out" ─────────────────────
 
@@ -681,18 +681,23 @@ struct Agent {
         return (v(std::move(rows)) | pad<1>).build();
     }
 
-    // ── subscribe ────────────────────────────────────────────────────────
+    // ── input ────────────────────────────────────────────────────────────
 
-    static Sub subscribe(const Model& m) {
-        auto on_keys = keys<Sub>({
+    static std::optional<Msg> on(const Model&, const KeyEvent& k) {
+        static const keymap<Msg> keys{
             {'q',                Quit{}},
             {SpecialKey::Escape, Quit{}},
             {' ',                Advance{}},
             {'\t',               ToggleTool{}},
             {'r',                Restart{}},
             {SpecialKey::Enter,  Send{}},
-        });
+        };
+        return keys(k);
+    }
 
+    // ── subscribe ────────────────────────────────────────────────────────
+
+    static Sub subscribe(const Model& m) {
         bool needs_tick =
             m.phase != Phase::Idle && m.phase != Phase::Complete
             && m.phase != Phase::PermissionAsk;
@@ -700,13 +705,9 @@ struct Agent {
         // Auto-advance from UserSent to Thinking
         bool auto_advance = (m.phase == Phase::UserSent && m.phase_time > 0.5f);
 
-        if (needs_tick || auto_advance) {
-            return Sub::batch(
-                std::move(on_keys),
-                Sub::every(std::chrono::milliseconds(50), Tick{})
-            );
-        }
-        return on_keys;
+        if (needs_tick || auto_advance)
+            return Sub::every(std::chrono::milliseconds(50), Tick{});
+        return Sub::none();
     }
 };
 

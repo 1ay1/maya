@@ -46,7 +46,6 @@ struct Pretty {
     using Msg = std::variant<Quit>;
 
     using Cmd = jaal::Cmd<Msg>;
-    using Sub = jaal::Sub<Msg, on_key>;
 
     static Cmd update(Model&, Quit) { return Cmd::quit(0); }
 
@@ -87,8 +86,9 @@ struct Pretty {
         );
     }
 
-    static Sub subscribe(const Model&) {
-        return keys<Sub>({{'q', Quit{}}});
+    static std::optional<Msg> on(const Model&, const KeyEvent& k) {
+        static const keymap<Msg> keys{{'q', Quit{}}};
+        return keys(k);
     }
 };
 

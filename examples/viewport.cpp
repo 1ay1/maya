@@ -119,8 +119,8 @@ Element card(const Metric& mt) {
 struct Viewport {
     struct Model {
         int ceiling = 32;   // per-column max width; drives the split
-        int term_w  = 120;  // live terminal width,  from on_resize
-        int term_h  = 40;   // live terminal height, from on_resize
+        int term_w  = 120;  // live terminal width,  from ResizeEvent
+        int term_h  = 40;   // live terminal height, from ResizeEvent
         Flow flow   = Flow::Row;   // row-major grid vs column-major columns
 
         // Scroll state is mutable: view() takes Model by const ref, but the
@@ -141,7 +141,6 @@ struct Viewport {
     using Msg = std::variant<Wider, Narrower, ToggleFlow, Scroll, Wheel, Resize, Quit>;
 
     using Cmd = jaal::Cmd<Msg>;
-    using Sub = jaal::Sub<Msg, on_key, on_mouse, on_resize>;
 
     // The scroll viewport height in rows: the terminal minus this app's own
     // chrome (title + status + border + padding). One number, used by both
@@ -220,25 +219,22 @@ struct Viewport {
         );
     }
 
-    static Sub subscribe(const Model&) {
-        // +/- and q are ordinary keys. Everything the ScrollState recognises
-        // (arrows, j/k, PgUp/PgDn, Home/End) is forwarded verbatim as a
-        // Scroll message; the wheel goes through as Wheel. Resize keeps the
-        // viewport height current.
-        auto keys = Sub::on(on_key{}, [](const KeyEvent& k) -> std::optional<Msg> {
-            if (key_is(k, 'q')) return Quit{};
-            if (key_is(k, '+') || key_is(k, '=')) return Wider{};
-            if (key_is(k, '-')) return Narrower{};
-            if (key_is(k, 'f')) return ToggleFlow{};
-            return Scroll{k};   // let ScrollState decide if it's a scroll key
-        });
-        auto wheel  = Sub::on(on_mouse{}, [](const MouseEvent& me) -> std::optional<Msg> {
-            return Wheel{me};
-        });
-        auto resize = Sub::on(on_resize{}, [](const ResizeEvent& r) -> std::optional<Msg> {
-            return Resize{Size{r.width, r.height}};
-        });
-        return Sub::batch(std::move(keys), std::move(wheel), std::move(resize));
+    // +/- and q are ordinary keys. Everything the ScrollState recognises
+    // (arrows, j/k, PgUp/PgDn, Home/End) is forwarded verbatim as a
+    // Scroll message; the wheel goes through as Wheel. Resize keeps the
+    // viewport height current.
+    static std::optional<Msg> on(const Model&, const KeyEvent& k) {
+        if (key_is(k, 'q')) return Quit{};
+        if (key_is(k, '+') || key_is(k, '=')) return Wider{};
+        if (key_is(k, '-')) return Narrower{};
+        if (key_is(k, 'f')) return ToggleFlow{};
+        return Scroll{k};   // let ScrollState decide if it's a scroll key
+    }
+    static std::optional<Msg> on(const Model&, const MouseEvent& me) {
+        return Wheel{me};
+    }
+    static std::optional<Msg> on(const Model&, const ResizeEvent& r) {
+        return Resize{Size{r.width, r.height}};
     }
 };
 

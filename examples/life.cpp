@@ -8,7 +8,8 @@
 //   update()   Tick advances the clock and steps generations; keys change
 //              speed, pause, or load a pattern.
 //   view()     the grid as an Image (pixels()) plus a one-row status bar.
-//   subscribe  a 30 Hz clock, the keyboard, and resizes.
+//   subscribe  a 30 Hz clock.
+//   on()       keys and resizes.
 //
 // Keys: q/Esc quit   space pause   Enter single step   +/- speed   c clear
 //       r random   g glider gun   p pulsar   s spaceship fleet
@@ -223,7 +224,7 @@ struct Life {
     using Model = ::Model;
     using Msg   = ::Msg;
     using Cmd   = jaal::Cmd<Msg>;
-    using Sub   = jaal::Sub<Msg, on_key, on_resize>;
+    using Sub   = jaal::Sub<Msg>;
 
     static Cmd update(Model& m, Resize r) {
         // One status row; the rest is grid, two cells per row. A new size
@@ -286,24 +287,26 @@ struct Life {
                      | fgc(Color::rgb(80, 80, 100))) | bgc(bar);
     }
 
-    // ── subscribe ───────────────────────────────────────────────────────────
+    // ── subscribe / input ───────────────────────────────────────────────────
 
     static Sub subscribe(const Model&) {
-        return Sub::batch(
-            Sub::every(std::chrono::milliseconds(kFrameMs), Tick{}),
-            Sub::on(on_resize{}, [](const ResizeEvent& r) -> std::optional<Msg> {
-                return Resize{r.width.value, r.height.value};
-            }),
-            keys<Sub>({
-                {'q', Quit{}}, {SpecialKey::Escape, Quit{}},
-                {' ', Pause{}}, {SpecialKey::Enter, Step{}},
-                {'+', Speed{+1}}, {'=', Speed{+1}}, {'-', Speed{-1}},
-                {'c', Load{Pattern::Empty}},
-                {'r', Load{Pattern::Random}},
-                {'g', Load{Pattern::GliderGun}},
-                {'p', Load{Pattern::Pulsar}},
-                {'s', Load{Pattern::Spaceships}},
-            }));
+        return Sub::every(std::chrono::milliseconds(kFrameMs), Tick{});
+    }
+    static std::optional<Msg> on(const Model&, const ResizeEvent& r) {
+        return Resize{r.width.value, r.height.value};
+    }
+    static std::optional<Msg> on(const Model&, const KeyEvent& k) {
+        static const keymap<Msg> keys{
+            {'q', Quit{}}, {SpecialKey::Escape, Quit{}},
+            {' ', Pause{}}, {SpecialKey::Enter, Step{}},
+            {'+', Speed{+1}}, {'=', Speed{+1}}, {'-', Speed{-1}},
+            {'c', Load{Pattern::Empty}},
+            {'r', Load{Pattern::Random}},
+            {'g', Load{Pattern::GliderGun}},
+            {'p', Load{Pattern::Pulsar}},
+            {'s', Load{Pattern::Spaceships}},
+        };
+        return keys(k);
     }
     static bool subs_key(const Model&) { return true; }
 };

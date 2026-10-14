@@ -92,7 +92,7 @@ They are header-first, allocation-light, and fully tested
 ## What maya has today
 
 - **Elm architecture, via jaal**: a program is a jaal program (Model/Msg/init/update/view/subscribe) whose `view()` returns an `Element`
-- **Effects as data**: `jaal::Cmd<Msg, ...>` (quit, batch, after, plus the terminal effects a program lists) and `jaal::Sub<Msg, ...>` (on_key, on_mouse, on_resize, on_paste, on_focus, every, stream)
+- **Effects as data**: `jaal::Cmd<Msg, ...>` (quit, batch, after, plus the terminal effects a program lists) and `jaal::Sub<Msg>` (every, stream), with input as `on(const Model&, KeyEvent|MouseEvent|PasteEvent|FocusEvent|ResizeEvent)` overloads
 - **`run<P>(Options)`**: the single entry point for all interactive apps (fullscreen and inline)
 - 90+ widgets across a dozen categories (Input, Data Display, Navigation, Display, Overlay, Visualization, Agent UI, Session/Diagnostics, Status Bar, Tool Widgets)
 - Compile-time DSL with both compile-time and runtime pipes

@@ -37,7 +37,6 @@ struct ViewFault {
     using Model = ::Model;
     using Msg   = ::Msg;
     using Cmd   = jaal::Cmd<Msg>;
-    using Sub   = jaal::Sub<Msg, on_key>;
 
     static Cmd update(Model& m, Inc)         { ++m.count; return {}; }
     static Cmd update(Model& m, ThrowOnce)   { m.once = true; return {}; }
@@ -51,9 +50,10 @@ struct ViewFault {
                | pad<1> | border_<Round>;
     }
 
-    static Sub subscribe(const Model&) {
-        return keys<Sub>({{'+', Inc{}}, {'x', ThrowOnce{}}, {'s', ThrowAlways{}},
-                          {'q', Quit{}}, {SpecialKey::Escape, Quit{}}});
+    static std::optional<Msg> on(const Model&, const KeyEvent& k) {
+        static const keymap<Msg> keys{{'+', Inc{}}, {'x', ThrowOnce{}}, {'s', ThrowAlways{}},
+                                      {'q', Quit{}}, {SpecialKey::Escape, Quit{}}};
+        return keys(k);
     }
 };
 

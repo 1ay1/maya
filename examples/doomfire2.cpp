@@ -9,7 +9,8 @@
 //              keys change controls. Nothing else mutates anything.
 //   view()     the model as an Element: the fire as an Image (pixels()),
 //              the status bar as text. Pure: same model, same screen.
-//   subscribe  where messages come from: a 60 Hz clock and the keyboard.
+//   subscribe  a 60 Hz clock.
+//   on()       keys and resizes, mapped to messages.
 //
 // No globals, no paint callback, no style ids, no quit flag, no loop. The
 // runtime (jaal) owns time, input and exit; maya owns the terminal.
@@ -154,7 +155,7 @@ struct Fire {
     using Model = ::Model;
     using Msg   = ::Msg;
     using Cmd   = jaal::Cmd<Msg>;
-    using Sub   = jaal::Sub<Msg, on_key, on_resize>;
+    using Sub   = jaal::Sub<Msg>;
 
     static Cmd update(Model& m, Resize r) {
         // One status row; the rest is fire, two pixels per row.
@@ -208,23 +209,26 @@ struct Fire {
                  label(std::to_string(m.embers.size()) + " embers ")) | bgc(bar);
     }
 
-    // ── subscribe: where messages come from ─────────────────────────────────
+    // ── subscribe: the frame timer ─────────────────────────────────────────
 
-    static Sub subscribe(const Model&) {
-        return Sub::batch(
-            Sub::every(16ms, Tick{}),
-            Sub::on(on_resize{}, [](const ResizeEvent& r) -> std::optional<Msg> {
-                return Resize{r.width.value, r.height.value};
-            }),
-            keys<Sub>({
-                {'q', Quit{}}, {SpecialKey::Escape, Quit{}},
-                {' ', Toggle{}},
-                {SpecialKey::Left, Wind{-1}}, {SpecialKey::Right, Wind{+1}},
-                {'+', Heat{+1}}, {'=', Heat{+1}}, {'-', Heat{-1}},
-                {'1', UsePalette{0}}, {'2', UsePalette{1}}, {'3', UsePalette{2}},
-            }));
-    }
+    static Sub subscribe(const Model&) { return Sub::every(16ms, Tick{}); }
     static bool subs_key(const Model&) { return true; }   // the same sources, always
+
+    // ── input ──────────────────────────────────────────────────────────────────────
+
+    static std::optional<Msg> on(const Model&, const ResizeEvent& r) {
+        return Resize{r.width.value, r.height.value};
+    }
+    static std::optional<Msg> on(const Model&, const KeyEvent& k) {
+        static const keymap<Msg> keys{
+            {'q', Quit{}}, {SpecialKey::Escape, Quit{}},
+            {' ', Toggle{}},
+            {SpecialKey::Left, Wind{-1}}, {SpecialKey::Right, Wind{+1}},
+            {'+', Heat{+1}}, {'=', Heat{+1}}, {'-', Heat{-1}},
+            {'1', UsePalette{0}}, {'2', UsePalette{1}}, {'3', UsePalette{2}},
+        };
+        return keys(k);
+    }
 };
 
 static_assert(Program<Fire>);

@@ -70,7 +70,7 @@ widget/markdown/streaming/commit.cpp: mutex
 
 # ── maya::exec install ───────────────────────────────────────────────────
 # The executor hook (core/executor.hpp) is set by maya::run before the program
-# starts and cleared after; a mutex covers that and the copy a widget reads.
+# starts and cleared after; a mutex covers that and the shared_ptr a widget reads.
 core/executor.cpp: mutex
 
 # ── P4. const_cast: memoization behind a const accessor ──────────────────

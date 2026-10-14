@@ -674,7 +674,7 @@ struct Space {
     using Model = ::Model;
     using Msg   = ::Msg;
     using Cmd   = jaal::Cmd<Msg>;
-    using Sub   = jaal::Sub<Msg, on_key>;
+    using Sub   = jaal::Sub<Msg>;
 
     static Cmd init(Model& m)           { init_state(m); return {}; }
     static Cmd update(Model& m, Tick)   { tick(m, 1.0f / 15.0f); return {}; }
@@ -722,13 +722,15 @@ struct Space {
 
     static Element view(const Model& m) { return render(m); }
 
+    static std::optional<Msg> on(const Model&, const KeyEvent& k) {
+        static const keymap<Msg> keys{
+            {'q', Quit{}}, {SpecialKey::Escape, Quit{}}, {' ', Burn{}}, {'a', Abort{}}, {'d', Diagnose{}},
+            {'1', SetPhase{0}}, {'2', SetPhase{1}}, {'3', SetPhase{2}},
+        };
+        return keys(k);
+    }
     static Sub subscribe(const Model&) {
-        return Sub::batch(
-            Sub::every(std::chrono::milliseconds{66}, Tick{}),
-            keys<Sub>({
-                {'q', Quit{}}, {SpecialKey::Escape, Quit{}}, {' ', Burn{}}, {'a', Abort{}}, {'d', Diagnose{}},
-                {'1', SetPhase{0}}, {'2', SetPhase{1}}, {'3', SetPhase{2}},
-            }));
+        return Sub::every(std::chrono::milliseconds{66}, Tick{});
     }
     static bool subs_key(const Model&) { return true; }
 };

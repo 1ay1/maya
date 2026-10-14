@@ -23,7 +23,7 @@ the original.
 | `static Model init()` / `init() -> pair<Model, Cmd>` | `Model{}` (default-constructed) + optional `static Cmd init(Model&)` |
 | `update(Model, Msg) -> pair<Model, Cmd<Msg>>` + `std::visit(overload{...})` | one `static Cmd update(Model&, Case)` per alternative |
 | `Cmd<Msg>::none()` / `Cmd<Msg>::quit()` | `{}` / `Cmd::quit(0)` |
-| `Sub<Msg>`, `key_map<Msg>({...})` | `jaal::Sub<Msg, on_key, ...>`, `keys<Sub>({...})` |
+| `Sub<Msg>`, `key_map<Msg>({...})` | `jaal::Sub<Msg>` (timers/streams), `on(const Model&, const KeyEvent&)` + `keymap<Msg>` |
 | `run(cfg, event_fn, render_fn)` | a Program: state in `Model`, keys as messages, `view()` |
 | `canvas_run(cfg, resize, event, paint)` | a Program whose view is `pixels(Image)` or `glyphs(Glyphs)` ([pixels](08-canvas-api.md)) |
 | `live({.fps}, render)` | a Program run with `.mode = Mode::Inline` |
@@ -32,45 +32,79 @@ the original.
 | globals / function-local statics | fields of `Model` (the RNG too) |
 | RNG or mutation inside `view()` | done in `update`, stored in the model |
 | arrow keys auto-scrolling a `ScrollState` | route them: `Scroll{key}` → `state.handle(key, h)` in `update` (the wheel is still automatic) |
-| `MAYA_WITH_JAAL`, `<maya/host/terminal.hpp>`, `run_jaal`, `JaalView`, `jaal_key_map` | gone: `<maya/host/run.hpp>`, `run`, `Program`, `keys` |
+| `MAYA_WITH_JAAL`, `<maya/host/terminal.hpp>`, `run_jaal`, `JaalView`, `jaal_key_map` | gone: `<maya/host/run.hpp>`, `run`, `Program`, `keymap` |
 
 The sections below are the parts that need more than a rename.
 
 ## 2. The rows: say what you use
 
-A jaal `Cmd` and `Sub` carry a **row**, a list of the effect and source
-kinds the program may use. The core effects (`quit`, `send`, `after`,
-`task`, `now`, `random`) and the core sources (`every`, `stream`) are
-always included. Anything the *host* provides has to be listed:
+A jaal `Cmd` carries a **row**, a list of the effect kinds the program may
+use. The core effects (`quit`, `send`, `after`, `task`, `now`, `random`)
+are always included. Anything the *host* provides has to be listed:
 
 ```cpp
 using Cmd = jaal::Cmd<Msg, commit_scrollback, set_title>;   // terminal effects
-using Sub = jaal::Sub<Msg, on_key, on_mouse, on_resize, jaal::fx::on_signal>;
+using Sub = jaal::Sub<Msg>;                                 // every, stream: no row
 ```
 
-maya provides `on_key`, `on_mouse`, `on_paste`, `on_focus` and
-`on_resize` (sources) and the terminal effects listed in the
-[API reference](11-api-reference.md#effects-cmd).
-A host that can't provide one (a test host, a GUI) rejects the program at
-compile time, where maya would fail at runtime.
+maya provides the terminal effects listed in the
+[API reference](11-api-reference.md#effects-cmd). A host that can't provide
+one (a test host, a GUI) rejects the program at compile time, where maya
+would fail at runtime. Input isn't in a row at all; it's `on()` overloads
+(next section).
 
 ## 3. Subscriptions
 
 | maya                          | jaal                                                         |
 |-------------------------------|--------------------------------------------------------------|
-| `key_map<Msg>({{'q', Quit{}}})` | `keys<Sub>({{'q', Quit{}}})` (same table, same `key_is` matching) |
-| `on_key(fn)`                  | `Sub::on(on_key{}, fn)`, where `fn` returns `std::optional<Msg>` |
-| `on_mouse(fn)`, `on_resize(fn)` | `Sub::on(on_mouse{}, fn)`, `Sub::on(on_resize{}, fn)`        |
+| `key_map<Msg>({{'q', Quit{}}})` | `static const keymap<Msg> keys{{'q', Quit{}}};` inside `on(const Model&, const KeyEvent&)` (same `key_is` matching) |
+| key handler `fn`              | `static std::optional<Msg> on(const Model&, const KeyEvent&)` |
+| mouse / resize handlers       | `on(const Model&, const MouseEvent&)`, `on(const Model&, const ResizeEvent&)` |
 | `Sub<Msg>::every(d, msg)`     | `Sub::every(d, msg)`                                         |
 | `Sub::batch(a, b)`            | `Sub::batch(a, b)`                                           |
-| Ctrl+C handled by maya        | `Sub::on_signal({jaal::sig::interrupt}, ...)` if you want a message for it |
+| Ctrl+C handled by maya        | `on(const Model&, jaal::sig)` if you want a message for it   |
 
-`subscribe(const Model&)` is still re-evaluated after each update. If it
+`subscribe(const Model&)` is only for timers and streams; a program whose
+only input is events has none. It's re-evaluated after each update. If it
 only depends on part of the model, you can add
 `static auto subs_key(const Model&)`. jaal then skips the rebuild while
 that key stays the same. A timer or stream that drops out of the returned
 `Sub` gets stopped, and any messages it still had queued are dropped. That
 also covers messages already in the same batch.
+
+### routers -> on()
+
+An earlier jaal port listed input sources in the `Sub` row and built
+handlers in `subscribe()` (`Sub::on(on_key{}, ...)`, `keys<Sub>(...)`,
+`jaal::router`). That's gone: input is a static `on()` overload per kind,
+reading the live model when the event arrives. One event gives at most one
+message; a kind with no overload is dropped.
+
+```cpp
+// before
+using Sub = jaal::Sub<Msg, on_key, on_resize>;
+static Sub subscribe(const Model&) {
+    return Sub::batch(
+        keys<Sub>({{'q', Quit{}}}),
+        Sub::on(on_resize{}, [](const ResizeEvent& r) -> std::optional<Msg> {
+            return Resized{r.width.value, r.height.value};
+        }));
+}
+
+// after: no Sub, no subscribe()
+static std::optional<Msg> on(const Model&, const KeyEvent& k) {
+    static const keymap<Msg> keys{{'q', Quit{}}};
+    return keys(k);
+}
+static std::optional<Msg> on(const Model&, const ResizeEvent& r) {
+    return Resized{r.width.value, r.height.value};
+}
+```
+
+`subs_key` now only needs to cover what `subscribe()` reads (timers,
+streams), not input. Optionally declare `using Event = ...;` (e.g.
+`maya::terminal_events`) so `jaal::headless<App>` / `jaal::sim<App>` pick it
+up and a listed kind with no `on()` is a compile error.
 
 ## 4. Effects: tasks and streams are captureless
 

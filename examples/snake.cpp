@@ -156,7 +156,7 @@ struct Snake {
     using Model = ::Model;
     using Msg   = ::Msg;
     using Cmd   = jaal::Cmd<Msg>;
-    using Sub   = jaal::Sub<Msg, on_key, on_resize>;
+    using Sub   = jaal::Sub<Msg>;
 
     static Cmd update(Model& m, Resize r) {
         m.w = std::max(8, r.cols);
@@ -263,22 +263,25 @@ struct Snake {
         return v(std::move(game), status_bar(m));
     }
 
-    // ── subscribe ────────────────────────────────────────────────────────────
+    // ── input / subscribe ────────────────────────────────────────────────────
+
+    static std::optional<Msg> on(const Model&, const KeyEvent& k) {
+        static const keymap<Msg> keys{
+            {SpecialKey::Up, Turn{0, -1}}, {SpecialKey::Down, Turn{0, 1}},
+            {SpecialKey::Left, Turn{-1, 0}}, {SpecialKey::Right, Turn{1, 0}},
+            {'k', Turn{0, -1}}, {'j', Turn{0, 1}}, {'h', Turn{-1, 0}}, {'l', Turn{1, 0}},
+            {'w', Turn{0, -1}}, {'s', Turn{0, 1}}, {'a', Turn{-1, 0}}, {'d', Turn{1, 0}},
+            {'W', Wrap{}}, {' ', Pause{}}, {'r', Restart{}},
+            {'q', Quit{}}, {SpecialKey::Escape, Quit{}},
+        };
+        return keys(k);
+    }
+    static std::optional<Msg> on(const Model&, const ResizeEvent& r) {
+        return Resize{r.width.value, r.height.value};
+    }
 
     static Sub subscribe(const Model&) {
-        return Sub::batch(
-            Sub::every(16ms, Tick{}),   // 60 fps; the snake steps every tick_rate frames
-            Sub::on(on_resize{}, [](const ResizeEvent& r) -> std::optional<Msg> {
-                return Resize{r.width.value, r.height.value};
-            }),
-            keys<Sub>({
-                {SpecialKey::Up, Turn{0, -1}}, {SpecialKey::Down, Turn{0, 1}},
-                {SpecialKey::Left, Turn{-1, 0}}, {SpecialKey::Right, Turn{1, 0}},
-                {'k', Turn{0, -1}}, {'j', Turn{0, 1}}, {'h', Turn{-1, 0}}, {'l', Turn{1, 0}},
-                {'w', Turn{0, -1}}, {'s', Turn{0, 1}}, {'a', Turn{-1, 0}}, {'d', Turn{1, 0}},
-                {'W', Wrap{}}, {' ', Pause{}}, {'r', Restart{}},
-                {'q', Quit{}}, {SpecialKey::Escape, Quit{}},
-            }));
+        return Sub::every(16ms, Tick{});   // 60 fps; the snake steps every tick_rate frames
     }
     static bool subs_key(const Model&) { return true; }
 };

@@ -569,7 +569,7 @@ struct Chat {
     using Msg = std::variant<Tick, Key, Quit>;
 
     using Cmd = jaal::Cmd<Msg>;
-    using Sub = jaal::Sub<Msg, on_key>;
+    using Sub = jaal::Sub<Msg>;
 
     static constexpr float kDt = 1.0f / 30.0f;   // tick period in seconds
 
@@ -730,13 +730,11 @@ struct Chat {
         return v(std::move(rows)).build();
     }
 
+    static std::optional<Msg> on(const Model&, const KeyEvent& k) { return Key{k}; }
+
     static Sub subscribe(const Model& m) {
-        auto keys = Sub::on(on_key{}, [](const KeyEvent& k) -> std::optional<Msg> {
-            return Key{k};
-        });
-        if (animating(m))
-            return Sub::batch(std::move(keys), Sub::every(std::chrono::milliseconds{33}, Tick{}));
-        return keys;
+        if (animating(m)) return Sub::every(std::chrono::milliseconds{33}, Tick{});
+        return Sub::none();
     }
     static bool subs_key(const Model& m) { return animating(m); }
 };

@@ -81,7 +81,6 @@ struct Scroll2D {
     using Model = ::Model;
     using Msg   = ::Msg;
     using Cmd   = jaal::Cmd<Msg>;
-    using Sub   = jaal::Sub<Msg, on_key, on_mouse>;
 
     static Cmd update(Model& m, Scroll s) { (void)m.state.handle(s.key, kViewportH, kViewportW); return {}; }
     static Cmd update(Model&, Quit)       { return Cmd::quit(0); }
@@ -132,17 +131,13 @@ struct Scroll2D {
         ) | pad<1> | border_<Round> | bcol<50, 55, 70>;
     }
 
-    static Sub subscribe(const Model&) {
-        return Sub::batch(
-            Sub::on(on_key{}, [](const KeyEvent& k) -> std::optional<Msg> {
-                if (key_is(k, 'q')) return Quit{};
-                if (key_is(k, 'j')) return Scroll{KeyEvent{.key = SpecialKey::Down}};
-                if (key_is(k, 'k')) return Scroll{KeyEvent{.key = SpecialKey::Up}};
-                return Scroll{k};
-            }),
-            Sub::on(on_mouse{}, [](const MouseEvent& e) -> std::optional<Msg> { return Mouse{e}; }));
+    static std::optional<Msg> on(const Model&, const KeyEvent& k) {
+        if (key_is(k, 'q')) return Quit{};
+        if (key_is(k, 'j')) return Scroll{KeyEvent{.key = SpecialKey::Down}};
+        if (key_is(k, 'k')) return Scroll{KeyEvent{.key = SpecialKey::Up}};
+        return Scroll{k};
     }
-    static bool subs_key(const Model&) { return true; }
+    static std::optional<Msg> on(const Model&, const MouseEvent& e) { return Mouse{e}; }
 };
 
 static_assert(Program<Scroll2D>);

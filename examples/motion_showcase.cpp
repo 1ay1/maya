@@ -104,7 +104,6 @@ struct Showcase {
                              FireMatrix, Quit>;
 
     using Cmd = jaal::Cmd<Msg>;
-    using Sub = jaal::Sub<Msg, on_key>;
 
     static LitColor palette(int i) {
         static const LitColor stops[] = {
@@ -445,8 +444,8 @@ struct Showcase {
         ) | pad<1> | border_<Round> | bcolor(Color::rgb(80, 90, 110));
     }
 
-    static Sub subscribe(const Model&) {
-        return keys<Sub>({
+    static std::optional<Msg> on(const Model&, const KeyEvent& k) {
+        static const keymap<Msg> keys{
             {' ', Toggle{}},
             {'1', FireIntro{}},
             {'2', FireStagger{}},
@@ -457,7 +456,8 @@ struct Showcase {
             {'6', FireWave{}},
             {'7', FireMatrix{}},
             {'q', Quit{}},
-        });
+        };
+        return keys(k);
     }
 };
 

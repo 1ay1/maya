@@ -673,7 +673,7 @@ struct Deploy {
     using Model = ::Model;
     using Msg   = ::Msg;
     using Cmd   = jaal::Cmd<Msg>;
-    using Sub   = jaal::Sub<Msg, on_key>;
+    using Sub   = jaal::Sub<Msg>;
 
     static Cmd init(Model& m)              { init_services(m); trigger_deploy_wave(m); return {}; }
     static Cmd update(Model& m, Tick)      { tick(m, 1.0f / 15.0f); return {}; }
@@ -699,14 +699,17 @@ struct Deploy {
     static Element view(const Model& m) { return render(m); }
 
     static Sub subscribe(const Model&) {
-        return Sub::batch(
-            Sub::every(std::chrono::milliseconds{66}, Tick{}),
-            keys<Sub>({
-                {'q', Quit{}}, {SpecialKey::Escape, Quit{}}, {' ', Wave{}}, {'r', Rollback{}},
-                {'f', ToggleForce{}}, {'1', SetEnv{Env::Dev}}, {'2', SetEnv{Env::Staging}}, {'3', SetEnv{Env::Prod}},
-            }));
+        return Sub::every(std::chrono::milliseconds{66}, Tick{});
     }
     static bool subs_key(const Model&) { return true; }
+
+    static std::optional<Msg> on(const Model&, const KeyEvent& k) {
+        static const keymap<Msg> keys{
+            {'q', Quit{}}, {SpecialKey::Escape, Quit{}}, {' ', Wave{}}, {'r', Rollback{}},
+            {'f', ToggleForce{}}, {'1', SetEnv{Env::Dev}}, {'2', SetEnv{Env::Staging}}, {'3', SetEnv{Env::Prod}},
+        };
+        return keys(k);
+    }
 };
 
 static_assert(Program<Deploy>);

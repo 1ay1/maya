@@ -8,9 +8,8 @@
 // The host protocol (jaal/kernel/run.hpp), each step one Screen call:
 //
 //   attach(cx)       watch screen.input_handle() with jaal's reactor
-//   on_ready(cx, r)  screen.read(); emit each event ON ITS OWN, so the
-//                    program re-subscribes between them (jaal D13: maya's
-//                    "^T m o" bug, fixed by construction)
+//   on_ready(cx, r)  screen.read(); emit each event; jaal hands it to the
+//                    program's on(model, event) and folds it on the spot
 //   on_signal(resize) screen.on_resize(); emit a ResizeEvent
 //   present(k)       screen.present(build view(model)) -> Presented; schedule
 //                    Presented::redraw_at, honour redraw_now / backpressured
@@ -47,10 +46,9 @@
 
 namespace maya {
 
-// The terminal's event sources (on_key, on_resize, ...), its effects
-// (set_title, commit_scrollback, suspend, ...), the Program concept and
-// keys<Sub>() all come from the siblings included above. This file is the
-// host and nothing else.
+// The terminal's events (terminal_events), its effects (set_title,
+// commit_scrollback, suspend, ...), the Program concept and keymap all come
+// from the siblings included above. This file is the host and nothing else.
 
 // ── the host ───────────────────────────────────────────────────────────────
 //
@@ -72,9 +70,9 @@ namespace maya {
 template <Program P, Device Dev = Screen>
 class terminal_host {
 public:
-    // Everything the terminal produces. signal_event is added by jaal's
-    // run() (kernel_event_t), which is how SIGWINCH arrives.
-    using event_type = std::variant<KeyEvent, MouseEvent, PasteEvent, FocusEvent, ResizeEvent>;
+    // Everything the terminal produces. jaal's run() adds jaal::sig to it
+    // (kernel_event_t), so a program can also write on(const Model&, sig).
+    using event_type = terminal_events;
     using clock      = Presented::clock;
     using device_type = Dev;
 
@@ -175,7 +173,7 @@ public:
         // keys: stop right after one and hold the rest.
         for (std::size_t i = 0; i < events.size(); ++i) {
             const bool nav = detail::is_navigation_key(events[i]);
-            std::visit([&](auto& e) { cx.emit(event_type{std::move(e)}); }, events[i]);
+            cx.emit(events[i]);                   // Event is event_type: no rebuild
             if (nav && i + 1 < events.size()) {
                 held_.assign(std::make_move_iterator(events.begin() + static_cast<std::ptrdiff_t>(i) + 1),
                              std::make_move_iterator(events.end()));
@@ -191,7 +189,7 @@ public:
         term_.on_resize();
         const auto sz = term_.size();
         cx.emit(ResizeEvent{sz.width, sz.height});
-        dirty_ = true;                            // re-lay-out even if nobody subscribed
+        dirty_ = true;                            // re-lay-out even if the program has no on(ResizeEvent)
     }
 
     // The model changed, or a frame is owed: draw it.

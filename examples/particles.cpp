@@ -236,7 +236,7 @@ struct Particles {
     using Model = ::Model;
     using Msg   = ::Msg;
     using Cmd   = jaal::Cmd<Msg>;
-    using Sub   = jaal::Sub<Msg, on_key, on_resize>;
+    using Sub   = jaal::Sub<Msg>;
 
     static Cmd update(Model& m, Resize r) {
         m.w = std::max(4, r.cols);
@@ -323,18 +323,19 @@ struct Particles {
         return v(pixels(render(m)), status_bar(m));
     }
 
-    static Sub subscribe(const Model&) {
-        return Sub::batch(
-            Sub::every(16ms, Tick{}),
-            Sub::on(on_resize{}, [](const ResizeEvent& r) -> std::optional<Msg> {
-                return Resize{r.width.value, r.height.value};
-            }),
-            keys<Sub>({
-                {'1', SetMode{Mode::Fireworks}}, {'2', SetMode{Mode::Galaxy}}, {'3', SetMode{Mode::Fountain}},
-                {'4', SetMode{Mode::Vortex}}, {'5', SetMode{Mode::Starfield}},
-                {' ', Burst{}}, {'r', Reset{}}, {'q', Quit{}}, {SpecialKey::Escape, Quit{}},
-            }));
+    static std::optional<Msg> on(const Model&, const ResizeEvent& r) {
+        return Resize{r.width.value, r.height.value};
     }
+    static std::optional<Msg> on(const Model&, const KeyEvent& k) {
+        static const keymap<Msg> keys{
+            {'1', SetMode{Mode::Fireworks}}, {'2', SetMode{Mode::Galaxy}}, {'3', SetMode{Mode::Fountain}},
+            {'4', SetMode{Mode::Vortex}}, {'5', SetMode{Mode::Starfield}},
+            {' ', Burst{}}, {'r', Reset{}}, {'q', Quit{}}, {SpecialKey::Escape, Quit{}},
+        };
+        return keys(k);
+    }
+
+    static Sub subscribe(const Model&) { return Sub::every(16ms, Tick{}); }
     static bool subs_key(const Model&) { return true; }
 };
 

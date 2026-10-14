@@ -268,7 +268,6 @@ struct Markup {
     using Model = ::Model;
     using Msg   = ::Msg;
     using Cmd   = jaal::Cmd<Msg>;
-    using Sub   = jaal::Sub<Msg, on_key, on_mouse, on_resize>;
 
     static void clamp(Model& m) { m.offset = std::clamp(m.offset, 0, m.max_offset()); }
 
@@ -322,26 +321,25 @@ struct Markup {
         );
     }
 
-    static Sub subscribe(const Model&) {
-        return Sub::batch(
-            Sub::on(on_resize{}, [](const ResizeEvent& r) -> std::optional<Msg> {
-                return Resize{r.width.value, r.height.value};
-            }),
-            Sub::on(on_mouse{}, [](const MouseEvent& e) -> std::optional<Msg> {
-                if (e.kind != MouseEventKind::Press) return std::nullopt;
-                if (e.button == MouseButton::ScrollUp)   return Scroll{-3};
-                if (e.button == MouseButton::ScrollDown) return Scroll{+3};
-                return std::nullopt;
-            }),
-            keys<Sub>({
-                {SpecialKey::Up, Scroll{-1}}, {SpecialKey::Down, Scroll{+1}},
-                {'k', Scroll{-1}}, {'j', Scroll{+1}}, {' ', Page{+1}},
-                {SpecialKey::PageUp, Page{-1}}, {SpecialKey::PageDown, Page{+1}},
-                {SpecialKey::Home, Home{}}, {SpecialKey::End, End{}},
-                {'q', Quit{}}, {SpecialKey::Escape, Quit{}},
-            }));
+    static std::optional<Msg> on(const Model&, const ResizeEvent& r) {
+        return Resize{r.width.value, r.height.value};
     }
-    static bool subs_key(const Model&) { return true; }
+    static std::optional<Msg> on(const Model&, const MouseEvent& e) {
+        if (e.kind != MouseEventKind::Press) return std::nullopt;
+        if (e.button == MouseButton::ScrollUp)   return Scroll{-3};
+        if (e.button == MouseButton::ScrollDown) return Scroll{+3};
+        return std::nullopt;
+    }
+    static std::optional<Msg> on(const Model&, const KeyEvent& k) {
+        static const keymap<Msg> keys{
+            {SpecialKey::Up, Scroll{-1}}, {SpecialKey::Down, Scroll{+1}},
+            {'k', Scroll{-1}}, {'j', Scroll{+1}}, {' ', Page{+1}},
+            {SpecialKey::PageUp, Page{-1}}, {SpecialKey::PageDown, Page{+1}},
+            {SpecialKey::Home, Home{}}, {SpecialKey::End, End{}},
+            {'q', Quit{}}, {SpecialKey::Escape, Quit{}},
+        };
+        return keys(k);
+    }
 };
 
 static_assert(Program<Markup>);

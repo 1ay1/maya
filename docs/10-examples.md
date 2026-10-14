@@ -2,8 +2,8 @@
 
 maya ships **54 examples** in [`examples/`](../examples/). Every one is a
 jaal program run by `maya::run<P>()`: a `Model`, one `update()` per message,
-a pure `view()` that returns an `Element`, and a `subscribe()` that says where
-messages come from. (The two exceptions, `stat_sheet_demo` and
+a pure `view()` that returns an `Element`, `on()` overloads for input, and a
+`subscribe()` for timers and streams. (The two exceptions, `stat_sheet_demo` and
 `editor_widget_check`, just `print()` or `render_to_string()` and exit.)
 
 Every `examples/<name>.cpp` is built as the target `maya_<name>` (the CMake
@@ -35,7 +35,6 @@ struct Counter {
     using Msg = std::variant<Inc, Dec, Quit>;
 
     using Cmd = jaal::Cmd<Msg>;
-    using Sub = jaal::Sub<Msg, on_key>;
 
     static Cmd update(Model& m, Inc)  { ++m.count; return {}; }
     static Cmd update(Model& m, Dec)  { --m.count; return {}; }
@@ -48,8 +47,9 @@ struct Counter {
         ) | border_<Round> | bcol<50, 55, 70> | pad<1>;
     }
 
-    static Sub subscribe(const Model&) {
-        return keys<Sub>({{'+', Inc{}}, {'-', Dec{}}, {'q', Quit{}}});
+    static std::optional<Msg> on(const Model&, const KeyEvent& k) {
+        static const keymap<Msg> keys{{'+', Inc{}}, {'-', Dec{}}, {'q', Quit{}}};
+        return keys(k);
     }
 };
 
@@ -61,10 +61,11 @@ int main() { return run<Counter>({.title = "counter"}); }
 - **One struct per message**, collected in `Msg = std::variant<...>`.
 - **One `update()` overload per message.** It mutates the model in place and
   returns a `Cmd`: `{}` for nothing, `Cmd::quit(0)` to exit.
-- **`Cmd` and `Sub` name what the program uses.** `jaal::Sub<Msg, on_key>`
-  says it listens to the keyboard; a host that can't provide a listed source
-  is a compile error.
-- **`keys<Sub>({...})`** maps keys to messages declaratively.
+- **Input is an `on()` overload.** `on(const Model&, const KeyEvent&)` says it
+  listens to the keyboard; kinds with no overload (mouse, paste, …) are
+  dropped. No `subscribe()` is needed when the only input is keys.
+- **`keymap<Msg>`** maps keys to messages declaratively, as a function-local
+  static.
 - **`view()` is pure**: `const Model&` in, `Element` out.
 
 `basic.cpp` is the same program again, kept for side-by-side reading.
@@ -80,12 +81,15 @@ static Cmd update(Model& m, Lap) {
     return Cmd::after(std::chrono::milliseconds(300), FlashOff{});
 }
 
+static std::optional<Msg> on(const Model&, const KeyEvent& k) {
+    static const keymap<Msg> keys{{'q', Quit{}}, {' ', Toggle{}}, {'l', Lap{}}, {'r', Reset{}}};
+    return keys(k);
+}
+
 static Sub subscribe(const Model& m) {
-    auto on_keys = keys<Sub>({{'q', Quit{}}, {' ', Toggle{}}, {'l', Lap{}}, {'r', Reset{}}});
     if (m.running)
-        return Sub::batch(std::move(on_keys),
-                          Sub::every(std::chrono::milliseconds(10), Tick{}));
-    return on_keys;
+        return Sub::every(std::chrono::milliseconds(10), Tick{});
+    return {};
 }
 ```
 
@@ -150,7 +154,7 @@ first. `print()` and `render_to_string()` need no program at all:
 **Demonstrates**: `pixels(Image)`, `Image::fill_rows`, `glyphs(Glyphs)`,
 resize messages, `Tick` animation. See [Pixels and glyphs](08-canvas-api.md).
 
-Every animation is a normal program. The model sizes itself from `on_resize`,
+Every animation is a normal program. The model sizes itself from `ResizeEvent`,
 `update()` advances the simulation on `Tick`, and `view()` turns the model
 into a picture:
 
@@ -161,13 +165,14 @@ static Element view(const Model& m) {
     return v(pixels(render(m)), status_bar(m)); // Image + a text status bar
 }
 
-static Sub subscribe(const Model&) {
-    return Sub::batch(
-        Sub::every(16ms, Tick{}),
-        Sub::on(on_resize{}, [](const ResizeEvent& r) -> std::optional<Msg> {
-            return Resize{r.width.value, r.height.value};
-        }),
-        keys<Sub>({{' ', ToggleSource{}}, {'q', Quit{}}, {SpecialKey::Escape, Quit{}}}));
+static Sub subscribe(const Model&) { return Sub::every(16ms, Tick{}); }
+
+static std::optional<Msg> on(const Model&, const ResizeEvent& r) {
+    return Resize{r.width.value, r.height.value};
+}
+static std::optional<Msg> on(const Model&, const KeyEvent& k) {
+    static const keymap<Msg> keys{{' ', ToggleSource{}}, {'q', Quit{}}, {SpecialKey::Escape, Quit{}}};
+    return keys(k);
 }
 ```
 
@@ -188,12 +193,10 @@ static Element view(const Model& m) {
 }
 ```
 
-Mouse input is another subscription. `fluid.cpp` stirs the fluid by drag:
+Mouse input is another overload. `fluid.cpp` stirs the fluid by drag:
 
 ```cpp
-using Sub = jaal::Sub<Msg, on_key, on_mouse, on_resize>;
-
-auto mouse = Sub::on(on_mouse{}, [](const MouseEvent& e) -> std::optional<Msg> {
+static std::optional<Msg> on(const Model&, const MouseEvent& e) {
     if (e.button != MouseButton::Left && e.kind != MouseEventKind::Move) return std::nullopt;
     const int x = e.x.value - 1, y = (e.y.value - 1) * 2;   // 1-based cells -> pixels
     switch (e.kind) {
@@ -202,7 +205,7 @@ auto mouse = Sub::on(on_mouse{}, [](const MouseEvent& e) -> std::optional<Msg> {
         case MouseEventKind::Release: return Release{};
     }
     return std::nullopt;
-});
+}
 ```
 
 (Run it with `run<FluidSim>({.title = "fluid", .mouse = true})`.)
@@ -219,12 +222,12 @@ arriving. The worker subscription exists only while a turn is streaming:
 
 ```cpp
 static Sub subscribe(const Model& m) {
-    // ...
+    auto tick = Sub::every(50ms, Tick{});
     const bool working = m.stream_phase > 0 && !m.perm_open
                       && m.phase != Phase::Idle && m.phase != Phase::Done;
-    if (!working) return Sub::batch(std::move(keys), std::move(tick));
+    if (!working) return tick;
     auto worker = Sub::stream(/* ... */);
-    // ...
+    return Sub::batch(std::move(tick), std::move(worker));
 }
 ```
 

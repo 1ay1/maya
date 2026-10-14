@@ -93,7 +93,7 @@ Copy `examples/counter.cpp` into your project as `main.cpp`. Here it is:
 #include <string>
 #include <variant>
 
-using namespace maya;                    // (2) run, Element, on_key, keys, ...
+using namespace maya;                    // (2) run, Element, KeyEvent, keymap, ...
 using namespace maya::dsl;               //     t<>, text, v, h, Bold, border_, ...
 
 struct Counter {
@@ -103,7 +103,6 @@ struct Counter {
     using Msg = std::variant<Inc, Dec, Quit>;
 
     using Cmd = jaal::Cmd<Msg>;                            // (5)
-    using Sub = jaal::Sub<Msg, on_key>;
 
     static Cmd update(Model& m, Inc)  { ++m.count; return {}; }   // (6)
     static Cmd update(Model& m, Dec)  { --m.count; return {}; }
@@ -116,8 +115,9 @@ struct Counter {
         ) | border_<Round> | bcol<50, 55, 70> | pad<1>;
     }
 
-    static Sub subscribe(const Model&) {                   // (8)
-        return keys<Sub>({{'+', Inc{}}, {'-', Dec{}}, {'q', Quit{}}});
+    static std::optional<Msg> on(const Model&, const KeyEvent& k) {   // (8)
+        static const keymap<Msg> keys{{'+', Inc{}}, {'-', Dec{}}, {'q', Quit{}}};
+        return keys(k);
     }
 };
 
@@ -128,15 +128,14 @@ int main() { return run<Counter>({.title = "counter"}); }  // (9)
    `<maya/maya.hpp>` (elements, DSL, styles, `print`) and the jaal host.
 2. **Two namespaces.** `maya::dsl` is the vocabulary for *describing* UI —
    `t<>`, `text()`, `v()`/`h()`, style tags, and the `|` modifiers. `maya` is
-   everything that *runs* it — `run`, `Element`, event sources, key helpers.
+   everything that *runs* it — `run`, `Element`, input events, key helpers.
 3. **`Model`** holds *all* the app's state. It must be default-constructible;
    that default is the starting state.
 4. **Messages** are one empty (or data-carrying) struct each, collected in a
    `std::variant`. A message is a fact: "the user pressed +".
 5. **The rows.** `jaal::Cmd<Msg>` is the effect type `update` returns;
-   `jaal::Sub<Msg, on_key>` is the subscription type, and its row lists every
-   event source the program uses. Use a source you didn't list and it won't
-   compile.
+   its row lists the terminal effects the program uses. Use one you didn't
+   list and it won't compile.
 6. **`update`** has one overload per message. It mutates the model in place
    and returns a `Cmd` — `{}` for "nothing to do", `Cmd::quit(0)` to exit with
    status 0.
@@ -145,8 +144,10 @@ int main() { return run<Counter>({.title = "counter"}); }  // (9)
    vertically, `h(...)` horizontally; `|` adds style (`Bold`, `Fg<r,g,b>`,
    `Dim`) and box decoration (`border_<Round>`, `bcol<>` border colour,
    `pad<1>`). The compiler rejects `bcol<>` without a border.
-8. **`subscribe`** says what the program listens to. `keys<Sub>` maps plain
-   keys to messages.
+8. **`on`** handles input. One overload per event kind you care about
+   (`KeyEvent`, `MouseEvent`, `PasteEvent`, `FocusEvent`, `ResizeEvent`); it
+   reads the model as it is when the event arrives and returns at most one
+   message. `keymap<Msg>` maps plain keys to messages.
 9. **`run<Counter>(Options)`** opens the terminal and hands it to jaal's loop.
    You can check the shape up front with `static_assert(Program<Counter>);`.
 
@@ -169,7 +170,7 @@ struct Counter {
     using Msg = std::variant<Inc, Dec, Tick, Pause, Quit>;
 
     using Cmd = jaal::Cmd<Msg>;
-    using Sub = jaal::Sub<Msg, on_key>;
+    using Sub = jaal::Sub<Msg>;
 
     static Cmd update(Model& m, Inc)   { ++m.count; return {}; }
     static Cmd update(Model& m, Dec)   { --m.count; return {}; }
@@ -185,18 +186,21 @@ struct Counter {
         ) | border_<Round> | bcol<50, 55, 70> | pad<1>;
     }
 
+    static std::optional<Msg> on(const Model&, const KeyEvent& k) {
+        static const keymap<Msg> keys{{'+', Inc{}}, {'-', Dec{}}, {' ', Pause{}}, {'q', Quit{}}};
+        return keys(k);
+    }
     static Sub subscribe(const Model& m) {
-        auto k = keys<Sub>({{'+', Inc{}}, {'-', Dec{}}, {' ', Pause{}}, {'q', Quit{}}});
-        if (m.paused) return k;                             // timer dropped
-        return Sub::batch(std::move(k), Sub::every(250ms, Tick{}));
+        if (m.paused) return Sub::none();                   // timer dropped
+        return Sub::every(250ms, Tick{});
     }
     static bool subs_key(const Model& m) { return m.paused; }
 };
 ```
 
 `subscribe()` is re-evaluated as the model changes, and jaal **diffs** the
-result: when `paused` flips on, the `every` subscription disappears from the
-batch and the timer is stopped; flip it off and a fresh one starts. A paused
+result: when `paused` flips on, the `every` subscription disappears and the
+timer is stopped; flip it off and a fresh one starts. A paused
 screen costs nothing — no wakeups, no redraws.
 
 `subs_key` is an optional hint: it returns *what `subscribe()` depends on*.
@@ -211,36 +215,33 @@ from `update`.
 
 ## 4. Keys and mouse
 
-`keys<Sub>` covers plain keys, including special ones:
+`keymap<Msg>` covers plain keys, including special ones:
 `{SpecialKey::Up, Up{}}`, `{SpecialKey::Escape, Quit{}}`. For anything richer
-— modifiers, data-carrying messages — use `Sub::on` with a **captureless**
-lambda that returns `std::optional<Msg>`, and the predicates `key_is`,
-`ctrl_is`, `alt_is`:
+— modifiers, data-carrying messages — write it out in the `on()` overload with
+the predicates `key_is`, `ctrl_is`, `alt_is`, and add an overload for each
+other kind you want:
 
 ```cpp
 struct Click { int x, y; };
-// ... add Click to Msg, and on_mouse to the Sub row:
-using Sub = jaal::Sub<Msg, on_key, on_mouse>;
+// ... add Click to Msg, then:
 
-static Sub subscribe(const Model& m) {
-    return Sub::batch(
-        keys<Sub>({{'+', Inc{}}, {'-', Dec{}}, {SpecialKey::Escape, Quit{}}}),
-        Sub::on(on_key{}, [](const KeyEvent& k) -> std::optional<Msg> {
-            if (ctrl_is(k, 'c') || key_is(k, 'q')) return Quit{};
-            return std::nullopt;
-        }),
-        Sub::on(on_mouse{}, [](const MouseEvent& e) -> std::optional<Msg> {
-            if (e.button == MouseButton::Left && e.kind == MouseEventKind::Press)
-                return Click{e.x.value, e.y.value};      // 1-based cell coordinates
-            return std::nullopt;
-        }));
+static std::optional<Msg> on(const Model&, const KeyEvent& k) {
+    static const keymap<Msg> keys{{'+', Inc{}}, {'-', Dec{}}, {SpecialKey::Escape, Quit{}}};
+    if (ctrl_is(k, 'c') || key_is(k, 'q')) return Quit{};
+    return keys(k);
+}
+
+static std::optional<Msg> on(const Model&, const MouseEvent& e) {
+    if (e.button == MouseButton::Left && e.kind == MouseEventKind::Press)
+        return Click{e.x.value, e.y.value};      // 1-based cell coordinates
+    return std::nullopt;
 }
 ```
 
 Mouse reporting is off by default; turn it on when you run:
-`run<Counter>({.title = "counter", .mouse = true})`. The other sources work the
-same way: `on_resize` (`ResizeEvent{width, height}`), `on_paste`
-(`PasteEvent{content}`), `on_focus` — add each to the `Sub` row as you use it.
+`run<Counter>({.title = "counter", .mouse = true})`. The other kinds work the
+same way: `ResizeEvent{width, height}`, `PasteEvent{content}`, `FocusEvent` —
+add an `on()` overload for each one you use; the rest are dropped.
 
 ---
 
@@ -258,7 +259,7 @@ struct Plasma {
     struct Tick {}; struct Resize { int w, h; }; struct Quit {};
     using Msg = std::variant<Tick, Resize, Quit>;
     using Cmd = jaal::Cmd<Msg>;
-    using Sub = jaal::Sub<Msg, on_key, on_resize>;
+    using Sub = jaal::Sub<Msg>;
 
     static Cmd update(Model& m, Tick)     { ++m.t; return {}; }
     static Cmd update(Model& m, Resize r) { m.w = r.w; m.h = r.h * 2; return {}; }
@@ -274,13 +275,15 @@ struct Plasma {
         return pixels(std::move(img));
     }
 
+    static std::optional<Msg> on(const Model&, const ResizeEvent& r) {
+        return Resize{r.width.value, r.height.value};
+    }
+    static std::optional<Msg> on(const Model&, const KeyEvent& k) {
+        static const keymap<Msg> keys{{'q', Quit{}}};
+        return keys(k);
+    }
     static Sub subscribe(const Model&) {
-        return Sub::batch(
-            Sub::every(33ms, Tick{}),
-            Sub::on(on_resize{}, [](const ResizeEvent& r) -> std::optional<Msg> {
-                return Resize{r.width.value, r.height.value};
-            }),
-            keys<Sub>({{'q', Quit{}}}));
+        return Sub::every(33ms, Tick{});
     }
     static bool subs_key(const Model&) { return true; }
 };
@@ -340,7 +343,8 @@ so linking `maya::maya` is enough.
 > **Coming from the old API?** `run(event_fn, render_fn)`, `live()`,
 > `canvas_run()`, `maya::Cmd`/`Sub`, `key_map`, and `RunConfig` are gone. Each
 > is now the program shape above: `live()` is `Mode::Inline` plus
-> `Sub::every`; `canvas_run()` is a view returning `pixels(img)`.
+> `Sub::every`; `canvas_run()` is a view returning `pixels(img)`; `key_map` is
+> `keymap<Msg>` inside `on(const Model&, const KeyEvent&)`.
 
 ---
 
@@ -355,8 +359,8 @@ guide goes deep on each axis:
 - **[Styling](03-styling.md)** — colours, attributes, themes, compile-time style tags.
 - **[Layout](04-layout.md)** — flexbox: direction, grow/shrink, gap, alignment,
   wrapping, borders.
-- **[Event Handling](06-events.md)** — every event source, `keys<Sub>`,
-  `Sub::on`, and the key predicates.
+- **[Event Handling](06-events.md)** — every input kind, the `on()` overloads,
+  `keymap<Msg>`, and the key predicates.
 - **[Rendering Modes](07-rendering-modes.md)** — fullscreen vs inline in depth,
   scrollback commits, `print()`.
 - **[Widget Reference](13-widgets.md)** — the built-in widgets.

@@ -5,8 +5,8 @@
 //
 //   - Pure update() / view() / subscribe() — no Signal, no mutable globals
 //   - Sub::every() driving deterministic peer simulation
-//   - Sub::on_key catch-all for free-form composer typing (UTF-8 aware)
-//   - Sub::on_resize for terminal-aware layout
+//   - on(KeyEvent) catch-all for free-form composer typing (UTF-8 aware)
+//   - on(ResizeEvent) for terminal-aware layout
 //   - Compile-time + runtime DSL pipes mixed in one expression
 //   - vector<Element> children via the DslChild::ElementRange path
 //   - Overlay widget for the channel jumper / help modals
@@ -241,7 +241,7 @@ struct Messenger {
         int           tick_n          = 0;
         float         next_ambient_at = 35.f;
 
-        // Layout — driven by Sub::on_resize
+        // Layout — driven by on(ResizeEvent)
         int term_w = 120;
         int term_h = 40;
 
@@ -310,7 +310,7 @@ struct Messenger {
         OpenHelp, CloseHelp, Resize, RawMouse, ToggleRightPanel, Quit>;
 
     using Cmd = jaal::Cmd<Msg>;
-    using Sub = jaal::Sub<Msg, on_key, on_mouse, on_resize>;
+    using Sub = jaal::Sub<Msg>;
 
     // -- init ---------------------------------------------------------------
 
@@ -2226,119 +2226,106 @@ struct Messenger {
         return base;
     }
 
-    // ─── subscribe ─────────────────────────────────────────────────────────
+    // ─── input / subscribe ─────────────────────────────────────────────────
 
-    static Sub subscribe(const Model& m) {
-        const bool jumper_open = m.jumper_open;
-        const bool help_open   = m.help_open;
-
-        auto keys = Sub::on(on_key{},
-            [jumper_open, help_open](const KeyEvent& k) -> std::optional<Msg> {
-                // ── Help: arrows scroll, escape/other keys close ──
-                if (help_open) {
-                    if (auto* sk = std::get_if<SpecialKey>(&k.key)) {
-                        switch (*sk) {
-                            case SpecialKey::Up:       return Msg{HelpScroll{-1}};
-                            case SpecialKey::Down:     return Msg{HelpScroll{+1}};
-                            case SpecialKey::PageUp:   return Msg{HelpScroll{-6}};
-                            case SpecialKey::PageDown: return Msg{HelpScroll{+6}};
-                            case SpecialKey::Escape:   return Msg{CloseHelp{}};
-                            default: break;
-                        }
-                    }
-                    return Msg{CloseHelp{}};
+    static std::optional<Msg> on(const Model& m, const KeyEvent& k) {
+        // ── Help: arrows scroll, escape/other keys close ──
+        if (m.help_open) {
+            if (auto* sk = std::get_if<SpecialKey>(&k.key)) {
+                switch (*sk) {
+                    case SpecialKey::Up:       return Msg{HelpScroll{-1}};
+                    case SpecialKey::Down:     return Msg{HelpScroll{+1}};
+                    case SpecialKey::PageUp:   return Msg{HelpScroll{-6}};
+                    case SpecialKey::PageDown: return Msg{HelpScroll{+6}};
+                    case SpecialKey::Escape:   return Msg{CloseHelp{}};
+                    default: break;
                 }
+            }
+            return Msg{CloseHelp{}};
+        }
 
-                // ── Jumper: dedicated key handling ──
-                if (jumper_open) {
-                    if (auto* sk = std::get_if<SpecialKey>(&k.key)) {
-                        switch (*sk) {
-                            case SpecialKey::Escape:    return Msg{CloseJumper{}};
-                            case SpecialKey::Enter:     return Msg{JumperPick{}};
-                            case SpecialKey::Up:        return Msg{JumperUp{}};
-                            case SpecialKey::Down:      return Msg{JumperDown{}};
-                            case SpecialKey::Tab:       return Msg{JumperDown{}};
-                            case SpecialKey::BackTab:   return Msg{JumperUp{}};
-                            case SpecialKey::Backspace: return Msg{JumperBack{}};
-                            default: return std::nullopt;
-                        }
-                    }
-                    if (auto* ck = std::get_if<CharKey>(&k.key)) {
-                        if (k.mods.ctrl) {
-                            if (ck->codepoint == 'c' || ck->codepoint == 'C'
-                                || ck->codepoint == 'g' || ck->codepoint == 'G')
-                                return Msg{CloseJumper{}};
-                            return std::nullopt;
-                        }
-                        if (ck->codepoint >= 0x20)
-                            return Msg{JumperChar{ck->codepoint}};
-                    }
+        // ── Jumper: dedicated key handling ──
+        if (m.jumper_open) {
+            if (auto* sk = std::get_if<SpecialKey>(&k.key)) {
+                switch (*sk) {
+                    case SpecialKey::Escape:    return Msg{CloseJumper{}};
+                    case SpecialKey::Enter:     return Msg{JumperPick{}};
+                    case SpecialKey::Up:        return Msg{JumperUp{}};
+                    case SpecialKey::Down:      return Msg{JumperDown{}};
+                    case SpecialKey::Tab:       return Msg{JumperDown{}};
+                    case SpecialKey::BackTab:   return Msg{JumperUp{}};
+                    case SpecialKey::Backspace: return Msg{JumperBack{}};
+                    default: return std::nullopt;
+                }
+            }
+            if (auto* ck = std::get_if<CharKey>(&k.key)) {
+                if (k.mods.ctrl) {
+                    if (ck->codepoint == 'c' || ck->codepoint == 'C'
+                        || ck->codepoint == 'g' || ck->codepoint == 'G')
+                        return Msg{CloseJumper{}};
                     return std::nullopt;
                 }
+                if (ck->codepoint >= 0x20)
+                    return Msg{JumperChar{ck->codepoint}};
+            }
+            return std::nullopt;
+        }
 
-                // ── Normal mode ──
-                if (auto* sk = std::get_if<SpecialKey>(&k.key)) {
-                    switch (*sk) {
-                        case SpecialKey::Enter:     return Msg{SendComposer{}};
-                        case SpecialKey::Backspace: return Msg{Backspace{}};
-                        case SpecialKey::Delete:    return Msg{DeleteToEnd{}};
-                        case SpecialKey::Tab:       return Msg{NextChannel{}};
-                        case SpecialKey::BackTab:   return Msg{PrevChannel{}};
-                        case SpecialKey::Escape:    return Msg{Quit{}};
-                        case SpecialKey::Up:        return Msg{ScrollUp{}};
-                        case SpecialKey::Down:      return Msg{ScrollDown{}};
-                        case SpecialKey::PageUp:    return Msg{ScrollPageUp{}};
-                        case SpecialKey::PageDown:  return Msg{ScrollPageDn{}};
-                        case SpecialKey::End:       return Msg{ScrollLatest{}};
-                        case SpecialKey::Home:      return Msg{CursorHome{}};
-                        case SpecialKey::Left:      return Msg{CursorLeft{}};
-                        case SpecialKey::Right:     return Msg{CursorRight{}};
-                        default:                    return std::nullopt;
-                    }
+        // ── Normal mode ──
+        if (auto* sk = std::get_if<SpecialKey>(&k.key)) {
+            switch (*sk) {
+                case SpecialKey::Enter:     return Msg{SendComposer{}};
+                case SpecialKey::Backspace: return Msg{Backspace{}};
+                case SpecialKey::Delete:    return Msg{DeleteToEnd{}};
+                case SpecialKey::Tab:       return Msg{NextChannel{}};
+                case SpecialKey::BackTab:   return Msg{PrevChannel{}};
+                case SpecialKey::Escape:    return Msg{Quit{}};
+                case SpecialKey::Up:        return Msg{ScrollUp{}};
+                case SpecialKey::Down:      return Msg{ScrollDown{}};
+                case SpecialKey::PageUp:    return Msg{ScrollPageUp{}};
+                case SpecialKey::PageDown:  return Msg{ScrollPageDn{}};
+                case SpecialKey::End:       return Msg{ScrollLatest{}};
+                case SpecialKey::Home:      return Msg{CursorHome{}};
+                case SpecialKey::Left:      return Msg{CursorLeft{}};
+                case SpecialKey::Right:     return Msg{CursorRight{}};
+                default:                    return std::nullopt;
+            }
+        }
+        if (auto* ck = std::get_if<CharKey>(&k.key)) {
+            char32_t cp = ck->codepoint;
+            if (k.mods.ctrl) {
+                switch (cp) {
+                    case 'a': case 'A': return Msg{CursorHome{}};
+                    case 'e': case 'E': return Msg{CursorEnd{}};
+                    case 'w': case 'W': return Msg{DeleteWord{}};
+                    case 'u': case 'U': return Msg{DeleteToStart{}};
+                    case 'k': case 'K': return Msg{DeleteToEnd{}};
+                    case 'b': case 'B': return Msg{CursorLeft{}};
+                    case 'f': case 'F': return Msg{CursorRight{}};
+                    case 'g': case 'G': return Msg{OpenJumper{}};
+                    case 'h': case 'H': return Msg{OpenHelp{}};
+                    case 'l': case 'L': return Msg{ClearChannel{}};
+                    case 'p': case 'P': return Msg{ToggleRightPanel{}};
+                    case 'c': case 'C':
+                    case 'd': case 'D': return Msg{Quit{}};
+                    default: return std::nullopt;
                 }
-                if (auto* ck = std::get_if<CharKey>(&k.key)) {
-                    char32_t cp = ck->codepoint;
-                    if (k.mods.ctrl) {
-                        switch (cp) {
-                            case 'a': case 'A': return Msg{CursorHome{}};
-                            case 'e': case 'E': return Msg{CursorEnd{}};
-                            case 'w': case 'W': return Msg{DeleteWord{}};
-                            case 'u': case 'U': return Msg{DeleteToStart{}};
-                            case 'k': case 'K': return Msg{DeleteToEnd{}};
-                            case 'b': case 'B': return Msg{CursorLeft{}};
-                            case 'f': case 'F': return Msg{CursorRight{}};
-                            case 'g': case 'G': return Msg{OpenJumper{}};
-                            case 'h': case 'H': return Msg{OpenHelp{}};
-                            case 'l': case 'L': return Msg{ClearChannel{}};
-                            case 'p': case 'P': return Msg{ToggleRightPanel{}};
-                            case 'c': case 'C':
-                            case 'd': case 'D': return Msg{Quit{}};
-                            default: return std::nullopt;
-                        }
-                    }
-                    if (k.mods.alt) return std::nullopt;
-                    if (cp >= 0x20)  return Msg{CharIn{cp}};
-                }
-                return std::nullopt;
-            });
-
-        auto resize = Sub::on(on_resize{},
-            [](const ResizeEvent& r) -> std::optional<Msg> {
-                return Msg{Resize{r.width.value, r.height.value}};
-            });
-
-        auto mouse = Sub::on(on_mouse{},
-            [](const MouseEvent& me) -> std::optional<Msg> {
-                return Msg{RawMouse{me}};
-            });
-
-        return Sub::batch(
-            std::move(keys),
-            std::move(mouse),
-            std::move(resize),
-            Sub::every(50ms, Tick{})
-        );
+            }
+            if (k.mods.alt) return std::nullopt;
+            if (cp >= 0x20)  return Msg{CharIn{cp}};
+        }
+        return std::nullopt;
     }
+
+    static std::optional<Msg> on(const Model&, const ResizeEvent& r) {
+        return Msg{Resize{r.width.value, r.height.value}};
+    }
+
+    static std::optional<Msg> on(const Model&, const MouseEvent& me) {
+        return Msg{RawMouse{me}};
+    }
+
+    static Sub subscribe(const Model&) { return Sub::every(50ms, Tick{}); }
 };
 
 static_assert(Program<Messenger>);

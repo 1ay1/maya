@@ -510,7 +510,7 @@ struct Music {
     using Model = ::Model;
     using Msg   = ::Msg;
     using Cmd   = jaal::Cmd<Msg>;
-    using Sub   = jaal::Sub<Msg, on_key>;
+    using Sub   = jaal::Sub<Msg>;
 
     static Cmd init(Model& m)             { init_shuffle(m); return {}; }
     static Cmd update(Model& m, Tick)     { const int t = m.current_track; tick(m, 1.0f / 15.0f); if (m.current_track != t) follow_current(m); return {}; }
@@ -528,15 +528,19 @@ struct Music {
 
     static Element view(const Model& m) { return render(m); }
 
-    // The visualiser and progress bar move only while playing.
-    static Sub subscribe(const Model& m) {
-        auto k = keys<Sub>({
+    static std::optional<Msg> on(const Model&, const KeyEvent& k) {
+        static const keymap<Msg> keys{
             {'q', Quit{}}, {SpecialKey::Escape, Quit{}}, {' ', PlayPause{}}, {'n', Skip{1}}, {'p', Skip{-1}},
             {'s', Shuffle{}}, {'r', Repeat{}}, {'+', Volume{0.05f}}, {'=', Volume{0.05f}}, {'-', Volume{-0.05f}},
             {'j', ScrollList{1}}, {SpecialKey::Down, ScrollList{1}}, {'k', ScrollList{-1}}, {SpecialKey::Up, ScrollList{-1}},
-        });
-        if (!m.playing) return k;
-        return Sub::batch(Sub::every(std::chrono::milliseconds{66}, Tick{}), std::move(k));
+        };
+        return keys(k);
+    }
+
+    // The visualiser and progress bar move only while playing.
+    static Sub subscribe(const Model& m) {
+        if (!m.playing) return {};
+        return Sub::every(std::chrono::milliseconds{66}, Tick{});
     }
     static bool subs_key(const Model& m) { return m.playing; }
 };

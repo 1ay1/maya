@@ -34,7 +34,6 @@ struct Counter {
     using Msg = std::variant<Inc, Dec, Quit>;
 
     using Cmd = jaal::Cmd<Msg>;
-    using Sub = jaal::Sub<Msg, on_key>;
 
     static Cmd update(Model& m, Inc)  { ++m.count; return {}; }
     static Cmd update(Model& m, Dec)  { --m.count; return {}; }
@@ -47,8 +46,9 @@ struct Counter {
         ) | border_<Round> | bcol<50, 55, 70> | pad<1>;
     }
 
-    static Sub subscribe(const Model&) {
-        return keys<Sub>({{'+', Inc{}}, {'-', Dec{}}, {'q', Quit{}}});
+    static std::optional<Msg> on(const Model&, const KeyEvent& k) {
+        static const keymap<Msg> keys{{'+', Inc{}}, {'-', Dec{}}, {'q', Quit{}}};
+        return keys(k);
     }
 };
 
@@ -61,10 +61,11 @@ function of the model, so it is trivially testable. Animation is a
 `Sub::every` in `subscribe()` — which is also where it stops, so a still
 screen costs nothing.
 
-**Say what you use.** The rows of `Cmd` and `Sub` list the terminal effects
-and event sources a program needs (`jaal::Sub<Msg, on_key, on_mouse>`,
-`jaal::Cmd<Msg, set_title>`). Asking for something the host can't provide is
-a compile error, not a runtime surprise.
+**Say what you use.** The rows of `Cmd` list the terminal effects a program
+needs (`jaal::Cmd<Msg, set_title>`); asking for something the host can't
+provide is a compile error, not a runtime surprise. Input is one
+`on(const Model&, const KeyEvent&)` overload per kind you care about
+(`MouseEvent`, `ResizeEvent`, …); kinds with no overload are dropped.
 
 **Performance by default.** Styles are interned into 16-bit IDs. Cells are
 packed into 64-bit values. Frame diffing uses SIMD (AVX-512, AVX2, SSE2, NEON)
@@ -90,7 +91,7 @@ trees are plain data — `std::variant` of `TextElement`, `BoxElement`, and
 | **Borders** | Single, Double, Round, Bold, Classic, Arrow — with colors, titles, per-side control |
 | **One program shape** | `Model` + `Msg` + `update` + `view` + `subscribe`, run by `run<P>()` on jaal |
 | **Two modes** | `Mode::Fullscreen` (alternate screen) or `Mode::Inline` (lives in scrollback); plus `print()` for one-shot output |
-| **Rich input** | Keys, mouse clicks/movement/scroll, paste, focus, resize — each an event source in the `Sub` row |
+| **Rich input** | Keys, mouse clicks/movement/scroll, paste, focus, resize — one `on(const Model&, Event)` overload per kind |
 | **Terminal effects** | Title, clipboard, scrollback commits, mouse toggling, suspend-for-`$EDITOR` — as `Cmd` rows |
 | **Pixel graphics** | `Image` + `pixels()` for half-block RGB art, `Glyphs` + `glyphs()` for coloured character art |
 | **Themes** | 24-slot color themes with dark/light built-ins and compile-time derivation |
@@ -111,7 +112,7 @@ trees are plain data — `std::variant` of `TextElement`, `BoxElement`, and
 ├─────────────────────────────────────────────────────┤
 │              maya::app (app.hpp)                     │
 │  run<P>(Options): opens the terminal, hands it to    │
-│  jaal. Event sources (on_key, on_mouse, …) and       │
+│  jaal. Input events (KeyEvent, MouseEvent, …) and    │
 │  terminal effects (set_title, suspend, …)            │
 ├─────────────────────────────────────────────────────┤
 │                 DSL Layer (dsl.hpp)                   │
@@ -162,7 +163,7 @@ struct Clock {
     struct Tick {}; struct Pause {}; struct Quit {};
     using Msg = std::variant<Tick, Pause, Quit>;
     using Cmd = jaal::Cmd<Msg>;
-    using Sub = jaal::Sub<Msg, on_key>;
+    using Sub = jaal::Sub<Msg>;
 
     static Cmd update(Model& m, Tick)  { ++m.ticks; return {}; }
     static Cmd update(Model& m, Pause) { m.paused = !m.paused; return {}; }
@@ -171,10 +172,13 @@ struct Clock {
     static Element view(const Model& m) {
         return text("Ticks: " + std::to_string(m.ticks)) | Bold;
     }
+    static std::optional<Msg> on(const Model&, const KeyEvent& k) {
+        static const keymap<Msg> keys{{' ', Pause{}}, {'q', Quit{}}};
+        return keys(k);
+    }
     static Sub subscribe(const Model& m) {
-        auto k = keys<Sub>({{' ', Pause{}}, {'q', Quit{}}});
-        if (m.paused) return k;                       // no timer: nothing runs
-        return Sub::batch(std::move(k), Sub::every(100ms, Tick{}));
+        if (m.paused) return Sub::none();             // no timer: nothing runs
+        return Sub::every(100ms, Tick{});
     }
     static bool subs_key(const Model& m) { return m.paused; }
 };
@@ -207,7 +211,7 @@ static Element view(const Model& m) {
 | [Styling](03-styling.md) | Colors, text attributes, themes, compile-time style tags |
 | [Layout](04-layout.md) | Flexbox model, direction, padding, grow, borders, alignment |
 | [Runtime Content](05-runtime-content.md) | `text()`, `map()`, mixing static and dynamic content |
-| [Event Handling](06-events.md) | Event sources, `keys<Sub>`, `Sub::on`, key predicates |
+| [Event Handling](06-events.md) | `on()` overloads per input kind, `keymap<Msg>`, key predicates |
 | [Rendering Modes](07-rendering-modes.md) | `run<P>()`, `Mode::Fullscreen` vs `Mode::Inline`, `print()` |
 | [Canvas API](08-canvas-api.md) | Low-level painting, StylePool, cells, `Image`/`pixels()` |
 | [Signals & Reactivity](09-signals.md) | `Signal<T>`, `Computed<T>`, `Effect`, `Batch` |

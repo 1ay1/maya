@@ -10,8 +10,9 @@
 //   effects.hpp    what only the TERMINAL can do — set_title, commit_scrollback,
 //                  write_clipboard, suspend, ... A program lists the ones it
 //                  uses in its Cmd, so a host that can't do them won't compile.
-//   sources.hpp    what the terminal REPORTS — on_key, on_mouse, on_paste,
-//                  on_focus, on_resize; the Program concept; keys<Sub>().
+//   sources.hpp    what the terminal REPORTS — terminal_events (KeyEvent,
+//                  MouseEvent, PasteEvent, FocusEvent, ResizeEvent); the
+//                  Program concept; keymap<Msg>.
 //   terminal.hpp   terminal_host: maya as a jaal host.
 //   run.hpp        this file: run<P>().
 //
@@ -28,12 +29,12 @@
 //       struct Inc {}; struct Quit {};
 //       using Msg = std::variant<Inc, Quit>;
 //       using Cmd = jaal::Cmd<Msg>;
-//       using Sub = jaal::Sub<Msg, maya::on_key>;
 //       static Cmd update(Model& m, Inc)  { ++m.n; return {}; }
 //       static Cmd update(Model&, Quit)   { return Cmd::quit(0); }
 //       static maya::Element view(const Model& m) { return text(...); }
-//       static Sub subscribe(const Model&) {
-//           return maya::keys<Sub>({{'+', Inc{}}, {'q', Quit{}}});
+//       static std::optional<Msg> on(const Model&, const maya::KeyEvent& k) {
+//           static const maya::keymap<Msg> keys{{'+', Inc{}}, {'q', Quit{}}};
+//           return keys(k);
 //       }
 //   };
 //   int main() { return maya::run<Counter>({.title = "counter"}); }

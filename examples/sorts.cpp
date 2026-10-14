@@ -299,7 +299,7 @@ struct Sorts {
     using Model = ::Model;
     using Msg   = ::Msg;
     using Cmd   = jaal::Cmd<Msg>;
-    using Sub   = jaal::Sub<Msg, on_key>;
+    using Sub   = jaal::Sub<Msg>;
 
     static Cmd init(Model& m) { start(m); return {}; }
 
@@ -361,18 +361,20 @@ struct Sorts {
 
     static Element view(const Model& m) { return v(grid(m), status(m)) | bgc(Color::rgb(12, 12, 20)); }
 
+    static std::optional<Msg> on(const Model&, const KeyEvent& k) {
+        static const keymap<Msg> keys{
+            {' ', Restart{}}, {'p', NextPattern{}}, {'k', Pause{}},
+            {'+', Speed{1, 1}}, {'=', Speed{1, 1}}, {'-', Speed{-1, 1}},
+            {SpecialKey::Right, Speed{3, 1}}, {SpecialKey::Left, Speed{-3, 1}},
+            {SpecialKey::Up, Speed{0, 2}}, {SpecialKey::Down, Speed{0, 1}},
+            {'1', Solo{0}}, {'2', Solo{1}}, {'3', Solo{2}}, {'4', Solo{3}},
+            {'5', Solo{4}}, {'6', Solo{5}}, {'7', Solo{6}}, {'8', Solo{7}}, {'0', Solo{-1}},
+            {'q', Quit{}}, {SpecialKey::Escape, Quit{}},
+        };
+        return keys(k);
+    }
     static Sub subscribe(const Model&) {
-        return Sub::batch(
-            Sub::every(std::chrono::milliseconds(kTickMs), Tick{}),
-            keys<Sub>({
-                {' ', Restart{}}, {'p', NextPattern{}}, {'k', Pause{}},
-                {'+', Speed{1, 1}}, {'=', Speed{1, 1}}, {'-', Speed{-1, 1}},
-                {SpecialKey::Right, Speed{3, 1}}, {SpecialKey::Left, Speed{-3, 1}},
-                {SpecialKey::Up, Speed{0, 2}}, {SpecialKey::Down, Speed{0, 1}},
-                {'1', Solo{0}}, {'2', Solo{1}}, {'3', Solo{2}}, {'4', Solo{3}},
-                {'5', Solo{4}}, {'6', Solo{5}}, {'7', Solo{6}}, {'8', Solo{7}}, {'0', Solo{-1}},
-                {'q', Quit{}}, {SpecialKey::Escape, Quit{}},
-            }));
+        return Sub::every(std::chrono::milliseconds(kTickMs), Tick{});
     }
     static bool subs_key(const Model&) { return true; }
 };

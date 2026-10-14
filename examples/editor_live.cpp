@@ -46,7 +46,6 @@ struct App {
     using Msg = std::variant<KeyMsg, PasteMsg, Quit>;
 
     using Cmd = jaal::Cmd<Msg>;
-    using Sub = jaal::Sub<Msg, on_key, on_paste>;
 
     static Cmd init(Model& m) {
         m.ed.set_text(kSeed); return {};
@@ -86,18 +85,14 @@ struct App {
         ) | grow(1);
     }
 
-    static Sub subscribe(const Model&) {
-        return Sub::batch(
-            Sub::on(on_key{}, [](const KeyEvent& k) -> std::optional<Msg> {
-                if (k.mods.ctrl && std::holds_alternative<CharKey>(k.key) &&
-                    std::get<CharKey>(k.key).codepoint == 'q')
-                    return Quit{};
-                return KeyMsg{k};
-            }),
-            Sub::on(on_paste{}, [](const PasteEvent& p) -> std::optional<Msg> {
-                return PasteMsg{p.content};
-            })
-        );
+    static std::optional<Msg> on(const Model&, const KeyEvent& k) {
+        if (k.mods.ctrl && std::holds_alternative<CharKey>(k.key) &&
+            std::get<CharKey>(k.key).codepoint == 'q')
+            return Quit{};
+        return KeyMsg{k};
+    }
+    static std::optional<Msg> on(const Model&, const PasteEvent& p) {
+        return PasteMsg{p.content};
     }
 };
 

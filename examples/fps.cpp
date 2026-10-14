@@ -1072,7 +1072,7 @@ struct Fps {
     using Model = ::Model;
     using Msg   = ::Msg;
     using Cmd   = jaal::Cmd<Msg>;
-    using Sub   = jaal::Sub<Msg, on_key, on_resize>;
+    using Sub   = jaal::Sub<Msg>;
 
     static Cmd update(Model& m, Tick)      { tick(m, 1.0f / 30.0f); return {}; }
     static Cmd update(Model& m, Resize r)  { m.w = r.cols; m.h = r.rows; return {}; }
@@ -1145,18 +1145,20 @@ struct Fps {
     }
 
     static Sub subscribe(const Model&) {
-        return Sub::batch(
-            Sub::every(33ms, Tick{}),
-            Sub::on(on_resize{}, [](const ResizeEvent& r) -> std::optional<Msg> {
-                return Resize{r.width.value, r.height.value};
-            }),
-            keys<Sub>({
-                {'w', Move{K_FWD}}, {'s', Move{K_BACK}}, {'a', Move{K_LEFT}}, {'d', Move{K_RIGHT}},
-                {SpecialKey::Up, Move{K_FWD}}, {SpecialKey::Down, Move{K_BACK}},
-                {SpecialKey::Left, Move{K_TURN_L}}, {SpecialKey::Right, Move{K_TURN_R}},
-                {',', Move{K_TURN_L}}, {'.', Move{K_TURN_R}},
-                {' ', Shoot{}}, {'m', ToggleMap{}}, {'r', Reset{}}, {'q', Quit{}}, {SpecialKey::Escape, Quit{}},
-            }));
+        return Sub::every(33ms, Tick{});
+    }
+    static std::optional<Msg> on(const Model&, const ResizeEvent& r) {
+        return Resize{r.width.value, r.height.value};
+    }
+    static std::optional<Msg> on(const Model&, const KeyEvent& k) {
+        static const keymap<Msg> keys{
+            {'w', Move{K_FWD}}, {'s', Move{K_BACK}}, {'a', Move{K_LEFT}}, {'d', Move{K_RIGHT}},
+            {SpecialKey::Up, Move{K_FWD}}, {SpecialKey::Down, Move{K_BACK}},
+            {SpecialKey::Left, Move{K_TURN_L}}, {SpecialKey::Right, Move{K_TURN_R}},
+            {',', Move{K_TURN_L}}, {'.', Move{K_TURN_R}},
+            {' ', Shoot{}}, {'m', ToggleMap{}}, {'r', Reset{}}, {'q', Quit{}}, {SpecialKey::Escape, Quit{}},
+        };
+        return keys(k);
     }
     static bool subs_key(const Model&) { return true; }
 };

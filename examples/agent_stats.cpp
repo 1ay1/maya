@@ -490,7 +490,7 @@ struct AgentStats {
                              ToggleFlow, Scroll, Wheel, Resize, Quit>;
 
     using Cmd = jaal::Cmd<Msg>;
-    using Sub = jaal::Sub<Msg, on_key, on_mouse, on_resize>;
+    using Sub = jaal::Sub<Msg>;
 
     static int viewport_h(const Model& m) { return std::max(4, m.term_h - 7); }
     static constexpr int kBar = 1, kGap = 1, kPad = 2;
@@ -567,28 +567,25 @@ struct AgentStats {
         );
     }
 
+    static std::optional<Msg> on(const Model&, const KeyEvent& k) {
+        if (key_is(k, 'q')) return Quit{};
+        if (key_is(k, 'f')) return ToggleFlow{};
+        if (key_is(k, '+') || key_is(k, '=')) return Wider{};
+        if (key_is(k, '-')) return Narrower{};
+        if (key_is(k, SpecialKey::Tab)) return NextTab{};
+        if (key_is(k, SpecialKey::Right)) return NextTab{};
+        if (key_is(k, SpecialKey::Left))  return PrevTab{};
+        for (char c = '1'; c <= '8'; ++c)
+            if (key_is(k, c)) return GotoTab{c - '1'};
+        return Scroll{k};
+    }
+    static std::optional<Msg> on(const Model&, const MouseEvent& me) { return Wheel{me}; }
+    static std::optional<Msg> on(const Model&, const ResizeEvent& r) {
+        return Resize{Size{r.width, r.height}};
+    }
+
     static Sub subscribe(const Model&) {
-        auto keys = Sub::on(on_key{}, [](const KeyEvent& k) -> std::optional<Msg> {
-            if (key_is(k, 'q')) return Quit{};
-            if (key_is(k, 'f')) return ToggleFlow{};
-            if (key_is(k, '+') || key_is(k, '=')) return Wider{};
-            if (key_is(k, '-')) return Narrower{};
-            if (key_is(k, SpecialKey::Tab)) return NextTab{};
-            if (key_is(k, SpecialKey::Right)) return NextTab{};
-            if (key_is(k, SpecialKey::Left))  return PrevTab{};
-            for (char c = '1'; c <= '8'; ++c)
-                if (key_is(k, c)) return GotoTab{c - '1'};
-            return Scroll{k};
-        });
-        auto wheel  = Sub::on(on_mouse{}, [](const MouseEvent& me) -> std::optional<Msg> {
-            return Wheel{me};
-        });
-        auto resize = Sub::on(on_resize{}, [](const ResizeEvent& r) -> std::optional<Msg> {
-            return Resize{Size{r.width, r.height}};
-        });
-        auto tick   = Sub::every(std::chrono::milliseconds{120}, Tick{});
-        return Sub::batch(std::move(keys), std::move(wheel),
-                          std::move(resize), std::move(tick));
+        return Sub::every(std::chrono::milliseconds{120}, Tick{});
     }
 };
 

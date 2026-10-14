@@ -123,7 +123,7 @@ auto Device::create(Options cfg) -> Result<Device> {
     }
 
     // Focus reporting (?1004): CSI I / CSI O arrive as FocusEvent and
-    // reach apps via Sub::on_focus. Cheap, universally ignored where
+    // reach apps via on(const Model&, const FocusEvent&). Cheap, universally ignored where
     // unsupported, and the hardware-caret path wants it (hide the caret
     // while the terminal window is unfocused). Same enable/disable
     // discipline as mouse: on at create, off at suspend + cleanup.

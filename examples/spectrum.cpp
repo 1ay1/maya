@@ -349,7 +349,7 @@ struct Spectrum {
     using Model = ::Model;
     using Msg   = ::Msg;
     using Cmd   = jaal::Cmd<Msg>;
-    using Sub   = jaal::Sub<Msg, on_key, on_resize>;
+    using Sub   = jaal::Sub<Msg>;
 
     static Cmd update(Model& m, Tick)      { step(m); return {}; }
     static Cmd update(Model& m, Resize r)  { m.w = std::max(1, r.cols); m.h = std::max(2, (r.rows - 1) * 2); return {}; }
@@ -396,17 +396,17 @@ struct Spectrum {
         return v(pixels(render(m)), status_bar(m));
     }
 
-    static Sub subscribe(const Model&) {
-        return Sub::batch(
-            Sub::every(16ms, Tick{}),
-            Sub::on(on_resize{}, [](const ResizeEvent& r) -> std::optional<Msg> {
-                return Resize{r.width.value, r.height.value};
-            }),
-            keys<Sub>({
-                {'1', SetMode{0}}, {'2', SetMode{1}}, {'3', SetMode{2}}, {'4', SetMode{3}},
-                {' ', NextTrack{}}, {'q', Quit{}}, {SpecialKey::Escape, Quit{}},
-            }));
+    static std::optional<Msg> on(const Model&, const KeyEvent& k) {
+        static const keymap<Msg> keys{
+            {'1', SetMode{0}}, {'2', SetMode{1}}, {'3', SetMode{2}}, {'4', SetMode{3}},
+            {' ', NextTrack{}}, {'q', Quit{}}, {SpecialKey::Escape, Quit{}},
+        };
+        return keys(k);
     }
+    static std::optional<Msg> on(const Model&, const ResizeEvent& r) {
+        return Resize{r.width.value, r.height.value};
+    }
+    static Sub subscribe(const Model&) { return Sub::every(16ms, Tick{}); }
     static bool subs_key(const Model&) { return true; }
 };
 

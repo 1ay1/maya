@@ -47,7 +47,6 @@ struct IDE {
     using Msg = std::variant<Up, Down, Quit>;
 
     using Cmd = jaal::Cmd<Msg>;
-    using Sub = jaal::Sub<Msg, on_key>;
 
     static Cmd update(Model&, Quit)   { return Cmd::quit(0); }
     static Cmd update(Model& m, Up)   { m.sel = std::max(0, m.sel - 1); return {}; }
@@ -141,12 +140,13 @@ struct IDE {
         ) | grow(1);
     }
 
-    static Sub subscribe(const Model&) {
-        return keys<Sub>({
+    static std::optional<Msg> on(const Model&, const KeyEvent& k) {
+        static const keymap<Msg> keys{
             {SpecialKey::Up, Up{}},   {'k', Up{}},
             {SpecialKey::Down, Down{}}, {'j', Down{}},
             {'q', Quit{}}, {SpecialKey::Escape, Quit{}},
-        });
+        };
+        return keys(k);
     }
 };
 

@@ -740,7 +740,7 @@ struct Hacker {
     using Model = ::Model;
     using Msg   = ::Msg;
     using Cmd   = jaal::Cmd<Msg>;
-    using Sub   = jaal::Sub<Msg, maya::on_key>;
+    using Sub   = jaal::Sub<Msg>;
 
     static Cmd init(Model& m)               { init_state(m); tick(m, 0.f); return {}; }
     static Cmd update(Model& m, Tick)       { tick(m, 1.0f / 15.0f); return {}; }
@@ -780,13 +780,15 @@ struct Hacker {
     }
 
     static Sub subscribe(const Model&) {
+        return Sub::every(std::chrono::milliseconds{66}, Tick{});
+    }
+    static std::optional<Msg> on(const Model&, const maya::KeyEvent& k) {
         using maya::SpecialKey;
-        return Sub::batch(
-            Sub::every(std::chrono::milliseconds{66}, Tick{}),
-            maya::keys<Sub>({
-                {'q', Quit{}}, {SpecialKey::Escape, Quit{}}, {'1', SetTheme{0}}, {'2', SetTheme{1}},
-                {'3', SetTheme{2}}, {' ', Breach{}}, {'e', Extract{}}, {'c', Cover{}},
-            }));
+        static const maya::keymap<Msg> keys{
+            {'q', Quit{}}, {SpecialKey::Escape, Quit{}}, {'1', SetTheme{0}}, {'2', SetTheme{1}},
+            {'3', SetTheme{2}}, {' ', Breach{}}, {'e', Extract{}}, {'c', Cover{}},
+        };
+        return keys(k);
     }
     static bool subs_key(const Model&) { return true; }
 };

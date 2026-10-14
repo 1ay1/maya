@@ -615,7 +615,7 @@ struct Stocks {
     using Model = ::Model;
     using Msg   = ::Msg;
     using Cmd   = jaal::Cmd<Msg>;
-    using Sub   = jaal::Sub<Msg, on_key>;
+    using Sub   = jaal::Sub<Msg>;
 
     static Cmd init(Model& m) { init_state(m); return {}; }
 
@@ -640,19 +640,21 @@ struct Stocks {
 
     static Element view(const Model& m) { return render(m); }
 
+    static std::optional<Msg> on(const Model&, const KeyEvent& k) {
+        static const keymap<Msg> keys{
+            {'q', Quit{}},  {SpecialKey::Escape, Quit{}},
+            {'k', Up{}},    {SpecialKey::Up, Up{}},
+            {'j', Down{}},  {SpecialKey::Down, Down{}},
+            {'h', Left{}},  {SpecialKey::Left, Left{}},
+            {'l', Right{}}, {SpecialKey::Right, Right{}},
+            {'r', Shock{}},
+            {' ', ToggleMarket{}},
+            {'t', CycleTheme{}},
+        };
+        return keys(k);
+    }
     static Sub subscribe(const Model&) {
-        return Sub::batch(
-            keys<Sub>({
-                {'q', Quit{}},  {SpecialKey::Escape, Quit{}},
-                {'k', Up{}},    {SpecialKey::Up, Up{}},
-                {'j', Down{}},  {SpecialKey::Down, Down{}},
-                {'h', Left{}},  {SpecialKey::Left, Left{}},
-                {'l', Right{}}, {SpecialKey::Right, Right{}},
-                {'r', Shock{}},
-                {' ', ToggleMarket{}},
-                {'t', CycleTheme{}},
-            }),
-            Sub::every(std::chrono::milliseconds(50), Tick{}));   // old fps = 20
+        return Sub::every(std::chrono::milliseconds(50), Tick{});   // old fps = 20
     }
     static bool subs_key(const Model&) { return true; }
 };

@@ -80,12 +80,13 @@ widget/markdown.hpp: atomic mutex
 # left is a per-thread colour→style memo, so concurrent rows never share it.
 element/pixels.hpp: thread_local
 
-# ── P4b. maya::exec's two capability roots ───────────────────────────────────────────────────────────
-# jaal::thread_root asserts "this thread holds no lock". Checked by hand:
-# parallel_for is only reached from view() code (Pixels::fill_rows), which
-# is never handed a capability and so can't be inside a guarded body; and
-# ~executor_scope runs in maya::run after jaal::run has returned.
-host/executor.hpp: cap_mint
+# ── P4b. maya::exec's capability root and fork-join ─────────────────────────────────────────────────────────────────────
+# jaal::thread_root asserts "this thread holds no lock". ~executor_scope runs
+# in maya::run after jaal::run has returned, so nothing is held.
+# parallel_for runs on warm pool workers; the atomics are its index and done
+# counters (fetch_add + wait/notify, no lock), co-owned by the jobs so a late
+# worker never touches a dead frame.
+host/executor.hpp: atomic cap_mint
 # runtime.hpp's test_root(): the program-lifetime root a TEST SUITE hands its
 # test bodies (each a thread root that holds nothing between statements).
 # Product code never calls it; agentty's mint lint scans src/ and include/

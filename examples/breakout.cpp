@@ -12,7 +12,8 @@
 //              paddle, sparks, drawn back to front into one picture),
 //              power-up letters and the game-over card as ordinary
 //              elements over it (zstack), and a status bar.
-//   subscribe  a 60 Hz clock and the keys.
+//   subscribe  a 60 Hz clock.
+//   on()       keys and resizes, mapped to messages.
 //
 // Keys: ←/→ or h/l move   space launch / pause   r restart   q quit
 
@@ -180,7 +181,7 @@ struct Breakout {
     using Model = ::Model;
     using Msg   = ::Msg;
     using Cmd   = jaal::Cmd<Msg>;
-    using Sub   = jaal::Sub<Msg, on_key, on_resize>;
+    using Sub   = jaal::Sub<Msg>;
 
     static Cmd update(Model& m, Resize r) {
         const bool first = m.w == 0;
@@ -305,20 +306,23 @@ struct Breakout {
 
     // ── subscribe ────────────────────────────────────────────────────────────
 
-    static Sub subscribe(const Model&) {
-        return Sub::batch(
-            Sub::every(16ms, Tick{}),
-            Sub::on(on_resize{}, [](const ResizeEvent& r) -> std::optional<Msg> {
-                return Resize{r.width.value, r.height.value};
-            }),
-            keys<Sub>({
-                {SpecialKey::Left, Move{-1}}, {'h', Move{-1}},
-                {SpecialKey::Right, Move{+1}}, {'l', Move{+1}},
-                {' ', Launch{}}, {'r', Restart{}},
-                {'q', Quit{}}, {SpecialKey::Escape, Quit{}},
-            }));
-    }
+    static Sub subscribe(const Model&) { return Sub::every(16ms, Tick{}); }
     static bool subs_key(const Model&) { return true; }
+
+    // ── input ────────────────────────────────────────────────────────────────
+
+    static std::optional<Msg> on(const Model&, const ResizeEvent& r) {
+        return Resize{r.width.value, r.height.value};
+    }
+    static std::optional<Msg> on(const Model&, const KeyEvent& k) {
+        static const keymap<Msg> keys{
+            {SpecialKey::Left, Move{-1}}, {'h', Move{-1}},
+            {SpecialKey::Right, Move{+1}}, {'l', Move{+1}},
+            {' ', Launch{}}, {'r', Restart{}},
+            {'q', Quit{}}, {SpecialKey::Escape, Quit{}},
+        };
+        return keys(k);
+    }
 };
 
 static_assert(Program<Breakout>);

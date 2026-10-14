@@ -1,17 +1,21 @@
 #pragma once
-// maya/host/sources.hpp — what the terminal reports, as jaal subscriptions.
+// maya/host/sources.hpp — what the terminal reports, and how a program hears it.
 //
-// One router per event kind, so a program subscribes to exactly what it uses
-// and a host that doesn't produce, say, mouse events would reject a program
-// that asks for them at compile time.
+// The terminal sends one of terminal_events. A program handles input the way
+// it handles messages, one jaal on() overload per kind it cares about,
+// reading the model as it is when the event arrives:
 //
-//   using Sub = jaal::Sub<Msg, maya::on_key, maya::on_resize>;
+//   static std::optional<Msg> on(const Model& m, const KeyEvent& k);
+//   static std::optional<Msg> on(const Model& m, const ResizeEvent& r);
 //
-// `keys<Sub>({...})` is the common case spelled once; anything richer is
-// Sub::on(on_key{}, fn).
+// Kinds with no overload are dropped. keymap<Msg> is the common key table.
 
+#include <array>
+#include <cassert>
+#include <cstdint>
 #include <initializer_list>
 #include <optional>
+#include <type_traits>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -24,43 +28,63 @@
 
 namespace maya {
 
-// ── what the host reports, as subscription kinds ───────────────────────────
-using on_key    = jaal::router<KeyEvent,    "on_key">;
-using on_mouse  = jaal::router<MouseEvent,  "on_mouse">;
-using on_paste  = jaal::router<PasteEvent,  "on_paste">;
-using on_focus  = jaal::router<FocusEvent,  "on_focus">;
-using on_resize = jaal::router<ResizeEvent, "on_resize">;
+/// Everything the terminal sends a program. Same type as maya::Event.
+using terminal_events = Event;
+static_assert(std::is_same_v<terminal_events,
+                             std::variant<KeyEvent, MouseEvent, PasteEvent, FocusEvent, ResizeEvent>>);
 
 /// A jaal program that maya can draw: it has a view() returning an Element.
 template <class P>
 concept Program = jaal::Program<P> && jaal::Viewable<P, Element>;
 
-// ── keys: the most common subscription ───────────────────────────────────────────
-// A table from keys to messages, as a subscription in the program's own Sub
-// type (so the router is checked against the program's row like any other):
-//
-//   static Sub subscribe(const Model&) {
-//       return keys<Sub>({{'q', Quit{}}, {SpecialKey::Up, Inc{}}});
-//   }
-//
-// Matching is key_is(): a plain key with no modifiers, so 'q' doesn't also
-// fire on Ctrl+Q. For anything richer, write Sub::on(on_key{}, fn).
-
+/// A plain char or a SpecialKey, matched with no modifiers (key_is).
 using KeySpec = std::variant<char, SpecialKey>;
 
-template <class S>
-[[nodiscard]] S keys(
-    std::initializer_list<std::pair<KeySpec, typename S::msg_type>> entries) {
-    using Msg = typename S::msg_type;
-    return S::on(on_key{},
-        [table = std::vector(entries.begin(), entries.end())](const KeyEvent& k)
-            -> std::optional<Msg> {
-            for (const auto& [key, msg] : table) {
-                const bool hit = std::visit([&](auto want) { return key_is(k, want); }, key);
-                if (hit) return msg;
-            }
-            return std::nullopt;
-        });
-}
+/// A fixed key → Msg table with O(1) lookup. Build it once, as a static:
+///
+///   static std::optional<Msg> on(const Model&, const KeyEvent& k) {
+///       static const maya::keymap<Msg> keys{{'q', Quit{}}, {SpecialKey::Up, Up{}}};
+///       return keys(k);
+///   }
+///
+/// Same matching as key_is: no modifiers. The first entry for a key wins.
+template <class Msg>
+class keymap {
+  public:
+    keymap(std::initializer_list<std::pair<KeySpec, Msg>> entries) {
+        assert(entries.size() < kNone && "keymap: too many entries");
+        chars_.fill(kNone);
+        special_.fill(kNone);
+        msgs_.reserve(entries.size());
+        for (const auto& [spec, msg] : entries) {
+            const auto idx = static_cast<std::uint8_t>(msgs_.size());
+            msgs_.push_back(msg);
+            std::uint8_t& slot = std::holds_alternative<char>(spec)
+                ? chars_[static_cast<unsigned char>(std::get<char>(spec))]
+                : special_[static_cast<std::size_t>(std::get<SpecialKey>(spec))];
+            if (slot == kNone) slot = idx;
+        }
+    }
+
+    [[nodiscard]] std::optional<Msg> operator()(const KeyEvent& k) const {
+        if (!k.mods.none()) return std::nullopt;
+        std::uint8_t idx = kNone;
+        if (const auto* ck = std::get_if<CharKey>(&k.key)) {
+            if (ck->codepoint < 256) idx = chars_[ck->codepoint];
+        } else {
+            idx = special_[static_cast<std::size_t>(std::get<SpecialKey>(k.key))];
+        }
+        if (idx == kNone) return std::nullopt;
+        return msgs_[idx];
+    }
+
+  private:
+    static constexpr std::uint8_t kNone = 0xFF;
+    static constexpr std::size_t  kSpecial = static_cast<std::size_t>(SpecialKey::F12) + 1;
+
+    std::array<std::uint8_t, 256>      chars_{};
+    std::array<std::uint8_t, kSpecial> special_{};
+    std::vector<Msg>                   msgs_;
+};
 
 }  // namespace maya

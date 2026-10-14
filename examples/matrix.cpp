@@ -131,7 +131,7 @@ struct Matrix {
     using Model = ::Model;
     using Msg   = ::Msg;
     using Cmd   = jaal::Cmd<Msg>;
-    using Sub   = jaal::Sub<Msg, on_key, on_resize>;
+    using Sub   = jaal::Sub<Msg>;
 
     static Cmd update(Model& m, Resize r) {
         m.w = std::max(1, r.cols);
@@ -205,20 +205,23 @@ struct Matrix {
         return v(glyphs(rain(m)), status_bar(m));
     }
 
-    // ── subscribe ────────────────────────────────────────────────────────────
+    // ── input / subscribe ────────────────────────────────────────────────────
+
+    static std::optional<Msg> on(const Model&, const ResizeEvent& r) {
+        return Resize{r.width.value, r.height.value};
+    }
+    static std::optional<Msg> on(const Model&, const KeyEvent& k) {
+        static const keymap<Msg> keys{
+            {'1', SetMode{Mode::Classic}}, {'2', SetMode{Mode::MultiColour}},
+            {'3', SetMode{Mode::RedPill}}, {'4', SetMode{Mode::Rainbow}},
+            {'m', Message{}}, {' ', Pause{}},
+            {'q', Quit{}}, {SpecialKey::Escape, Quit{}},
+        };
+        return keys(k);
+    }
 
     static Sub subscribe(const Model&) {
-        return Sub::batch(
-            Sub::every(33ms, Tick{}),          // 30 fps, like the original
-            Sub::on(on_resize{}, [](const ResizeEvent& r) -> std::optional<Msg> {
-                return Resize{r.width.value, r.height.value};
-            }),
-            keys<Sub>({
-                {'1', SetMode{Mode::Classic}}, {'2', SetMode{Mode::MultiColour}},
-                {'3', SetMode{Mode::RedPill}}, {'4', SetMode{Mode::Rainbow}},
-                {'m', Message{}}, {' ', Pause{}},
-                {'q', Quit{}}, {SpecialKey::Escape, Quit{}},
-            }));
+        return Sub::every(33ms, Tick{});      // 30 fps, like the original
     }
     static bool subs_key(const Model&) { return true; }
 };

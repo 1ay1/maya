@@ -28,9 +28,10 @@ from it.
    written by `view()`, no state hidden in widgets that the model can't
    see. Animation is a `Sub::every` in `subscribe()`, which is also where
    it stops: a still screen costs nothing.
-4. **Say what you use.** The rows of `Cmd` and `Sub` list the terminal
-   effects and event sources a program needs, so a host that can't provide
-   one is a compile error, not a runtime surprise.
+4. **Say what you use.** The row of `Cmd` lists the terminal effects a
+   program needs, so a host that can't provide one is a compile error, not
+   a runtime surprise. Input is one `on(const Model&, const E&)` overload
+   per kind; kinds without one are dropped.
 5. **Static output needs no runtime.** `maya::print(el)` and
    `render_to_string(el)` stay: they are Ink's `renderToString`, pure view.
 
@@ -59,7 +60,7 @@ maya + jaal, and is what a program links.
 |---|---|
 | `interop.hpp` | maya's value types, as jaal sees them (`Sendable`/`Frozen`) |
 | `effects.hpp` | what only the TERMINAL can do: `set_title`, `commit_scrollback`, `suspend`, ... |
-| `sources.hpp` | what the terminal REPORTS: `on_key`, `on_mouse`, ...; `Program`; `keys<Sub>()` |
+| `sources.hpp` | what the terminal REPORTS: `terminal_events`; `Program`; `keymap<Msg>` |
 | `device.hpp` | `Device`: the screen surface the host drives, as a concept |
 | `terminal.hpp` | `terminal_host`: maya as a jaal host |
 | `run.hpp` | `run<P>()`: open the Screen, hand it to jaal — and the app's one include |
@@ -125,13 +126,13 @@ struct Counter {
     struct Inc {}; struct Quit {};
     using Msg = std::variant<Inc, Quit>;
     using Cmd = jaal::Cmd<Msg>;
-    using Sub = jaal::Sub<Msg, maya::on_key>;
 
     static Cmd update(Model& m, Inc)  { ++m.n; return {}; }
     static Cmd update(Model&,   Quit) { return Cmd::quit(0); }
     static maya::Element view(const Model& m) { return maya::dsl::text(std::to_string(m.n)); }
-    static Sub subscribe(const Model&) {
-        return maya::keys<Sub>({{'+', Inc{}}, {'q', Quit{}}});
+    static std::optional<Msg> on(const Model&, const maya::KeyEvent& k) {
+        static const maya::keymap<Msg> keys{{'+', Inc{}}, {'q', Quit{}}};
+        return keys(k);
     }
 };
 
@@ -143,8 +144,8 @@ int main() { return maya::run<Counter>({.title = "counter"}); }
 | `maya::run<P>(Options)` | `run_jaal<P>(RunConfig)` | there is one run; it needs no qualifier |
 | `maya::Options` | `RunConfig` | configures the terminal, not a loop |
 | `maya::Program<P>` | `JaalView<P>` | says what it is, not how it's hosted (not `App`: that's what programs are called) |
-| `maya::keys<Sub>({...})` | `jaal_key_map<Sub>` | reads as what it does |
-| `maya::on_key`, `on_mouse`, `on_paste`, `on_focus`, `on_resize` | same | the host's event sources |
+| `maya::keymap<Msg>` | `jaal_key_map<Sub>` | a key table, called from `on(const Model&, const KeyEvent&)` |
+| `maya::terminal_events` | the `Sub` event sources | what the terminal reports; a program takes each kind with an `on()` overload |
 | `maya::set_title`, `commit_scrollback`, `write_clipboard`, ... | same | the host's effects |
 | `maya::terminal_host<P>` | `jaal_host<P>` | the host, for tests and custom drivers |
 | `detail::Device` | `detail::Runtime` | it is the terminal device; the runtime is jaal's, and only one thing may wear that name |

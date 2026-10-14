@@ -53,7 +53,6 @@ struct Show {
     static constexpr int N = static_cast<int>(kNames.size());
 
     using Cmd = jaal::Cmd<Msg>;
-    using Sub = jaal::Sub<Msg, on_key>;
 
     static Cmd update(Model&, Quit)   { return Cmd::quit(0); }
     static Cmd update(Model& m, Prev) { m.page = (m.page + N - 1) % N; m.k = 0; return {}; }
@@ -193,14 +192,15 @@ struct Show {
              | padding(1, 3, 1, 3) | grow(1);
     }
 
-    static Sub subscribe(const Model&) {
-        return keys<Sub>({
+    static std::optional<Msg> on(const Model&, const KeyEvent& k) {
+        static const keymap<Msg> keys{
             {SpecialKey::Left, Prev{}},  {'h', Prev{}},
             {SpecialKey::Right, Next{}}, {'l', Next{}},
             {SpecialKey::Up, Up{}},      {'k', Up{}},
             {SpecialKey::Down, Down{}},  {'j', Down{}},
             {'q', Quit{}}, {SpecialKey::Escape, Quit{}},
-        });
+        };
+        return keys(k);
     }
 };
 

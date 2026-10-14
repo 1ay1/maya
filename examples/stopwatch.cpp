@@ -5,7 +5,7 @@
 //   - Cmd::after() for delayed effects
 //   - Conditional subscriptions based on model state
 //   - Rich DSL composition with dynamic content
-//   - keys() for declarative key bindings
+//   - keymap for declarative key bindings
 
 #include <maya/host/run.hpp>
 #include <maya/maya.hpp>
@@ -33,7 +33,7 @@ struct Stopwatch {
     using Msg = std::variant<Tick, Toggle, Lap, Reset, FlashOff, Quit>;
 
     using Cmd = jaal::Cmd<Msg>;
-    using Sub = jaal::Sub<Msg, on_key>;
+    using Sub = jaal::Sub<Msg>;
 
     // ── update ───────────────────────────────────────────────────────────
     static Cmd update(Model& m, Tick)   { m.centiseconds++; return {}; }
@@ -75,25 +75,25 @@ struct Stopwatch {
         ) | pad<1> | border_<Round>;
     }
 
-    // ── subscribe ────────────────────────────────────────────────────────
-    // Tick subscription is conditional: only active when running.
-    static Sub subscribe(const Model& m) {
-        auto on_keys = keys<Sub>({
+    // ── input ────────────────────────────────────────────────────────────
+    static std::optional<Msg> on(const Model&, const KeyEvent& k) {
+        static const keymap<Msg> keys{
             {'q', Quit{}},
             {' ', Toggle{}},
             {'l', Lap{}},
             {'r', Reset{}},
-        });
-
-        if (m.running) {
-            // 10ms tick = centisecond precision
-            return Sub::batch(
-                std::move(on_keys),
-                Sub::every(std::chrono::milliseconds(10), Tick{})
-            );
-        }
-        return on_keys;
+        };
+        return keys(k);
     }
+
+    // ── subscribe ────────────────────────────────────────────────────────
+    // Tick subscription is conditional: only active when running.
+    static Sub subscribe(const Model& m) {
+        if (m.running)
+            return Sub::every(std::chrono::milliseconds(10), Tick{});  // centisecond precision
+        return {};
+    }
+    static bool subs_key(const Model& m) { return m.running; }
 };
 
 static_assert(Program<Stopwatch>);

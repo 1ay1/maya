@@ -565,7 +565,7 @@ struct Raymarch {
     using Model = ::Model;
     using Msg   = ::Msg;
     using Cmd   = jaal::Cmd<Msg>;
-    using Sub   = jaal::Sub<Msg, on_key, on_resize>;
+    using Sub   = jaal::Sub<Msg>;
 
     static constexpr float kDt = 1.f / 30.f;
 
@@ -620,20 +620,23 @@ struct Raymarch {
         return v(pixels(render(m)), status_bar(m));
     }
 
+    static std::optional<Msg> on(const Model&, const ResizeEvent& r) {
+        return Resize{r.width.value, r.height.value};
+    }
+    static std::optional<Msg> on(const Model&, const KeyEvent& k) {
+        static const keymap<Msg> keys{
+            {'1', SetScene{0}}, {'2', SetScene{1}}, {'3', SetScene{2}}, {'4', SetScene{3}},
+            {SpecialKey::Left, Orbit{-0.1f}}, {SpecialKey::Right, Orbit{0.1f}},
+            {SpecialKey::Up, Pitch{0.1f}}, {SpecialKey::Down, Pitch{-0.1f}},
+            {' ', Pause{}}, {'q', Quit{}}, {SpecialKey::Escape, Quit{}},
+        };
+        return keys(k);
+    }
+
     // Paused, the picture is still: no clock.
     static Sub subscribe(const Model& m) {
-        auto input = Sub::batch(
-            Sub::on(on_resize{}, [](const ResizeEvent& r) -> std::optional<Msg> {
-                return Resize{r.width.value, r.height.value};
-            }),
-            keys<Sub>({
-                {'1', SetScene{0}}, {'2', SetScene{1}}, {'3', SetScene{2}}, {'4', SetScene{3}},
-                {SpecialKey::Left, Orbit{-0.1f}}, {SpecialKey::Right, Orbit{0.1f}},
-                {SpecialKey::Up, Pitch{0.1f}}, {SpecialKey::Down, Pitch{-0.1f}},
-                {' ', Pause{}}, {'q', Quit{}}, {SpecialKey::Escape, Quit{}},
-            }));
-        if (m.paused) return input;
-        return Sub::batch(Sub::every(33ms, Tick{}), std::move(input));
+        if (m.paused) return {};
+        return Sub::every(33ms, Tick{});
     }
     static bool subs_key(const Model& m) { return m.paused; }
 };

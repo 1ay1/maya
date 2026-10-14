@@ -16,7 +16,7 @@ struct Counter {
     using Msg = std::variant<Inc, Dec, Tick, Quit>;    // one struct per message
 
     using Cmd = jaal::Cmd<Msg>;                        // + terminal effects used, e.g. jaal::Cmd<Msg, set_title>
-    using Sub = jaal::Sub<Msg, on_key>;                // + every event source used
+    using Sub = jaal::Sub<Msg>;                        // timers/streams only (every, stream, batch, none)
 
     static Cmd init(Model&) { return {}; }             // optional
     static Cmd update(Model& m, Inc)  { ++m.count; return {}; }   // one per alternative
@@ -26,12 +26,14 @@ struct Counter {
 
     static Element view(const Model& m) { ... }         // pure
 
-    static Sub subscribe(const Model& m) {             // diffed every step
-        return Sub::batch(
-            Sub::every(16ms, Tick{}),
-            keys<Sub>({{'+', Inc{}}, {'-', Dec{}}, {'q', Quit{}}, {SpecialKey::Escape, Quit{}}}));
+    static std::optional<Msg> on(const Model&, const KeyEvent& k) {   // input: one overload per kind
+        static const keymap<Msg> keys{{'+', Inc{}}, {'-', Dec{}}, {'q', Quit{}}, {SpecialKey::Escape, Quit{}}};
+        return keys(k);
     }
-    static bool subs_key(const Model& m) { return true; }  // optional: what subscribe() depends on
+    static Sub subscribe(const Model& m) {             // timers/streams only; diffed every step
+        return Sub::every(16ms, Tick{});
+    }
+    static bool subs_key(const Model& m) { return true; }  // optional: what subscribe() reads
 };
 
 int main() { return run<Counter>({.title = "counter"}); }
@@ -39,9 +41,9 @@ int main() { return run<Counter>({.title = "counter"}); }
 
 - `static_assert(Program<Counter>);` checks the shape (concept `maya::Program`).
 - `run<P>(Options)`; `Options` fields: `title`, `fps` (0 = event driven; >0 redraw continuously), `mouse`, `hover_motion`, `mode` (`Mode::Fullscreen` default, `Mode::Inline` renders into scrollback), `backend`, `theme`, `enhanced_keyboard`.
-- Event sources (list in Sub row): `on_key` (KeyEvent), `on_mouse` (MouseEvent{button, kind: Press/Release/Move, x.value, y.value 1-based, mods}), `on_paste` (PasteEvent{content}), `on_focus`, `on_resize` (ResizeEvent{width.value, height.value}). Use `Sub::on(on_key{}, [](const KeyEvent& k) -> std::optional<Msg> { ... })` — the lambda must be CAPTURELESS.
-- `keys<Sub>({{'q', Quit{}}, {SpecialKey::Up, Up{}}})`: plain key, no modifiers. Predicates for richer handlers: `key_is(k,'c')`, `key_is(k, SpecialKey::Up)`, `ctrl_is(k,'c')`, `alt_is(k,'x')`.
-- Core jaal effects: `Cmd::quit(code)`, `Cmd::after(duration, Msg)`, `Cmd::task(fn, args..., mapper)` (runs on a worker thread; see jaal docs), `Cmd::batch(...)`. Core sources: `Sub::every(period, Msg)`, `Sub::stream(...)`.
+- Input: `static std::optional<Msg> on(const Model& m, const E&)` per kind, for `KeyEvent`, `MouseEvent{button, kind: Press/Release/Move, x.value, y.value 1-based, mods}`, `PasteEvent{content}`, `FocusEvent`, `ResizeEvent{width.value, height.value}`. Reads the live model when the event arrives; one event -> at most one Msg; a kind with no overload is dropped. Signals: `on(const Model&, jaal::sig)`. `maya::terminal_events` = the variant of all five (same as `maya::Event`); optionally `using Event = ...;` so `jaal::headless<App>`/`sim<App>` pick it up (a listed kind without `on()` is a compile error).
+- `keymap<Msg>` as a function-local `static const keymap<Msg> keys{{'q', Quit{}}, {SpecialKey::Up, Up{}}}; return keys(k);`: char or SpecialKey, no modifiers, first entry wins, O(1). Predicates for richer handlers: `key_is(k,'c')`, `key_is(k, SpecialKey::Up)`, `ctrl_is(k,'c')`, `alt_is(k,'x')`.
+- Core jaal effects: `Cmd::quit(code)`, `Cmd::after(duration, Msg)`, `Cmd::task(fn, args..., mapper)` (runs on a worker thread; see jaal docs), `Cmd::perform<Found>(body, args)`, `Cmd::attempt<Ok, Err>(...)`, `Cmd::batch(...)`. Keyed: `Cmd::task("search", body, args)`, `Cmd::after("save", 1s, Msg)`, `Cmd::cancel("search")` (`task_key`). Sources (the only thing `subscribe()` is for; no input → no `subscribe()`): `Sub::every(period, Msg)`, `Sub::stream(...)`, `Sub::batch`, `Sub::none()`.
 - Terminal effects (add to the Cmd row to use them): `set_title` (`SetTitle{"x"}`), `write_clipboard`, `query_clipboard`, `emit_host_sequence`, `commit_scrollback` (`commit_from<Cmd>(ledger.harvest())`), `commit_overflow`, `force_redraw`, `reset_inline`, `set_mouse` (`SetMouse{bool}`), `suspend` (hand the tty to a child like $EDITOR). `terminal_cmd<Msg>` = a Cmd with all of them.
 - Scroll views: keep `mutable ScrollState` in the Model; the Screen forwards mouse wheel/drag to painted ScrollStates automatically; keys are the program's: route with a message and `state.handle(key, viewport_h)` in update.
 - Pixel graphics: `#include <maya/element/pixels.hpp>`; `Image img(w, h)` (h = 2 x rows, half blocks), `img(x,y) = Rgb{r,g,b}`, `img.fill_rows([&](int x, int y) -> Rgb {...})` (parallel rows), `pixels(std::move(img))` is an element. `Glyphs` + `glyphs(grid)` for coloured character art. There is NO Canvas callback API any more (canvas_run is deleted).

@@ -652,7 +652,7 @@ struct Terrain {
     using Model = ::Model;
     using Msg   = ::Msg;
     using Cmd   = jaal::Cmd<Msg>;
-    using Sub   = jaal::Sub<Msg, on_key, on_resize>;
+    using Sub   = jaal::Sub<Msg>;
 
     static Cmd update(Model& m, Tick)     { game_tick(m, 1.f / 30.f); return {}; }
     static Cmd update(Model& m, Resize r) { m.w = std::max(1, r.cols); m.h = std::max(2, (r.rows - 1) * 2); return {}; }
@@ -692,20 +692,20 @@ struct Terrain {
         return v(pixels(std::move(img)), status_bar(m));
     }
 
-    static Sub subscribe(const Model&) {
-        return Sub::batch(
-            Sub::every(33ms, Tick{}),
-            Sub::on(on_resize{}, [](const ResizeEvent& r) -> std::optional<Msg> {
-                return Resize{r.width.value, r.height.value};
-            }),
-            keys<Sub>({
-                {'w', Press{K_UP}}, {'s', Press{K_DOWN}}, {'a', Press{K_LEFT}}, {'d', Press{K_RIGHT}},
-                {SpecialKey::Up, Press{K_UP}}, {SpecialKey::Down, Press{K_DOWN}},
-                {SpecialKey::Left, Press{K_LEFT}}, {SpecialKey::Right, Press{K_RIGHT}},
-                {' ', Press{K_ASCEND}}, {'c', Press{K_DESCEND}}, {'b', Press{K_BOOST}},
-                {'r', Reset{}}, {'q', Quit{}}, {SpecialKey::Escape, Quit{}},
-            }));
+    static std::optional<Msg> on(const Model&, const KeyEvent& k) {
+        static const keymap<Msg> keys{
+            {'w', Press{K_UP}}, {'s', Press{K_DOWN}}, {'a', Press{K_LEFT}}, {'d', Press{K_RIGHT}},
+            {SpecialKey::Up, Press{K_UP}}, {SpecialKey::Down, Press{K_DOWN}},
+            {SpecialKey::Left, Press{K_LEFT}}, {SpecialKey::Right, Press{K_RIGHT}},
+            {' ', Press{K_ASCEND}}, {'c', Press{K_DESCEND}}, {'b', Press{K_BOOST}},
+            {'r', Reset{}}, {'q', Quit{}}, {SpecialKey::Escape, Quit{}},
+        };
+        return keys(k);
     }
+    static std::optional<Msg> on(const Model&, const ResizeEvent& r) {
+        return Resize{r.width.value, r.height.value};
+    }
+    static Sub subscribe(const Model&) { return Sub::every(33ms, Tick{}); }
     static bool subs_key(const Model&) { return true; }
 };
 

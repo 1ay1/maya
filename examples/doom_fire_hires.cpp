@@ -248,7 +248,7 @@ struct DoomFireHires {
     using Model = ::Model;
     using Msg   = ::Msg;
     using Cmd   = jaal::Cmd<Msg>;
-    using Sub   = jaal::Sub<Msg, on_key, on_resize>;
+    using Sub   = jaal::Sub<Msg>;
 
     static Cmd init(Model& m) { m.ignite(); return {}; }
 
@@ -274,19 +274,17 @@ struct DoomFireHires {
         return glyphs(m.grid);
     }
 
-    static Sub subscribe(const Model&) {
-        return Sub::batch(
-            Sub::every(16ms, Tick{}),
-            Sub::on(on_resize{}, [](const ResizeEvent& r) -> std::optional<Msg> {
-                return Resize{r.width.value, r.height.value};
-            }),
-            Sub::on(on_key{}, [](const KeyEvent& k) -> std::optional<Msg> {
-                if (const auto* c = std::get_if<CharKey>(&k.key))
-                    if (c->codepoint == U'q') return Quit{};
-                if (std::holds_alternative<SpecialKey>(k.key)
-                    && std::get<SpecialKey>(k.key) == SpecialKey::Escape) return Quit{};
-                return std::nullopt;
-            }));
+    static Sub subscribe(const Model&) { return Sub::every(16ms, Tick{}); }
+
+    static std::optional<Msg> on(const Model&, const ResizeEvent& r) {
+        return Resize{r.width.value, r.height.value};
+    }
+    static std::optional<Msg> on(const Model&, const KeyEvent& k) {
+        if (const auto* c = std::get_if<CharKey>(&k.key))
+            if (c->codepoint == U'q') return Quit{};
+        if (std::holds_alternative<SpecialKey>(k.key)
+            && std::get<SpecialKey>(k.key) == SpecialKey::Escape) return Quit{};
+        return std::nullopt;
     }
 };
 

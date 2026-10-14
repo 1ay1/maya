@@ -119,7 +119,7 @@ struct Mandelbrot {
     using Model = ::Model;
     using Msg   = ::Msg;
     using Cmd   = jaal::Cmd<Msg>;
-    using Sub   = jaal::Sub<Msg, on_key, on_resize>;
+    using Sub   = jaal::Sub<Msg>;
 
     static Cmd update(Model& m, Resize r) { m.w = std::max(1, r.cols); m.h = std::max(2, (r.rows - 1) * 2); return {}; }
     static Cmd update(Model& m, SetPalette s) { m.palette = s.p; return {}; }
@@ -176,19 +176,21 @@ struct Mandelbrot {
     }
 
     static Sub subscribe(const Model&) {
-        return Sub::batch(
-            Sub::every(33ms, Tick{}),
-            Sub::on(on_resize{}, [](const ResizeEvent& r) -> std::optional<Msg> {
-                return Resize{r.width.value, r.height.value};
-            }),
-            keys<Sub>({
-                {'1', SetPalette{0}}, {'2', SetPalette{1}}, {'3', SetPalette{2}},
-                {'4', SetPalette{3}}, {'5', SetPalette{4}}, {'6', SetPalette{5}},
-                {'+', Zoom{0.8}}, {'=', Zoom{0.8}}, {'-', Zoom{1.25}},
-                {SpecialKey::Left, Pan{-0.1, 0}}, {SpecialKey::Right, Pan{0.1, 0}},
-                {SpecialKey::Up, Pan{0, -0.1}},   {SpecialKey::Down, Pan{0, 0.1}},
-                {' ', ToggleAuto{}}, {'r', Reset{}}, {'q', Quit{}}, {SpecialKey::Escape, Quit{}},
-            }));
+        return Sub::every(33ms, Tick{});
+    }
+    static std::optional<Msg> on(const Model&, const ResizeEvent& r) {
+        return Resize{r.width.value, r.height.value};
+    }
+    static std::optional<Msg> on(const Model&, const KeyEvent& k) {
+        static const keymap<Msg> keys{
+            {'1', SetPalette{0}}, {'2', SetPalette{1}}, {'3', SetPalette{2}},
+            {'4', SetPalette{3}}, {'5', SetPalette{4}}, {'6', SetPalette{5}},
+            {'+', Zoom{0.8}}, {'=', Zoom{0.8}}, {'-', Zoom{1.25}},
+            {SpecialKey::Left, Pan{-0.1, 0}}, {SpecialKey::Right, Pan{0.1, 0}},
+            {SpecialKey::Up, Pan{0, -0.1}},   {SpecialKey::Down, Pan{0, 0.1}},
+            {' ', ToggleAuto{}}, {'r', Reset{}}, {'q', Quit{}}, {SpecialKey::Escape, Quit{}},
+        };
+        return keys(k);
     }
     static bool subs_key(const Model&) { return true; }
 };

@@ -811,7 +811,7 @@ set_tests_properties(
         set_tests_properties(unicode_table_fresh PROPERTIES TIMEOUT 120)
 
         # End-to-end key-to-first-byte latency: PTY write -> device drain
-        # -> parse -> Sub::on_key -> Msg -> update -> view -> Element -> the
+        # -> parse -> on(model, KeyEvent) -> Msg -> update -> view -> Element -> the
         # renderer -> PTY back. The microbenches in bench/ hold each stage
         # tight; this one catches a regression that only shows up when the
         # whole pipeline runs together (a stray reconcile per key, a slow
@@ -931,6 +931,23 @@ set_tests_properties(
             endif()
             add_test(NAME test_host COMMAND test_host)
             set_tests_properties(test_host PROPERTIES TIMEOUT 120)
+
+            # host_pty_test drives host_probe in a real pty: keys, a timer that
+            # comes and goes, SIGWINCH, quit. Needs pyte; skips without it.
+            if(NOT WIN32)
+                add_executable(host_probe tests/host_probe.cpp)
+                target_link_libraries(host_probe PRIVATE maya_app)
+                if(MAYA_APP_STD_FLAG)
+                    target_compile_options(host_probe PRIVATE ${MAYA_APP_STD_FLAG})
+                endif()
+                if(Python3_Interpreter_FOUND)
+                    add_test(NAME host_pty_test
+                             COMMAND ${Python3_EXECUTABLE}
+                                     ${PROJECT_SOURCE_DIR}/tests/host_pty_test.py
+                                     $<TARGET_FILE:host_probe>)
+                    set_tests_properties(host_pty_test PROPERTIES TIMEOUT 60 RUN_SERIAL TRUE)
+                endif()
+            endif()
         endif()
     endif()
 endif()

@@ -65,7 +65,7 @@ static constexpr Palette g_themes[] = {
     {"ARCTIC",   100,200,255, 30,60,80,   5,10,18,   255,255,255, 0,150,200},
 };
 
-// ── Style IDs (interned in on_resize) ─────────────────────────────────────────
+// ── Style IDs (interned on resize) ───────────────────────────────────────────
 
 // A cell style: what a pre-interned style id used to name.
 struct Sty { Rgb fg{200, 200, 200}; bool bold = false; };
@@ -1186,7 +1186,7 @@ struct Dashboard {
     using Model = ::Model;
     using Msg   = ::Msg;
     using Cmd   = jaal::Cmd<Msg>;
-    using Sub   = jaal::Sub<Msg, on_key, on_resize>;
+    using Sub   = jaal::Sub<Msg>;
 
     static constexpr float kDt = 1.f / 60.f;
 
@@ -1253,20 +1253,21 @@ struct Dashboard {
         return glyphs(std::move(g));
     }
 
-    static Sub subscribe(const Model&) {
-        return Sub::batch(
-            Sub::every(16ms, Tick{}),
-            Sub::on(on_resize{}, [](const ResizeEvent& r) -> std::optional<Msg> {
-                return Resize{r.width.value, r.height.value};
-            }),
-            keys<Sub>({
-                {'1', SetTheme{0}}, {'2', SetTheme{1}}, {'3', SetTheme{2}}, {'4', SetTheme{3}},
-                {' ', Pause{}}, {'+', Speed{0.25f}}, {'=', Speed{0.25f}}, {'-', Speed{-0.25f}},
-                {'p', Particles{}}, {'g', Glitch{}}, {'w', WaveMode{}}, {'r', Reset{}},
-                {'q', Quit{}}, {SpecialKey::Escape, Quit{}},
-            }));
-    }
+    static Sub subscribe(const Model&) { return Sub::every(16ms, Tick{}); }
     static bool subs_key(const Model&) { return true; }
+
+    static std::optional<Msg> on(const Model&, const ResizeEvent& r) {
+        return Resize{r.width.value, r.height.value};
+    }
+    static std::optional<Msg> on(const Model&, const KeyEvent& k) {
+        static const keymap<Msg> keys{
+            {'1', SetTheme{0}}, {'2', SetTheme{1}}, {'3', SetTheme{2}}, {'4', SetTheme{3}},
+            {' ', Pause{}}, {'+', Speed{0.25f}}, {'=', Speed{0.25f}}, {'-', Speed{-0.25f}},
+            {'p', Particles{}}, {'g', Glitch{}}, {'w', WaveMode{}}, {'r', Reset{}},
+            {'q', Quit{}}, {SpecialKey::Escape, Quit{}},
+        };
+        return keys(k);
+    }
 };
 
 static_assert(Program<Dashboard>);

@@ -81,7 +81,6 @@ struct ScrollSlice {
     using Model = ::Model;
     using Msg   = ::Msg;
     using Cmd   = jaal::Cmd<Msg>;
-    using Sub   = jaal::Sub<Msg, on_key, on_mouse>;
 
     static Cmd update(Model& m, ScrollBy s) {
         const int page = m.list.viewport_h;
@@ -109,21 +108,20 @@ struct ScrollSlice {
         ) | pad<1> | border_<Round> | bcol<50, 55, 70>;
     }
 
-    static Sub subscribe(const Model&) {
-        return Sub::batch(
-            keys<Sub>({
-                {'q', Quit{}}, {'k', ScrollBy{-1}}, {'j', ScrollBy{+1}}, {SpecialKey::Up, ScrollBy{-1}}, {SpecialKey::Down, ScrollBy{+1}},
-                {SpecialKey::PageUp, ScrollBy{-kPage}}, {SpecialKey::PageDown, ScrollBy{+kPage}},
-                {SpecialKey::Home, Top{}}, {SpecialKey::End, Bottom{}},
-            }),
-            Sub::on(on_mouse{}, [](const MouseEvent& e) -> std::optional<Msg> {
-                if (e.kind != MouseEventKind::Press) return std::nullopt;
-                if (e.button == MouseButton::ScrollUp)   return ScrollBy{-1};
-                if (e.button == MouseButton::ScrollDown) return ScrollBy{+1};
-                return std::nullopt;
-            }));
+    static std::optional<Msg> on(const Model&, const KeyEvent& k) {
+        static const keymap<Msg> keys{
+            {'q', Quit{}}, {'k', ScrollBy{-1}}, {'j', ScrollBy{+1}}, {SpecialKey::Up, ScrollBy{-1}}, {SpecialKey::Down, ScrollBy{+1}},
+            {SpecialKey::PageUp, ScrollBy{-kPage}}, {SpecialKey::PageDown, ScrollBy{+kPage}},
+            {SpecialKey::Home, Top{}}, {SpecialKey::End, Bottom{}},
+        };
+        return keys(k);
     }
-    static bool subs_key(const Model&) { return true; }
+    static std::optional<Msg> on(const Model&, const MouseEvent& e) {
+        if (e.kind != MouseEventKind::Press) return std::nullopt;
+        if (e.button == MouseButton::ScrollUp)   return ScrollBy{-1};
+        if (e.button == MouseButton::ScrollDown) return ScrollBy{+1};
+        return std::nullopt;
+    }
 };
 
 static_assert(Program<ScrollSlice>);

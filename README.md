@@ -60,7 +60,6 @@ struct Counter {
     using Msg = std::variant<Inc, Dec, Quit>;
 
     using Cmd = jaal::Cmd<Msg>;
-    using Sub = jaal::Sub<Msg, on_key>;          // say which event sources you use
 
     static Cmd update(Model& m, Inc)  { ++m.count; return {}; }
     static Cmd update(Model& m, Dec)  { --m.count; return {}; }
@@ -73,8 +72,9 @@ struct Counter {
         ) | border_<Round> | bcol<50, 55, 70> | pad<1>;
     }
 
-    static Sub subscribe(const Model&) {
-        return keys<Sub>({{'+', Inc{}}, {'-', Dec{}}, {'q', Quit{}}});
+    static std::optional<Msg> on(const Model&, const KeyEvent& k) {
+        static const keymap<Msg> keys{{'+', Inc{}}, {'-', Dec{}}, {'q', Quit{}}};
+        return keys(k);
     }
 };
 
@@ -129,16 +129,17 @@ Plus FPS raycaster, raymarcher, fluid sim, mandelbrot zoom, matrix rain, particl
 
 ## Runtime
 
-- The runtime is [jaal](third_party/jaal): `Model` + one `update(Model&, Case)` per message + `view` + `subscribe`. A missing handler, an unused effect, or a subscription the host can't provide is a compile error.
+- The runtime is [jaal](third_party/jaal): `Model` + one `update(Model&, Case)` per message + `view`, plus optional `on(const Model&, Event)` overloads for input and `subscribe` for timers. A missing handler or an unused effect is a compile error.
 - Effects as data: `Cmd::quit`, `after`, `task`, `send`, batches, plus the terminal's own (`set_title`, `write_clipboard`, `commit_scrollback`, `suspend`, `set_mouse`, ...), listed in the program's `Cmd` type.
-- Subscriptions as data: `Sub::every`, `Sub::stream`, and maya's event sources `on_key`, `on_mouse`, `on_paste`, `on_focus`, `on_resize`. Diffed every step, so a timer that stops being subscribed stops.
+- Input as overloads: `on(const Model&, const KeyEvent&)`, and likewise `MouseEvent`, `PasteEvent`, `FocusEvent`, `ResizeEvent`. Each reads the live model when the event arrives; a kind with no overload is dropped. `keymap<Msg>` is the plain key table.
+- Subscriptions as data: `Sub::every`, `Sub::stream`. Diffed every step, so a timer that stops being subscribed stops.
 - Frame flow control: never more than one frame ahead of the terminal, so `q` is instant even over a slow link.
 - Signal / slot reactivity (SolidJS-inspired) for widgets that want it.
 
 ## Headers
 
 ```cpp
-#include <maya/host/run.hpp>            // run<P>(), event sources, terminal effects + all of maya.hpp
+#include <maya/host/run.hpp>            // run<P>(), input events, terminal effects + all of maya.hpp
 #include <maya/maya.hpp>           // the view layer: DSL, elements, styles, print()
 #include <maya/widget/input.hpp>   // widgets included individually
 #include <maya/internal.hpp>       // canvas, diff engine, SIMD, terminal I/O (unstable)
@@ -146,7 +147,7 @@ Plus FPS raycaster, raymarcher, fluid sim, mandelbrot zoom, matrix rain, particl
 
 | Header | Contains | Stability |
 |--------|----------|-----------|
-| `app.hpp` | `run`, `Program`, `keys`, event sources, terminal effects (link `maya::app`) | Stable |
+| `app.hpp` | `run`, `Program`, `keymap`, `terminal_events`, terminal effects (link `maya::app`) | Stable |
 | `maya.hpp` | DSL, elements, events, signals, styles, themes, `print` (link `maya::maya`) | Stable |
 | `widget/*.hpp` | 90+ widgets | Stable |
 | `internal.hpp` | Canvas, diff, renderer, SIMD, terminal I/O, layout | Internal |

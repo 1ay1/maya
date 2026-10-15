@@ -195,6 +195,14 @@ void emit_caret_cosmetics(std::string& out,
 
 } // namespace
 
+// True when emit_caret_epilogue will SHOW the cursor at the hint rather
+// than park it.
+[[nodiscard]] bool caret_on_screen(const std::optional<ResolvedCaret>& hint,
+                                   int content_rows, int term_h) noexcept {
+    const int top_row = std::max(0, content_rows - term_h);
+    return hint && hint->y >= top_row && hint->y < content_rows;
+}
+
 // External linkage (friend of InlineFrameState); TU-local by
 // convention — no header declaration, same policy as
 // compose_inline_frame_impl above.
@@ -209,7 +217,7 @@ void emit_caret_epilogue(std::string& out,
     // rows; a hint above that window cannot be reached without crossing
     // the viewport top.
     const int top_row = std::max(0, content_rows - term_h);
-    if (hint && hint->y >= top_row && hint->y < content_rows) {
+    if (caret_on_screen(hint, content_rows, term_h)) {
         const int caret_screen_row = hint->y - top_row;      // frame-local
         const int up = resting - caret_screen_row;
         out += '\r';
@@ -263,6 +271,27 @@ void emit_caret_epilogue(std::string& out,
         state.cursor_shown_      = false;
         state.cursor_row_offset_ = 0;
         state.cursor_col_        = width > 1 ? width - 1 : 0;
+    }
+}
+
+// Ends a frame that opened a sync block. A shown caret goes INSIDE the block:
+// Konsole repaints from a snapshot at ?2026l and nothing repaints after, so a
+// ?25h that trails the block never shows (#82). A park stays outside, so a
+// dropped block can't lose the hide.
+void close_frame(std::string& out, bool synchronized_output,
+                 const std::optional<ResolvedCaret>& hint,
+                 InlineFrameState& state, int content_rows, int term_h,
+                 int width) noexcept {
+    if (!synchronized_output) {
+        emit_caret_epilogue(out, hint, state, content_rows, term_h, width);
+        return;
+    }
+    if (caret_on_screen(hint, content_rows, term_h)) {
+        emit_caret_epilogue(out, hint, state, content_rows, term_h, width);
+        out += tmux::sync_end();
+    } else {
+        out += tmux::sync_end();
+        emit_caret_epilogue(out, hint, state, content_rows, term_h, width);
     }
 }
 
@@ -741,13 +770,12 @@ compose_inline_frame_impl(const Canvas& canvas,
             serialize(canvas, pool, out, content_rows);
             state.ghost_rows_above_ = 0;
         }
-        if (synchronized_output) out += tmux::sync_end();
         // Frame epilogue (hardware caret or davidwed park) — see
         // emit_caret_epilogue. Emitted before the pathological-size
         // bailout below so every return from this path is disciplined.
-        emit_caret_epilogue(out,
-                            resolve_caret_hint(canvas, pool, content_rows, term_h),
-                            state, content_rows, term_h, W);
+        close_frame(out, synchronized_output,
+                    resolve_caret_hint(canvas, pool, content_rows, term_h),
+                    state, content_rows, term_h, W);
         // Cache the new cell buffer for next frame's comparison.  This is
         // the one path that legitimately needs a full memcpy because
         // prev_cells is empty.  Overflow check protects against pathological
@@ -1094,8 +1122,6 @@ compose_inline_frame_impl(const Canvas& canvas,
     // — the shrink path above already reset to 0 when needed.
     out += ansi::reset;   // drop residual SGR
 
-    if (synchronized_output) out += tmux::sync_end();
-
     // ── Frame epilogue: hardware caret or parked hide ────────────────
     // (Ghost-caret hardening — diagnosis credit: davidwed, maya PR #7 —
     // generalized into emit_caret_epilogue; see its header comment for
@@ -1106,9 +1132,9 @@ compose_inline_frame_impl(const Canvas& canvas,
     // without one we park at col 0 + re-hide. Both outside the sync
     // wrapper so a rollback can't eat them; both row-relative so no
     // anchor assumption and no T1 violation.)
-    emit_caret_epilogue(out,
-                        resolve_caret_hint(canvas, pool, content_rows, term_h),
-                        state, content_rows, term_h, W);
+    close_frame(out, synchronized_output,
+                resolve_caret_hint(canvas, pool, content_rows, term_h),
+                state, content_rows, term_h, W);
 
     // ── Commit: prev_cells is already up-to-date ───────────────────────
     //

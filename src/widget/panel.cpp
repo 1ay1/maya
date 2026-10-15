@@ -466,18 +466,16 @@ std::vector<Element> Panel::render_item(const Item& r, int index) const {
         for (const auto& run : control_runs)
             truns.push_back({run.byte_offset, run.byte_length, tint(run.style)});
     } else if (caret_at != std::string::npos && caret_at < right.size()) {
-        // Split the control's run so the painted caret glyph carries the
-        // caret_anchor meta-bit: the serializer parks the HARDWARE cursor
-        // on that cell (terminal-native blink, IME composition at the
-        // right spot, screen readers find the edit point). The █ glyph
-        // stays — anchor is additive, and terminals without a visible
-        // hardware cursor still show the painted block.
+        // Split the control's run so the caret cell carries the
+        // caret_anchor meta-bit: the serializer puts the HARDWARE cursor
+        // there (terminal-native blink, IME composition at the right spot,
+        // screen readers find the edit point).
         constexpr std::size_t kBarLen = 3;   // █ is 3 bytes in UTF-8
-        // Same caret as the composer: a blinking block hardware cursor in the
-        // edit colour on that cell. The █ stays painted in the edit colour so
-        // terminals without a visible hardware cursor still show it, and it
-        // never takes the row's bold value style.
+        // Same caret as the composer and the palette: the cell paints
+        // nothing and the terminal's blinking block cursor sits on it. A
+        // painted █ under it hid the blink, since both phases looked solid.
         const Style caret_style = tint(Style{}.with_fg(th.value_edit))
+                                      .with_conceal()
                                       .with_caret_anchor()
                                       .with_caret_shape(1);
         if (caret_at > 0) truns.push_back({0, caret_at, rrun});

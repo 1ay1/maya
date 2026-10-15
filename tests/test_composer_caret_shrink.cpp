@@ -532,6 +532,16 @@ int main() {
             }
             return n;
         };
+        // A shown caret must sit INSIDE the sync block: Konsole repaints from
+        // a snapshot taken at ?2026l and never again until the next write, so
+        // a ?25h after the block leaves the cursor invisible (#82).
+        auto show_inside_sync = [](const std::string& bytes) {
+            const std::size_t show = bytes.rfind("\x1b[?25h");
+            const std::size_t end  = bytes.rfind("\x1b[?2026l");
+            if (show == std::string::npos) return false;
+            if (end == std::string::npos) return true;   // sync off
+            return show < end;
+        };
 
         // H1: fresh render, caret mid-text (end of "AAAA").
         std::string htext = "AAAA BBBB";
@@ -550,7 +560,11 @@ int main() {
         auto hsynced =
             std::get<maya::inline_frame::InlineFrame<maya::inline_frame::Synced>>(
                 std::move(houtcome));
-        drain();
+        if (!show_inside_sync(drain())) {
+            std::println("\nBUG(hw): fresh frame shows the caret after "
+                         "?2026l; Konsole never paints it.");
+            return 57;
+        }
         dump_screen(hemu, "hw frame 1 (fresh, cursor must be SHOWN at caret)");
         if (hemu.cursor_hidden) {
             std::println("\nBUG(hw): cursor hidden after a hardware-caret "
@@ -618,7 +632,11 @@ int main() {
         auto hsynced3 =
             std::get<maya::inline_frame::InlineFrame<maya::inline_frame::Synced>>(
                 std::move(houtcome3));
-        drain();
+        if (!show_inside_sync(drain())) {
+            std::println("\nBUG(hw): diff frame shows the caret after "
+                         "?2026l; Konsole never paints it.");
+            return 57;
+        }
         const int wrap_row = hemu.cy, wrap_col = hemu.cx;
         if (hemu.cursor_hidden) {
             std::println("\nBUG(hw): cursor hidden after wrap frame.");

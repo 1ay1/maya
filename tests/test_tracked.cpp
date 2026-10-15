@@ -10,8 +10,8 @@
 //      / comparison contexts (so existing call sites stay unchanged).
 //   4. Same-value writes still invalidate — there's no auto-skip-if-equal
 //      to second-guess. Cheap, and correct under all use patterns.
-//   5. The wrapper is move-safe via rebind(): after the owner is moved,
-//      rebind() repoints the back-pointer at the new home.
+//   5. The wrapper follows its owner through copies and moves on its own,
+//      with no rebind(): it finds the owner by offset, not a stored pointer.
 //
 // These tests don't touch StreamingMarkdown — they're a unit-level pin
 // on Tracked itself, so any future regression in the wrapper fails here
@@ -134,8 +134,49 @@ static void increment_bumps_once() {
     REQUIRE(static_cast<int>(o.n) == 2, "pre-increment stores");
 }
 
-// T6. Move-construct + rebind keeps the wrapper pointing at the new owner.
-// The owner's move-constructor must call rebind() on each Tracked member.
+// T6. A defaulted move of the owner needs no rebind. This is the shape that
+// crashed maya_agent_session: init() returns a Model by value, so the
+// StreamingMarkdown inside lives at a new address from the one it was built
+// at; then `m.md = StreamingMarkdown{}` move-assigns. With a stored owner
+// pointer both wrappers still named dead objects (the init frame and the
+// temporary), and the invalidator wrote into a returned stack frame.
+static void owner_move_needs_no_rebind() {
+    auto make = []() -> Owner {
+        Owner o;
+        o.flag = true;
+        return o;
+    };
+    Owner dst = make();             // relocated: no rebind anywhere
+    int base = dst.invalidations;
+    dst.flag = false;
+    REQUIRE(dst.invalidations == base + 1,
+            "after the owner moved, writes invalidate the NEW owner");
+
+    Owner* tmp = new Owner;         // heap, so a dangling write is visible
+    int tmp_before = tmp->invalidations;
+    dst = std::move(*tmp);          // defaulted move-assign, then the source dies
+    REQUIRE(tmp->invalidations == tmp_before,
+            "move-assign must not invalidate the SOURCE owner");
+    delete tmp;
+    base = dst.invalidations;
+    ++dst.n;
+    REQUIRE(dst.invalidations == base + 1,
+            "after move-assign, writes still invalidate the destination");
+}
+
+// T6b. Same for copies, and for an owner nested inside another struct (a
+// Model holding the widget), which is how hosts actually hold it.
+static void nested_owner_copy_follows() {
+    struct Holder { int pad[7] = {}; Owner o; };
+    Holder a;
+    Holder b = a;                   // copy: a different Owner, same offset
+    int a0 = a.o.invalidations;
+    b.o.flag = true;
+    REQUIRE(b.o.invalidations == a0 + 1, "the copy invalidates itself");
+    REQUIRE(a.o.invalidations == a0,     "and not the original");
+}
+
+// T6c. rebind() is kept for source compatibility and changes nothing.
 static void move_with_rebind_works() {
     auto make = []() -> Owner {
         Owner o;
@@ -210,6 +251,8 @@ TEST_CASE("tracked") {
     run("same-value writes still invalidate",    same_value_writes_still_invalidate);
     run("increment bumps once",                  increment_bumps_once);
     run("move with rebind works",                move_with_rebind_works);
+    run("owner move needs no rebind",            owner_move_needs_no_rebind);
+    run("nested owner copy follows",             nested_owner_copy_follows);
     run("read view works in common contexts",    read_view_works_in_common_contexts);
     run("no mutation skips invalidator",         no_mutation_skips_invalidator);
 

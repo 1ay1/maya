@@ -48,6 +48,8 @@
 //         if (live_) { … }                        // implicit read via operator const T&
 //     };
 
+#include <cstddef>
+#include <cstdint>
 #include <type_traits>
 #include <utility>
 
@@ -57,33 +59,37 @@ template <class T, class Owner, class Invalidator>
 class Tracked {
 public:
     // ── Construction ──
-    // Bind to the owner at construction. The owner reference is stored as
-    // a pointer (not a reference member) so Tracked stays move-assignable
-    // when the owner itself is moved — the new owner's move-constructor
-    // is responsible for rebinding via `rebind()` if needed.
+    // The owner is found from Tracked's OWN address, not stored: Tracked
+    // keeps its byte offset inside the owner, which is the same for every
+    // instance of Owner. So a defaulted copy or move of the owner (or of a
+    // struct holding one, or a Model the runtime relocates) is correct by
+    // construction. A stored pointer was not: it copied along with the
+    // value and kept naming the moved-from owner, and the next write ran
+    // the invalidator on a dead object, scribbling `build_dirty_ = true`
+    // into whatever reused that memory (agent_session on clang: SIGSEGV in
+    // an unrelated Element move).
     Tracked(Owner& owner, T initial) noexcept(std::is_nothrow_move_constructible_v<T>)
-        : owner_(&owner), value_(std::move(initial)) {}
+        : offset_(static_cast<std::ptrdiff_t>(reinterpret_cast<std::uintptr_t>(this)
+                                              - reinterpret_cast<std::uintptr_t>(&owner))),
+          value_(std::move(initial)) {}
 
-    // No default ctor: a Tracked without an owner is a footgun (writes
-    // would crash on null deref). Owners must explicitly construct it.
+    // No default ctor: a Tracked must know where its owner is.
     Tracked() = delete;
 
-    // Copyable/movable; on move the owner pointer copies too. If the
-    // OWNER itself is being moved, it must call `rebind(*this)` on each
-    // Tracked member from its own move-ctor — Tracked can't detect that.
+    // Copy/move carry the offset, which is the same in every Owner.
     Tracked(const Tracked&) = default;
     Tracked(Tracked&&) noexcept = default;
     Tracked& operator=(const Tracked& other) {
         if (this != &other) {
             value_ = other.value_;
-            Invalidator{}(*owner_);
+            Invalidator{}(owner());
         }
         return *this;
     }
     Tracked& operator=(Tracked&& other) noexcept {
         if (this != &other) {
             value_ = std::move(other.value_);
-            Invalidator{}(*owner_);
+            Invalidator{}(owner());
         }
         return *this;
     }
@@ -93,7 +99,7 @@ public:
     // Direct assign from T. The hot path.
     Tracked& operator=(T v) noexcept(std::is_nothrow_move_assignable_v<T>) {
         value_ = std::move(v);
-        Invalidator{}(*owner_);
+        Invalidator{}(owner());
         return *this;
     }
 
@@ -101,7 +107,7 @@ public:
     // that want to be obviously-a-write ("live_.set(false)" vs "live_ = false").
     void set(T v) noexcept(std::is_nothrow_move_assignable_v<T>) {
         value_ = std::move(v);
-        Invalidator{}(*owner_);
+        Invalidator{}(owner());
     }
 
     // ── Read ──
@@ -117,11 +123,9 @@ public:
     [[nodiscard]] const T& get() const noexcept { return value_; }
 
     // ── Owner rebinding ──
-    // Called by the OWNER's move-constructor/move-assignment. Necessary
-    // because Tracked stores a back-pointer; if the owner relocates and
-    // doesn't rebind, the back-pointer still points at the moved-from
-    // shell. Idempotent.
-    void rebind(Owner& new_owner) noexcept { owner_ = &new_owner; }
+    // Nothing to do: the owner is located by offset, so it follows every
+    // copy and move on its own. Kept so existing callers still compile.
+    void rebind(Owner&) noexcept {}
 
     // ── Mutation helpers for arithmetic types ──
     // Pre-increment: bump and invalidate. Returns the new value by
@@ -131,7 +135,7 @@ public:
               class = std::enable_if_t<std::is_arithmetic_v<U>>>
     T operator++() noexcept {
         ++value_;
-        Invalidator{}(*owner_);
+        Invalidator{}(owner());
         return value_;
     }
 
@@ -141,12 +145,16 @@ public:
     T operator++(int) noexcept {
         T old = value_;
         ++value_;
-        Invalidator{}(*owner_);
+        Invalidator{}(owner());
         return old;
     }
 
 private:
-    Owner* owner_;
+    [[nodiscard]] Owner& owner() const noexcept {
+        return *reinterpret_cast<Owner*>(reinterpret_cast<std::uintptr_t>(this) - offset_);
+    }
+
+    std::ptrdiff_t offset_;   // this - &owner; identical in every Owner
     [[no_unique_address]] Invalidator inv_{};  // EBO: 0 B for empty stateless invalidator
     T value_;
 };

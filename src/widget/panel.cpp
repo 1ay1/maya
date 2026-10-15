@@ -473,8 +473,15 @@ std::vector<Element> Panel::render_item(const Item& r, int index) const {
         // stays — anchor is additive, and terminals without a visible
         // hardware cursor still show the painted block.
         constexpr std::size_t kBarLen = 3;   // █ is 3 bytes in UTF-8
+        // Same caret as the composer: a blinking block hardware cursor in the
+        // edit colour on that cell. The █ stays painted in the edit colour so
+        // terminals without a visible hardware cursor still show it, and it
+        // never takes the row's bold value style.
+        const Style caret_style = tint(Style{}.with_fg(th.value_edit))
+                                      .with_caret_anchor()
+                                      .with_caret_shape(1);
         if (caret_at > 0) truns.push_back({0, caret_at, rrun});
-        truns.push_back({caret_at, kBarLen, rrun.with_caret_anchor()});
+        truns.push_back({caret_at, kBarLen, caret_style});
         if (caret_at + kBarLen < right.size())
             truns.push_back({caret_at + kBarLen,
                              right.size() - caret_at - kBarLen, rrun});

@@ -991,6 +991,7 @@ set_tests_properties(
                                      "-DINC=${_cf_inc}"
                                      -DSRC=${PROJECT_SOURCE_DIR}/tests/compile_fail/seam.cpp
                                      -DCASE=${_n} "-DMATCH=${_m}" -DEXPECT_OK=${_ok}
+                                     "-DSYSROOT=${CMAKE_OSX_SYSROOT}"
                                      -P ${PROJECT_SOURCE_DIR}/tests/compile_fail/run_case.cmake)
                     set_tests_properties(seam_compile_fail_${_n} PROPERTIES LABELS "static" TIMEOUT 120)
                 endforeach()

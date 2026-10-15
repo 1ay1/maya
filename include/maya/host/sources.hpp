@@ -96,7 +96,17 @@ class KeySpec {
 template <class Msg>
 class keymap {
   public:
-    keymap(std::initializer_list<std::pair<KeySpec, Msg>> entries) {
+    /// One row. An aggregate, NOT std::pair: pair's forwarding constructor
+    /// would pass the key to KeySpec's consteval constructor as a runtime
+    /// parameter. GCC and Clang accept that by making pair's constructor
+    /// immediate too (P2564); MSVC rejects it. Aggregate init calls KeySpec
+    /// on the literal itself, which every compiler accepts.
+    struct entry {
+        KeySpec key;
+        Msg     msg;
+    };
+
+    keymap(std::initializer_list<entry> entries) {
         if (entries.size() >= kNone) throw std::logic_error("maya::keymap: too many entries");
         chars_.fill(kNone);
         special_.fill(kNone);

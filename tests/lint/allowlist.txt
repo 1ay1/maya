@@ -40,7 +40,7 @@ layout/yoga.cpp: thread_local
 render/paint_box.cpp: thread_local
 render/paint_component.cpp: thread_local
 render/scrollback_ledger.cpp: thread_local
-terminal/tmux.cpp: thread_local
+terminal/tmux.cpp: thread_local mutex
 widget/markdown/parser/parser_inline.cpp: thread_local
 widget/markdown/streaming/markdown_memo.cpp: thread_local
 
@@ -72,6 +72,9 @@ widget/markdown/streaming/commit.cpp: mutex
 # The executor hook (core/executor.hpp) is set by maya::run before the program
 # starts and cleared after; a mutex covers that and the shared_ptr a widget reads.
 core/executor.cpp: mutex
+# tmux.cpp also takes a mutex (see its thread_local line above): the probe
+# cache is read from the UI thread and a clipboard worker, and libmaya can't
+# link jaal.
 
 # ── P4. const_cast: memoization behind a const accessor ──────────────────
 # The logical-const pattern — filling a cache slot inside a const getter,

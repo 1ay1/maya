@@ -84,11 +84,14 @@ std::string ask_tmux(const char* format) {
 }
 #endif
 
-// Cache-valid flags. Single-threaded by contract for the reset seam (see
-// the header): production sets them once on first use and never clears.
+// The cache. Read from the UI thread (frame sync markers) and from agentty's
+// clipboard worker (refresh_if_client_changed), so every access to it holds
+// probe_mu(). A probe spawns tmux (~8 ms); only the first caller pays it.
+std::mutex& probe_mu() { static std::mutex m; return m; }
 bool& probe_done()  { static bool d = false; return d; }
 
-Probe& probe() {
+// Callers hold probe_mu().
+Probe& probe_locked() {
     static Probe p;
     if (!probe_done()) {
         probe_done() = true;
@@ -137,6 +140,11 @@ Probe& probe() {
         }
     }
     return p;
+}
+
+Probe probe() {
+    std::lock_guard lk(probe_mu());
+    return probe_locked();
 }
 
 // Current client identity, without disturbing the cache. Empty when there
@@ -249,7 +257,10 @@ std::string_view sync_begin() noexcept { return sync_pair().begin; }
 std::string_view sync_end()   noexcept { return sync_pair().end; }
 bool sync_available() noexcept { return !sync_pair().begin.empty(); }
 
-void reset_cache_for_test() noexcept { probe_done() = false; }
+void reset_cache_for_test() noexcept {
+    std::lock_guard lk(probe_mu());
+    probe_done() = false;
+}
 
 bool refresh_if_client_changed() noexcept {
     if (!active()) return false;
@@ -261,8 +272,9 @@ bool refresh_if_client_changed() noexcept {
     // Empty = no reachable server / degraded env. "Cannot tell" must not
     // count as a change, or we'd re-probe on every keystroke.
     if (now.empty() || now == cached) return false;
+    std::lock_guard lk(probe_mu());
     probe_done() = false;
-    (void)probe();          // re-probe under the new client
+    (void)probe_locked();   // re-probe under the new client
     return true;
 }
 

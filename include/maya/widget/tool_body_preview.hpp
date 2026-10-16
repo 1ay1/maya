@@ -1808,8 +1808,12 @@ private:
         }
 
         if (shown < total) {
+            // These are rows (a match and its context lines), not matches:
+            // a 1-match grep with 15 lines of context used to read
+            // "⋯ 23 more matches".
+            const int more = total - shown;
             rows.push_back(text(
-                "\xe2\x8b\xaf " + std::to_string(total - shown) + " more matches",
+                "\xe2\x8b\xaf " + std::to_string(more) + (more == 1 ? " more line" : " more lines"),
                 Style{}.with_fg(muted()).with_italic()
             ).build());
         }

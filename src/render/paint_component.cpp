@@ -147,8 +147,8 @@ void paint_component(const PaintCtx& c, const ComponentElement& node) {
             if (dw >= -kWidthJitterEps && dw <= kWidthJitterEps) {
                 // Rightmost non-blank column across all cached rows.
                 int max_col = -1;
-                for (int c : it->second.cells_row_last_col)
-                    if (c > max_col) max_col = c;
+                for (int last_col : it->second.cells_row_last_col)
+                    if (last_col > max_col) max_col = last_col;
                 const int min_w = std::min(it->second.width, content_w);
                 // Content fits within both widths → the differing
                 // columns are blank padding; cells are safe to blit.

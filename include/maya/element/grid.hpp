@@ -461,10 +461,10 @@ struct ColumnsOpts {
         // makes a cell inside re-solve against its column.
         std::vector<Element> col_els;
         col_els.reserve(static_cast<std::size_t>(cols));
-        for (int i = 0; i < cols; ++i) {
+        for (int ci = 0; ci < cols; ++ci) {
             auto cb = detail::vstack();
-            cb.width(Dimension::fixed(cw[static_cast<std::size_t>(i)]));
-            col_els.push_back(cb(std::move(col_cells[static_cast<std::size_t>(i)])));
+            cb.width(Dimension::fixed(cw[static_cast<std::size_t>(ci)]));
+            col_els.push_back(cb(std::move(col_cells[static_cast<std::size_t>(ci)])));
         }
 
         auto rb = detail::hstack();

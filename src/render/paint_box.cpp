@@ -9,7 +9,6 @@ void paint_box(const PaintCtx& c, const BoxElement& node) {
     StylePool& pool = c.pool;
     const auto& layout_nodes = c.layout_nodes;
     const auto& ln = c.ln;
-    const Rect& computed = c.computed;
     const int ax = c.ax;
     const int ay = c.ay;
     const int aw = c.aw;

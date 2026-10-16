@@ -157,14 +157,14 @@ namespace detail {
 [[nodiscard]] inline std::uint64_t id_for_shared(
     const std::shared_ptr<const Element>& sp)
 {
-    using Key = std::weak_ptr<const Element>;
-    using Cmp = std::owner_less<Key>;
-    thread_local std::map<Key, std::uint64_t, Cmp> ids;
+    using WeakKey = std::weak_ptr<const Element>;
+    using Cmp = std::owner_less<WeakKey>;
+    thread_local std::map<WeakKey, std::uint64_t, Cmp> ids;
     // Sweep cursor for the incremental scan. We resume from the entry
     // following the previous batch's last touched node on each tick,
     // so over time every entry is visited even though no single call
     // walks the whole map. Reset to begin() when it falls off the end.
-    thread_local typename std::map<Key, std::uint64_t, Cmp>::iterator
+    thread_local typename std::map<WeakKey, std::uint64_t, Cmp>::iterator
         sweep_cursor = ids.end();
     thread_local std::size_t inserts_since_sweep = 0;
     static std::atomic<std::uint64_t> next_id{1};
@@ -173,7 +173,7 @@ namespace detail {
     constexpr std::size_t kIncSweepBudget = 16;     // visit ≤ 16 entries / tick
     constexpr std::size_t kHardCap        = 1024;   // unchanged backstop
 
-    Key key = sp;
+    WeakKey key = sp;
     if (auto it = ids.find(key); it != ids.end()) {
         // Inline erase-on-expired. owner_less treats a freed control
         // block as distinct from a fresh one at the same address, so

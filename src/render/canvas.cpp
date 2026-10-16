@@ -537,7 +537,9 @@ std::string StylePool::build_sgr(const Style& s) {
 }
 
 std::size_t StylePool::hash_style(const Style& s) noexcept {
-    std::size_t h = 14695981039346656037ULL;
+    // FNV-1a in 64 bits on every target, folded to size_t at the end: a
+    // size_t accumulator truncated the offset basis on 32-bit hosts.
+    uint64_t h = 14695981039346656037ULL;
     auto mix = [&](uint64_t v) {
         h ^= v;
         h *= 1099511628211ULL;
@@ -578,7 +580,12 @@ std::size_t StylePool::hash_style(const Style& s) noexcept {
     }
 
     // Map hash 0 → 1 (reserve 0 as empty sentinel).
-    return h == 0 ? 1 : h;
+    std::size_t folded;
+    if constexpr (sizeof(std::size_t) < sizeof(uint64_t))
+        folded = static_cast<std::size_t>(h ^ (h >> 32));
+    else
+        folded = static_cast<std::size_t>(h);
+    return folded == 0 ? 1 : folded;
 }
 
 void StylePool::insert_slot(std::size_t h, uint16_t id) {

@@ -7,7 +7,6 @@ namespace render_detail {
 void paint_text(const PaintCtx& c, const TextElement& node) {
     Canvas& canvas = c.canvas;
     StylePool& pool = c.pool;
-    const auto& ln = c.ln;
     const int ax = c.ax;
     const int ay = c.ay;
     const int aw = c.aw;

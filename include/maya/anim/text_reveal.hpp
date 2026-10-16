@@ -276,23 +276,23 @@ inline constexpr std::size_t kScrambleN =
     const LitColor warm = th.resolve(Color::slot(ThemeSlot::Info));
     const LitColor cool = th.resolve(Color::slot(ThemeSlot::Muted));
     Color col;
-    bool bold = false, dim = false;
+    bool want_bold = false, want_dim = false;
     if (age_ms < 120) {
         const double t = ease::smoothstep(age_ms / 120.0);
         col  = lerp(hot, warm, t);
-        bold = true;
+        want_bold = true;
     } else if (age_ms < 320) {
         const double t = ease::smoothstep((age_ms - 120) / 200.0);
         col  = lerp(warm, cool, t);
-        bold = t < 0.5;
+        want_bold = t < 0.5;
     } else {
         const double t = ease::smoothstep((age_ms - 320) / 380.0);
         col  = lerp(cool, th.resolve(Color::slot(ThemeSlot::Text)), t);
-        dim  = true;
+        want_dim  = true;
     }
     Style s = Style{}.with_fg(col);
-    if (bold) s = s.with_bold();
-    if (dim)  s = s.with_dim();
+    if (want_bold) s = s.with_bold();
+    if (want_dim)  s = s.with_dim();
     return s;
 }
 

@@ -128,6 +128,7 @@ using worker_group = ::jaal::kernel::worker_group;  // owned jobs, barrier stop
 using ::jaal::kernel::CheckedJob;               // captureless body, Sendable args
 using ::jaal::kernel::require_job;
 using ::jaal::kernel::delay_for;                // a sleep that wakes on stop
+using ::jaal::kernel::backoff_for;              // a short capped pause, legal under a lock
 using ::jaal::kernel::loop_bound;               // state only the loop touches
 using ::jaal::kernel::published;                // the current object, swapped whole
 using ::jaal::kernel::loop_identity;

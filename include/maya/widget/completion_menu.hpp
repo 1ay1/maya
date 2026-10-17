@@ -165,14 +165,26 @@ private:
             }};
         }
 
-        Element leftE{TextElement{ .content = std::move(left), .style = Style{},
-                                   .wrap = TextWrap::NoWrap, .runs = std::move(lruns) }};
-        if (right.empty()) return leftE;
+        if (right.empty())
+            return Element{TextElement{ .content = std::move(left), .style = Style{},
+                                        .wrap = TextWrap::NoWrap, .runs = std::move(lruns) }};
 
-        Element det{TextElement{ .content = std::move(right),
-                                 .style = Style{}.with_fg(theme.detail),
-                                 .wrap = TextWrap::NoWrap }};
-        return dsl::h(leftE, dsl::spacer(), det).build();
+        // Pad to the full width like the selected row, so the detail sits
+        // flush right and never butts against the label.
+        return Element{ComponentElement{
+            .render = [left = std::move(left), lruns = std::move(lruns),
+                       right = std::move(right), dcol = theme.detail](int w, int) -> Element {
+                std::string s = left;
+                std::vector<StyledRun> runs = lruns;
+                const int lw = string_width(left), rw = string_width(right);
+                s.append(static_cast<size_t>(std::max(2, w - lw - rw)), ' ');
+                runs.push_back({s.size(), right.size(), Style{}.with_fg(dcol)});
+                s += right;
+                return Element{TextElement{ .content = std::move(s), .style = Style{},
+                                            .wrap = TextWrap::NoWrap,
+                                            .runs = std::move(runs) }};
+            },
+        }};
     }
 };
 

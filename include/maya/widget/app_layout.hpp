@@ -52,6 +52,9 @@ public:
     struct Config {
         Thread::Config        thread;
         ChangesStrip::Config  changes_strip;
+        // Drawn directly above the composer, in the same column (an inline
+        // completion menu). Empty = nothing.
+        Element               above_composer;
         Composer::Config      composer;
         StatusBar::Config     status_bar;
 
@@ -100,6 +103,7 @@ public:
             (
                 Thread{cfg_.thread}.build(),
                 ChangesStrip{cfg_.changes_strip}.build(),
+                cfg_.above_composer,
                 Composer{cfg_.composer}.build(),
                 StatusBar{cfg_.status_bar}.build(),
                 // Composer anti-bounce pad. The composer rides the

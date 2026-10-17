@@ -943,6 +943,9 @@ private:
     // path (leaving it enabled would corrupt key input for the next program
     // sharing the terminal).
     bool          kitty_kbd_enabled_  = false;
+    // True once the window title was saved with the xterm title stack
+    // (CSI 22;0t) before we set ours, so exit pops it back (CSI 23;0t).
+    bool          title_pushed_       = false;
 
 public:
     /// The terminal's input handle. The host (<maya/host/run.hpp>) watches it with

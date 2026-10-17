@@ -93,10 +93,14 @@ auto Device::create(Options cfg) -> Result<Device> {
             !disabled && ansi::env_supports_synchronized_output();
     }
 
-    // Set terminal title if provided.
+    // Set terminal title if provided. Save the current one first on the
+    // xterm title stack, so exit puts it back instead of leaving our title
+    // on the tab. Terminals without the stack ignore it.
     if (!cfg.title.empty()) {
-        auto seq = std::format("\x1b]0;{}\x07", cfg.title);
+        const bool stack = !theme::terminal_is_dumb();
+        auto seq = std::format("{}\x1b]0;{}\x07", stack ? "\x1b[22;0t" : "", cfg.title);
         (void)platform::io_write_all(output_h, seq);
+        rt.title_pushed_ = stack;
     }
 
     // Enable mouse reporting if requested. Use maya's canonical sequence:

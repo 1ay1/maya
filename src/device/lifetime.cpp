@@ -102,6 +102,11 @@ auto Device::cleanup() -> Status {
         (void)platform::io_write_all(output_handle_, ansi::kitty_keyboard_pop);
         kitty_kbd_enabled_ = false;
     }
+    // Give the window its old title back (saved at create).
+    if (title_pushed_ && output_handle_ != platform::invalid_handle) {
+        (void)platform::io_write_all(output_handle_, "\x1b[23;0t");
+        title_pushed_ = false;
+    }
     // Swallow terminal REPLIES that are still in flight.
     //
     // Every inline frame ends with a DSR (`CSI 5 n`) for flow control, and the
@@ -150,6 +155,11 @@ Device::~Device() {
         (void)platform::io_write_all(output_handle_, ansi::kitty_keyboard_pop);
         kitty_kbd_enabled_ = false;
     }
+    // Give the window its old title back (saved at create).
+    if (title_pushed_ && output_handle_ != platform::invalid_handle) {
+        (void)platform::io_write_all(output_handle_, "\x1b[23;0t");
+        title_pushed_ = false;
+    }
     // Same reason as cleanup(): a reply we asked for must not land on the
     // user's shell prompt. Idempotent — draining an empty fd is a no-op.
     drain_pending_replies();
@@ -186,6 +196,8 @@ Device::Device(Device&& o) noexcept
 {
     mouse_enabled_ = std::exchange(o.mouse_enabled_, false);
     hover_motion_  = std::exchange(o.hover_motion_, false);
+    title_pushed_  = std::exchange(o.title_pushed_, false);
+    kitty_kbd_enabled_ = std::exchange(o.kitty_kbd_enabled_, false);
 }
 
 Device& Device::operator=(Device&& o) noexcept {
@@ -219,6 +231,8 @@ Device& Device::operator=(Device&& o) noexcept {
         startup_events_    = std::move(o.startup_events_);
         mouse_enabled_     = std::exchange(o.mouse_enabled_, false);
         hover_motion_      = std::exchange(o.hover_motion_, false);
+        title_pushed_      = std::exchange(o.title_pushed_, false);
+        kitty_kbd_enabled_ = std::exchange(o.kitty_kbd_enabled_, false);
     }
     return *this;
 }

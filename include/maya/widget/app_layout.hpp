@@ -52,8 +52,10 @@ public:
     struct Config {
         Thread::Config        thread;
         ChangesStrip::Config  changes_strip;
-        // Drawn directly above the composer, in the same column (an inline
-        // completion menu). Empty = nothing.
+        // Floats over the bottom of the thread, its last row sitting right
+        // on the composer's top border (an inline completion menu). It never
+        // takes a row in the column, so opening it moves nothing.
+        // Empty element = nothing.
         Element               above_composer;
         Composer::Config      composer;
         StatusBar::Config     status_bar;
@@ -97,15 +99,16 @@ public:
         // The min_height + padding below are the only outer flex
         // properties this widget owns.
         const int term_h = available_height();
+        auto composer   = Composer{cfg_.composer}.build();
+        auto status_bar = StatusBar{cfg_.status_bar}.build();
         auto base = (vstack()
             .min_height(Dimension::fixed(term_h))
             .padding(1)
             (
                 Thread{cfg_.thread}.build(),
                 ChangesStrip{cfg_.changes_strip}.build(),
-                cfg_.above_composer,
-                Composer{cfg_.composer}.build(),
-                StatusBar{cfg_.status_bar}.build(),
+                composer,
+                status_bar,
                 // Composer anti-bounce pad. The composer rides the
                 // tree's content_height; a transient 1-row dip in the
                 // content above (welcome→conversation subtree swap, the
@@ -132,6 +135,31 @@ public:
                 })
             )).build();
 
+        // The composer float: pinned so its bottom edge meets the composer's
+        // top border. Below that edge sit the composer, the status bar, the
+        // anti-bounce pad and the outer padding row, all measured at the
+        // width they really get. Same z-stack shape as Overlay, minus the
+        // full-width fill: the menu paints its own box.
+        if (!is_empty_text(cfg_.above_composer)) {
+            const int inner_w = std::max(1, available_width() - 2);
+            // The column's bottom padding row adds 1; the float's own last
+            // row then sits right above the composer's top border.
+            const int below = measure_element(composer, inner_w).height.value
+                            + measure_element(status_bar, inner_w).height.value
+                            + std::max(0, available_inline_min_content())
+                            + 2;
+            // Opaque, like Overlay: the menu's own blank cells (the gap
+            // between a label and its detail) must hide the thread under it.
+            auto floated = detail::vstack()
+                .bg(theme::live().background)(cfg_.above_composer);
+            base = detail::zstack({
+                std::move(base),
+                detail::vstack()
+                    .justify(Justify::End)
+                    .padding(0, 1, below, 1)(std::move(floated)),
+            });
+        }
+
         Overlay::Config oc;
         oc.base = std::move(base);
         if (cfg_.overlay) {
@@ -143,6 +171,11 @@ public:
 
 private:
     Config cfg_;
+
+    [[nodiscard]] static bool is_empty_text(const Element& e) noexcept {
+        const auto* t = std::get_if<TextElement>(&e.inner);
+        return t && t->content.empty();
+    }
 };
 
 } // namespace maya
